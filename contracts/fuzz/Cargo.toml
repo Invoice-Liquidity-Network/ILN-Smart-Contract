@@ -1,0 +1,32 @@
+[package]
+name = "iln-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# cargo-fuzz requires the package to be a binary crate.
+# Run with: cargo fuzz run fuzz_submit_invoice
+
+[[bin]]
+name = "fuzz_submit_invoice"
+path = "src/bin/fuzz_submit_invoice.rs"
+test = false
+doc = false
+
+[dependencies]
+# libFuzzer integration via cargo-fuzz.
+libfuzzer-sys = "0.4"
+invoice_liquidity = { path = "../invoice_liquidity" }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[profile.release]
+# Optimise for fuzzing: enable debug info so crash reports include line numbers.
+opt-level = 3
+debug = true
+
+# cargo-fuzz sets these automatically; declare them here so `cargo check`
+# doesn't complain about an unknown profile.
+[profile.fuzz]
+inherits = "dev"
+opt-level = 1
+incremental = false
