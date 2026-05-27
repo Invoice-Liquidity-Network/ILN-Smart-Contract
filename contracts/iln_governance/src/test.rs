@@ -1,6 +1,7 @@
 //! Tests for Issue #59 (GovernanceProposal struct),
-//!           Issue #60 (create_proposal with voting window config), and
-//!           Issue #61 (cast_vote with anti-double-vote protection)
+//!           Issue #60 (create_proposal with voting window config),
+//!           Issue #61 (cast_vote with anti-double-vote protection), and
+//!           Issue #62 (execute_proposal with timelock delay)
 
 #![cfg(test)]
 
@@ -331,9 +332,9 @@ fn test_execute_quorum_not_reached_rejected() {
 
     t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
 
-    // Advance past voting window.
+    // Advance past voting window (259_200) AND default timelock (86_400).
     let mut ledger = t.env.ledger().get();
-    ledger.timestamp += 259_201;
+    ledger.timestamp += 345_601;
     t.env.ledger().set(ledger);
 
     // Total supply = 100_000; quorum = 10_000; voter_a voted 1_000 — below quorum.
@@ -353,8 +354,9 @@ fn test_proposal_rejected_when_against_wins() {
     t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
     t.contract.cast_vote(&t.voter_b, &id, &false).unwrap();
 
+    // Advance past voting window AND default timelock.
     let mut ledger = t.env.ledger().get();
-    ledger.timestamp += 259_201;
+    ledger.timestamp += 345_601;
     t.env.ledger().set(ledger);
 
     // Total supply = 3_000 to meet quorum easily.
@@ -372,8 +374,9 @@ fn test_already_resolved_proposal_cannot_be_executed_again() {
 
     t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
 
+    // Advance past voting window AND default timelock.
     let mut ledger = t.env.ledger().get();
-    ledger.timestamp += 259_201;
+    ledger.timestamp += 345_601;
     t.env.ledger().set(ledger);
 
     // First call fails quorum and sets status to Rejected.
@@ -478,4 +481,91 @@ fn test_create_proposal_all_action_types_accepted() {
     let id4 = t.contract.create_proposal(&t.proposer, &ProposalAction::UpdateMaxDiscountRate(500), &dummy_hash(&t.env), &500_i128).unwrap();
 
     assert_eq!(id4, id1 + 3, "all four action types should create valid proposals");
+}
+
+// ── Issue #62: execute_proposal with timelock ─────────────────────────────────
+
+#[test]
+fn test_execute_before_timelock_expires_fails() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+    t.contract.cast_vote(&t.voter_b, &id, &true).unwrap();
+
+    // Advance past voting window only (not past the 86_400s timelock).
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+
+    let result = t.contract.execute_proposal(&id, &3_000);
+    assert_eq!(result, Err(Ok(GovernanceError::TimelockActive)));
+}
+
+#[test]
+fn test_execute_after_timelock_quorum_check_proceeds() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+
+    // Advance past voting window AND default timelock.
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 345_601;
+    t.env.ledger().set(ledger);
+
+    // voter_a has 1_000 votes; quorum at 10% of 100_000 = 10_000 → QuorumNotReached.
+    let result = t.contract.execute_proposal(&id, &100_000);
+    assert_eq!(result, Err(Ok(GovernanceError::QuorumNotReached)));
+}
+
+#[test]
+fn test_execute_already_rejected_proposal_fails() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    // Vote against to reject the proposal.
+    t.contract.cast_vote(&t.voter_b, &id, &false).unwrap();
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 345_601;
+    t.env.ledger().set(ledger);
+
+    // Reject (votes_against > votes_for).
+    let _ = t.contract.execute_proposal(&id, &2_000);
+
+    // Attempting to execute again returns AlreadyResolved.
+    let result = t.contract.execute_proposal(&id, &2_000);
+    assert_eq!(result, Err(Ok(GovernanceError::AlreadyResolved)));
+}
+
+#[test]
+fn test_set_execution_delay_changes_timelock() {
+    let t = setup();
+    // Override delay to 0 so execution is possible immediately after voting ends.
+    t.contract.set_execution_delay(&0_u64).unwrap();
+
+    let id = create_fee_proposal(&t);
+    // Only advance past the voting window — no extra timelock.
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+
+    // With delay=0 and insufficient quorum, we should reach QuorumNotReached
+    // (not TimelockActive), confirming the timelock was waived.
+    let result = t.contract.execute_proposal(&id, &100_000);
+    assert_eq!(result, Err(Ok(GovernanceError::QuorumNotReached)));
+}
+
+#[test]
+fn test_get_execution_delay_returns_default() {
+    let t = setup();
+    assert_eq!(t.contract.get_execution_delay(), 86_400_u64);
+}
+
+#[test]
+fn test_execute_nonexistent_proposal_fails() {
+    let t = setup();
+    let result = t.contract.execute_proposal(&9999, &10_000);
+    assert_eq!(result, Err(Ok(GovernanceError::ProposalNotFound)));
 }

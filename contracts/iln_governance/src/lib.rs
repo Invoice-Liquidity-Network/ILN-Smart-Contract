@@ -3,6 +3,7 @@
 //! Issue #59 — GovernanceProposal struct with full spec fields.
 //! Issue #60 — create_proposal() with voting window configuration.
 //! Issue #61 — cast_vote() with anti-double-vote protection and VoteCast event.
+//! Issue #62 — execute_proposal() with configurable timelock delay.
 
 #![no_std]
 use soroban_sdk::{
@@ -18,6 +19,8 @@ use soroban_sdk::{
 const DEFAULT_MIN_PROPOSAL_BALANCE: i128 = 100;
 /// Default voting window in seconds (~3 days).
 const DEFAULT_VOTING_PERIOD: u64 = 259_200;
+/// Issue #62: default timelock between voting end and execution (~1 day).
+const DEFAULT_EXECUTION_DELAY: u64 = 86_400;
 
 // ================================================================
 // Issue #59: Governance error enum
@@ -48,6 +51,8 @@ pub enum GovernanceError {
     AlreadyResolved = 10,
     /// Issue #60: Proposer balance is below MIN_PROPOSAL_BALANCE.
     InsufficientBalance = 11,
+    /// Issue #62: Timelock delay has not yet elapsed after voting ended.
+    TimelockActive = 12,
 }
 
 // ================================================================
@@ -142,6 +147,19 @@ pub struct ProposalCreated {
 }
 
 // ================================================================
+// Issue #62: ProposalExecuted event
+// ================================================================
+
+#[contractevent(topics = ["proposal_executed"])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalExecuted {
+    #[topic]
+    pub proposal_id: u64,
+    pub action_type: ProposalAction,
+    pub proposed_value: i128,
+}
+
+// ================================================================
 // Storage keys
 // ================================================================
 
@@ -157,6 +175,8 @@ pub enum StorageKey {
     MinProposalBalance,
     /// Issue #60: voting window duration in seconds.
     VotingPeriodLedgers,
+    /// Issue #62: delay in seconds between voting end and earliest execution.
+    ExecutionDelayLedgers,
 }
 
 // ================================================================
@@ -194,6 +214,10 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::VotingPeriodLedgers, &DEFAULT_VOTING_PERIOD);
+        // Issue #62: initialise execution delay with default.
+        env.storage()
+            .instance()
+            .set(&StorageKey::ExecutionDelayLedgers, &DEFAULT_EXECUTION_DELAY);
         Ok(())
     }
 
@@ -224,6 +248,22 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::VotingPeriodLedgers, &seconds);
+        Ok(())
+    }
+
+    // ── Issue #62: execution delay setter ────────────────────────
+
+    /// Set the execution delay in seconds. Callable only by the ILN contract.
+    pub fn set_execution_delay(env: Env, seconds: u64) -> Result<(), GovernanceError> {
+        let iln: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
+        iln.require_auth();
+        env.storage()
+            .instance()
+            .set(&StorageKey::ExecutionDelayLedgers, &seconds);
         Ok(())
     }
 
@@ -381,8 +421,16 @@ impl GovContract {
         Ok(())
     }
 
-    // ── execute_proposal ─────────────────────────────────────────
+    // ── Issue #62: execute_proposal with timelock ─────────────────
 
+    /// Execute a passed proposal after the timelock delay has elapsed.
+    ///
+    /// Callable by anyone once both conditions are met:
+    ///   1. The voting window has closed (`now >= proposal.voting_end`).
+    ///   2. The execution delay has elapsed (`now >= voting_end + EXECUTION_DELAY_LEDGERS`).
+    ///
+    /// Applies the proposed parameter change to the ILN contract and emits
+    /// a `ProposalExecuted` event.
     pub fn execute_proposal(
         env: Env,
         proposal_id: u64,
@@ -395,13 +443,27 @@ impl GovContract {
             .ok_or(GovernanceError::ProposalNotFound)?;
 
         let now = env.ledger().timestamp();
+
+        // Voting must have ended.
         if now < proposal.voting_end {
             return Err(GovernanceError::VotingOngoing);
         }
+
+        // Issue #62: timelock — community reaction window after voting closes.
+        let delay: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ExecutionDelayLedgers)
+            .unwrap_or(DEFAULT_EXECUTION_DELAY);
+        if now < proposal.voting_end + delay {
+            return Err(GovernanceError::TimelockActive);
+        }
+
         if proposal.status != ProposalStatus::Active {
             return Err(GovernanceError::AlreadyResolved);
         }
 
+        // Issue #69: read cached vote totals (updated incrementally in cast_vote).
         let total_votes = proposal.votes_for + proposal.votes_against;
         let quorum = total_supply / 10; // 10% quorum
 
@@ -465,7 +527,22 @@ impl GovContract {
             .persistent()
             .set(&StorageKey::Proposal(proposal_id), &proposal);
 
+        // Issue #62: emit ProposalExecuted event.
+        env.events().publish_event(&ProposalExecuted {
+            proposal_id,
+            action_type: proposal.action_type.clone(),
+            proposed_value: proposal.proposed_value,
+        });
+
         Ok(())
+    }
+
+    /// Issue #62: Return the configured execution delay in seconds.
+    pub fn get_execution_delay(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::ExecutionDelayLedgers)
+            .unwrap_or(DEFAULT_EXECUTION_DELAY)
     }
 
     // ── Getters ──────────────────────────────────────────────────
