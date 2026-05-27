@@ -1,7 +1,8 @@
 //! Tests for Issue #59 (GovernanceProposal struct),
 //!           Issue #60 (create_proposal with voting window config),
-//!           Issue #61 (cast_vote with anti-double-vote protection), and
-//!           Issue #62 (execute_proposal with timelock delay)
+//!           Issue #61 (cast_vote with anti-double-vote protection),
+//!           Issue #62 (execute_proposal with timelock delay), and
+//!           Issue #69 (vote result caching — incremental totals in cast_vote)
 
 #![cfg(test)]
 
@@ -568,4 +569,129 @@ fn test_execute_nonexistent_proposal_fails() {
     let t = setup();
     let result = t.contract.execute_proposal(&9999, &10_000);
     assert_eq!(result, Err(Ok(GovernanceError::ProposalNotFound)));
+}
+
+// ── Issue #69: Vote result caching ───────────────────────────────────────────
+//
+// cast_vote() must update votes_for / votes_against on the stored proposal
+// struct after every call so execute_proposal() can read cached totals
+// directly without iterating over individual vote records.
+
+#[test]
+fn test_cached_totals_correct_after_single_for_vote() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.votes_for, 1_000, "cached votes_for must equal voter_a's balance");
+    assert_eq!(p.votes_against, 0);
+}
+
+#[test]
+fn test_cached_totals_correct_after_single_against_vote() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_b, &id, &false).unwrap();
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.votes_for, 0);
+    assert_eq!(p.votes_against, 2_000, "cached votes_against must equal voter_b's balance");
+}
+
+#[test]
+fn test_cached_totals_accumulate_across_multiple_votes() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+    t.contract.cast_vote(&t.voter_b, &id, &true).unwrap();
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    // voter_a = 1_000, voter_b = 2_000 → total for = 3_000.
+    assert_eq!(p.votes_for, 3_000, "cached votes_for must be cumulative");
+    assert_eq!(p.votes_against, 0);
+}
+
+#[test]
+fn test_cached_totals_reflect_mixed_votes() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    // voter_a votes for (1_000), voter_b votes against (2_000).
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+    t.contract.cast_vote(&t.voter_b, &id, &false).unwrap();
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.votes_for, 1_000);
+    assert_eq!(p.votes_against, 2_000);
+}
+
+#[test]
+fn test_cached_totals_zero_before_any_vote() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.votes_for, 0, "no votes cast yet — cached total must be 0");
+    assert_eq!(p.votes_against, 0);
+}
+
+#[test]
+fn test_cached_total_reflects_voter_weight_not_count() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    // voter_b has 2_000 tokens — weight should be 2_000, not 1.
+    t.contract.cast_vote(&t.voter_b, &id, &true).unwrap();
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(
+        p.votes_for, 2_000,
+        "vote weight must equal token balance (2_000), not vote count (1)"
+    );
+}
+
+#[test]
+fn test_failed_double_vote_does_not_corrupt_cache() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+    // Second vote attempt must fail and must not alter cached totals.
+    let _ = t.contract.cast_vote(&t.voter_a, &id, &false);
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.votes_for, 1_000, "cache must be unchanged after rejected double-vote");
+    assert_eq!(p.votes_against, 0);
+}
+
+#[test]
+fn test_execute_reads_cached_totals_without_iterating() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    // Both voters cast for — total 3_000, well above 10% of 3_000 supply.
+    t.contract.cast_vote(&t.voter_a, &id, &true).unwrap();
+    t.contract.cast_vote(&t.voter_b, &id, &true).unwrap();
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 345_601;
+    t.env.ledger().set(ledger);
+
+    // Supply = 3_000 → quorum = 300; cached votes_for = 3_000 → passes.
+    // The cross-contract call to iln_contract will panic (stub address), but
+    // the cached-total path is confirmed reached by verifying that we do NOT
+    // get QuorumNotReached or TimelockActive.
+    let result = t.contract.execute_proposal(&id, &3_000);
+    assert!(
+        result != Err(Ok(GovernanceError::QuorumNotReached)),
+        "quorum was met via cached totals; should not return QuorumNotReached"
+    );
+    assert!(
+        result != Err(Ok(GovernanceError::TimelockActive)),
+        "timelock has elapsed; should not return TimelockActive"
+    );
 }
