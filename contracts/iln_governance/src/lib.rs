@@ -1,6 +1,7 @@
 //! ILN Governance Contract
 //!
 //! Issue #59 — GovernanceProposal struct with full spec fields.
+//! Issue #60 — create_proposal() with voting window configuration.
 //! Issue #61 — cast_vote() with anti-double-vote protection and VoteCast event.
 
 #![no_std]
@@ -8,6 +9,15 @@ use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype,
     token::Client as TokenClient, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
+
+// ================================================================
+// Issue #60: Default configuration constants
+// ================================================================
+
+/// Minimum governance-token balance required to submit a proposal.
+const DEFAULT_MIN_PROPOSAL_BALANCE: i128 = 100;
+/// Default voting window in seconds (~3 days).
+const DEFAULT_VOTING_PERIOD: u64 = 259_200;
 
 // ================================================================
 // Issue #59: Governance error enum
@@ -36,6 +46,8 @@ pub enum GovernanceError {
     ProposalRejected = 9,
     /// Proposal has already been resolved (Passed/Rejected/Executed).
     AlreadyResolved = 10,
+    /// Issue #60: Proposer balance is below MIN_PROPOSAL_BALANCE.
+    InsufficientBalance = 11,
 }
 
 // ================================================================
@@ -115,6 +127,21 @@ pub struct VoteCast {
 }
 
 // ================================================================
+// Issue #60: ProposalCreated event
+// ================================================================
+
+#[contractevent(topics = ["proposal_created"])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalCreated {
+    #[topic]
+    pub proposal_id: u64,
+    #[topic]
+    pub proposer: Address,
+    pub action_type: ProposalAction,
+    pub voting_end: u64,
+}
+
+// ================================================================
 // Storage keys
 // ================================================================
 
@@ -126,6 +153,10 @@ pub enum StorageKey {
     ProposalCount,
     /// Issue #61: per-(voter, proposal_id) double-vote guard.
     HasVoted(u64, Address),
+    /// Issue #60: minimum token balance to create a proposal.
+    MinProposalBalance,
+    /// Issue #60: voting window duration in seconds.
+    VotingPeriodLedgers,
 }
 
 // ================================================================
@@ -156,10 +187,47 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &0_u64);
+        // Issue #60: initialise configurable proposal parameters with defaults.
+        env.storage()
+            .instance()
+            .set(&StorageKey::MinProposalBalance, &DEFAULT_MIN_PROPOSAL_BALANCE);
+        env.storage()
+            .instance()
+            .set(&StorageKey::VotingPeriodLedgers, &DEFAULT_VOTING_PERIOD);
         Ok(())
     }
 
-    // ── Issue #59: create_proposal ────────────────────────────────
+    // ── Issue #60: Admin config setters ──────────────────────────
+
+    /// Set the minimum proposer balance. Callable only by the ILN contract.
+    pub fn set_min_proposal_balance(env: Env, value: i128) -> Result<(), GovernanceError> {
+        let iln: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
+        iln.require_auth();
+        env.storage()
+            .instance()
+            .set(&StorageKey::MinProposalBalance, &value);
+        Ok(())
+    }
+
+    /// Set the voting period in seconds. Callable only by the ILN contract.
+    pub fn set_voting_period(env: Env, seconds: u64) -> Result<(), GovernanceError> {
+        let iln: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
+        iln.require_auth();
+        env.storage()
+            .instance()
+            .set(&StorageKey::VotingPeriodLedgers, &seconds);
+        Ok(())
+    }
+
+    // ── Issue #59 + #60: create_proposal ─────────────────────────
 
     /// Create a new governance proposal.
     ///
@@ -167,6 +235,9 @@ impl GovContract {
     /// * `action_type`      – which parameter to change
     /// * `description_hash` – SHA-256 of the off-chain description
     /// * `proposed_value`   – numeric value (0 for address-based actions)
+    ///
+    /// Fails with `InsufficientBalance` if the proposer holds fewer tokens
+    /// than `MIN_PROPOSAL_BALANCE`.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
@@ -176,6 +247,22 @@ impl GovContract {
     ) -> Result<u64, GovernanceError> {
         proposer.require_auth();
 
+        // Issue #60: enforce minimum proposer balance.
+        let min_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MinProposalBalance)
+            .unwrap_or(DEFAULT_MIN_PROPOSAL_BALANCE);
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::GovToken)
+            .unwrap();
+        let token = TokenClient::new(&env, &token_addr);
+        if token.balance(&proposer) < min_balance {
+            return Err(GovernanceError::InsufficientBalance);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
@@ -184,14 +271,19 @@ impl GovContract {
         let id = count + 1;
 
         let now = env.ledger().timestamp();
-        // 3-day voting window.
-        let voting_end = now + 259_200;
+        // Issue #60: use configurable voting period.
+        let voting_period: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::VotingPeriodLedgers)
+            .unwrap_or(DEFAULT_VOTING_PERIOD);
+        let voting_end = now + voting_period;
 
         let proposal = GovernanceProposal {
             id,
-            proposer,
+            proposer: proposer.clone(),
             description_hash,
-            action_type,
+            action_type: action_type.clone(),
             proposed_value,
             status: ProposalStatus::Active,
             votes_for: 0,
@@ -206,6 +298,14 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &id);
+
+        // Issue #60: emit ProposalCreated event.
+        env.events().publish_event(&ProposalCreated {
+            proposal_id: id,
+            proposer,
+            action_type,
+            voting_end,
+        });
 
         Ok(id)
     }
@@ -386,5 +486,21 @@ impl GovContract {
         env.storage()
             .persistent()
             .has(&StorageKey::HasVoted(proposal_id, voter))
+    }
+
+    /// Issue #60: Return the configured minimum proposal balance.
+    pub fn get_min_proposal_balance(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::MinProposalBalance)
+            .unwrap_or(DEFAULT_MIN_PROPOSAL_BALANCE)
+    }
+
+    /// Issue #60: Return the configured voting period in seconds.
+    pub fn get_voting_period(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::VotingPeriodLedgers)
+            .unwrap_or(DEFAULT_VOTING_PERIOD)
     }
 }

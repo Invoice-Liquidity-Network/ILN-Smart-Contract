@@ -1,4 +1,5 @@
-//! Tests for Issue #59 (GovernanceProposal struct) and
+//! Tests for Issue #59 (GovernanceProposal struct),
+//!           Issue #60 (create_proposal with voting window config), and
 //!           Issue #61 (cast_vote with anti-double-vote protection)
 
 #![cfg(test)]
@@ -381,4 +382,100 @@ fn test_already_resolved_proposal_cannot_be_executed_again() {
     // Second call should return AlreadyResolved.
     let result = t.contract.execute_proposal(&id, &100_000);
     assert_eq!(result, Err(Ok(GovernanceError::AlreadyResolved)));
+}
+
+// ── Issue #60: create_proposal voting window configuration ───────────────────
+
+#[test]
+fn test_create_proposal_passes_with_sufficient_balance() {
+    let t = setup();
+    // proposer holds 500 tokens; default MIN_PROPOSAL_BALANCE is 100.
+    let result = t.contract.create_proposal(
+        &t.proposer,
+        &ProposalAction::UpdateFeeRate(200),
+        &dummy_hash(&t.env),
+        &200_i128,
+    );
+    assert!(result.is_ok(), "proposer with sufficient balance should succeed");
+}
+
+#[test]
+fn test_create_proposal_fails_with_insufficient_balance() {
+    let t = setup();
+    // Generate a new address with no tokens minted.
+    let poor = Address::generate(&t.env);
+
+    let result = t.contract.create_proposal(
+        &poor,
+        &ProposalAction::UpdateFeeRate(200),
+        &dummy_hash(&t.env),
+        &200_i128,
+    );
+    assert_eq!(result, Err(Ok(GovernanceError::InsufficientBalance)));
+}
+
+#[test]
+fn test_create_proposal_fails_when_balance_below_custom_minimum() {
+    let t = setup();
+    // Raise MIN_PROPOSAL_BALANCE above proposer's 500 tokens.
+    t.contract
+        .set_min_proposal_balance(&600_i128)
+        .unwrap();
+
+    let result = t.contract.create_proposal(
+        &t.proposer,
+        &ProposalAction::UpdateFeeRate(200),
+        &dummy_hash(&t.env),
+        &200_i128,
+    );
+    assert_eq!(result, Err(Ok(GovernanceError::InsufficientBalance)));
+}
+
+#[test]
+fn test_set_voting_period_changes_window() {
+    let t = setup();
+    // Set a custom 1-day window (86_400 seconds).
+    t.contract.set_voting_period(&86_400_u64).unwrap();
+
+    let now = t.env.ledger().timestamp();
+    let id = create_fee_proposal(&t);
+
+    let p = t.contract.get_proposal(&id).unwrap();
+    assert_eq!(p.voting_end, now + 86_400, "voting_end should use the custom period");
+}
+
+#[test]
+fn test_get_min_proposal_balance_returns_default() {
+    let t = setup();
+    assert_eq!(t.contract.get_min_proposal_balance(), 100_i128);
+}
+
+#[test]
+fn test_get_voting_period_returns_default() {
+    let t = setup();
+    assert_eq!(t.contract.get_voting_period(), 259_200_u64);
+}
+
+#[test]
+fn test_create_proposal_emits_proposal_created_event() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    let events = t.env.events().all().filter_by_contract(&t.contract.address);
+    assert!(!events.events().is_empty(), "ProposalCreated event should be emitted");
+    // Verify the proposal was stored with expected id.
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn test_create_proposal_all_action_types_accepted() {
+    let t = setup();
+    let token_addr = Address::generate(&t.env);
+
+    let id1 = t.contract.create_proposal(&t.proposer, &ProposalAction::UpdateFeeRate(100), &dummy_hash(&t.env), &100_i128).unwrap();
+    let id2 = t.contract.create_proposal(&t.proposer, &ProposalAction::AddToken(token_addr.clone()), &dummy_hash(&t.env), &0_i128).unwrap();
+    let id3 = t.contract.create_proposal(&t.proposer, &ProposalAction::RemoveToken(token_addr.clone()), &dummy_hash(&t.env), &0_i128).unwrap();
+    let id4 = t.contract.create_proposal(&t.proposer, &ProposalAction::UpdateMaxDiscountRate(500), &dummy_hash(&t.env), &500_i128).unwrap();
+
+    assert_eq!(id4, id1 + 3, "all four action types should create valid proposals");
 }
