@@ -1,0 +1,25 @@
+name: WASM Size Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  size-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32v1-none
+
+      - name: Build Optimized WASM
+        run: make soroban-optimize
+
+      - name: Check WASM Size Budget
+        run: ./scripts/check-wasm-size.sh
