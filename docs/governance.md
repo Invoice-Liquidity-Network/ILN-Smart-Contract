@@ -1,75 +1,207 @@
-# ILN Governance Guide
+# ILN Governance
 
-Governance is only valuable if token holders understand how to participate. This guide explains how ILN governance works, how to earn voting power, and how to submit and vote on proposals.
+This document reflects the governance system as actually implemented in
+`contracts/iln_governance/src/lib.rs`.  It covers proposal creation, voting
+mechanics, quorum rules, execution, and security considerations.
 
-## What is ILN governance and why it matters
+---
 
-ILN governance is the decentralized decision-making process that allows the community to shape the future of the protocol. It ensures that the network is guided by its users rather than a centralized entity.
+## Table of contents
 
-This matters because it empowers those who use and support the protocol most—freelancers, businesses, and liquidity providers—to vote on critical changes. Through governance, you can help decide fee structures, parameter updates, supported assets, and new features, keeping ILN fair and continuously evolving.
+1. [Overview](#1-overview)
+2. [Governance token and voting power](#2-governance-token-and-voting-power)
+3. [Governable parameters](#3-governable-parameters)
+4. [Proposal lifecycle](#4-proposal-lifecycle)
+5. [Worked example — end-to-end proposal](#5-worked-example--end-to-end-proposal)
+6. [Quorum and majority rules](#6-quorum-and-majority-rules)
+7. [Execution mechanics](#7-execution-mechanics)
+8. [Security considerations](#8-security-considerations)
+9. [Past governance decisions](#9-past-governance-decisions)
 
-## How to earn ILN tokens
+---
 
-ILN tokens represent your voting power in the protocol. You can earn them by actively participating in the network, such as by providing liquidity or actively submitting invoices.
+## 1. Overview
 
-For full details on token issuance and allocation, please refer to the [ILN Token Distribution Contract](../contracts/invoice_liquidity/src/distribution.rs) (or the relevant distribution documentation when deployed).
+ILN governance lets token holders propose and vote on protocol changes on-chain.
+The `GovContract` (`contracts/iln_governance`) orchestrates voting; when a
+proposal passes it cross-contract-calls the `InvoiceLiquidityContract` to apply
+the change atomically.
 
-## How to create a proposal
+There is currently **no timelock delay** between a proposal passing and its
+execution.  `execute_proposal` is callable by anyone once the voting period ends
+and quorum/majority criteria are met.
 
-Creating a governance proposal is the first step in proposing changes to the protocol.
+---
 
-**Step-by-step:**
-1. Go to the **Governance** section in the ILN web app.
-2. Click the **"Create Proposal"** button in the top right.
-3. Fill out the proposal details:
-   - **Title:** Provide a short, descriptive name for your proposal.
-   - **Description:** Explain *why* you are making this proposal and the benefits it brings.
-   - **Actions:** Define the specific technical parameters to be altered.
-4. Click **"Submit Proposal"** and confirm the transaction via your wallet.
+## 2. Governance token and voting power
 
-> ![Creating a Proposal](screenshots/create_proposal.png)
-> *(Screenshot: Creating a governance proposal in the UI)*
+Voting power equals the caller's balance of the governance token at the moment
+`vote()` is called (a snapshot is **not** taken at proposal creation time).
 
-## How to vote
+| Property | Value |
+|----------|-------|
+| Token | Address supplied to `initialize(gov_token)` |
+| Unit of power | 1 token = 1 vote (raw balance in stroops) |
+| Snapshot | None — live balance at vote time |
+| Minimum power | Must be > 0 (0-balance callers are rejected with `panic!("no voting power")`) |
 
-If you hold ILN tokens, you have a say in active proposals.
+---
 
-**Step-by-step:**
-1. Navigate to the **Governance** dashboard and click on **"Active Proposals"**.
-2. Select the proposal you want to vote on to read its details.
-3. In the voting panel on the right side, choose your stance: **"Vote For"**, **"Vote Against"**, or **"Abstain"**.
-4. Click **"Cast Vote"** and approve the required transaction in your connected wallet.
+## 3. Governable parameters
 
-> ![Voting on a Proposal](screenshots/vote_proposal.png)
-> *(Screenshot: Casting a vote in the governance UI)*
+All on-chain actions are defined by the `ProposalType` enum.
 
-## Proposal types explained
+| Variant | Target function | Description |
+|---------|----------------|-------------|
+| `UpdateFeeRate(u32)` | `update_fee_rate` | Set protocol fee in basis points (0–10 000) |
+| `UpdateMaxDiscountRate(u32)` | `update_max_discount` | Cap on invoice discount rates in basis points |
+| `AddToken(Address)` | `add_token` | Whitelist a new payment token |
+| `RemoveToken(Address)` | `remove_token` | Delist an existing payment token |
 
-Proposals mostly fall into these straightforward categories:
+Admin-only functions that are **not** yet governable (callable only by the
+`Admin` key, not via governance): `set_admin`, `set_distribution_contract`.
 
-- **Parameter Updates:** Small numeric changes to the protocol, such as adjusting the base discount rate, lowering withdrawal fees, or modifying quorum thresholds.
-- **Protocol Upgrades (or Feature Additions):** Larger changes that might involve upgrading smart contracts or launching major new platform capabilities. 
-- **Text Proposals:** Proposals used to gauge community interest or signal agreement on an issue without immediately executing any code changes.
+---
 
-## Quorum and majority rules
+## 4. Proposal lifecycle
 
-To maintain fairness and ensure high participation, voting is subject to the following rules:
+```
+                ┌─────────────┐
+                │   Created   │  create_proposal() called
+                └──────┬──────┘
+                       │  voting opens immediately
+                ┌──────▼──────┐
+                │   Active    │  voters call vote(support=true/false)
+                └──────┬──────┘
+                       │  end_time reached (3-day window)
+          ┌────────────┼────────────┐
+          │            │            │
+   ┌──────▼──────┐    │     ┌──────▼──────┐
+   │   Failed    │    │     │   Passed    │  quorum met + majority For
+   │ (no quorum) │    │     └──────┬──────┘
+   └─────────────┘    │            │  execute_proposal() called
+                      │     ┌──────▼──────┐
+                      │     │  Executed   │  ILN contract updated
+                      │     └─────────────┘
+               ┌──────▼──────┐
+               │   Failed    │  quorum met but majority Against
+               └─────────────┘
+```
 
-- **Quorum:** This is the minimum amount of total voting power that must participate in a vote for it to be legally binding. If a vote doesn't meet the quorum threshold, it fails automatically, even if most of the votes are in favor.
-- **Majority Rules:** For a proposal to pass (assuming quorum is met), more than 50% of the voting power cast must be strictly "For" the proposal.
+### Voting window
 
-## Timeline: From creation to execution
+Each proposal has a fixed **3-day (259 200 second)** voting window starting
+from the ledger timestamp at the moment `create_proposal` is invoked.
 
-Governance moves carefully to ensure everyone has a chance to participate. The life of a proposal looks like this:
+### Double-vote prevention
 
-1. **Review Period:** Once submitted, there is a short waiting period before voting starts. This gives the community time to read and discuss the proposal.
-2. **Voting Period:** The actively open window where token holders can vote. This typically lasts a few days.
-3. **Execution Delay (Timelock):** If a proposal passes, it does not happen instantly. It enters a brief "timelock" delay, giving users a heads-up before the changes take effect.
-4. **Execution:** After the delay, the proposal's code is executed on the blockchain!
+A `HasVoted(proposal_id, voter_address)` key is stored in persistent storage
+when a vote is cast.  Attempting to vote again on the same proposal panics with
+`"already voted"`.
 
-## Past governance decisions
+---
+
+## 5. Worked example — end-to-end proposal
+
+Suppose the community wants to raise the protocol fee from 0 to 50 bps (0.5%).
+
+```
+Step 1 — Create the proposal
+────────────────────────────
+Caller: any address (no minimum token balance required to propose)
+Function: GovContract::create_proposal(creator, ProposalType::UpdateFeeRate(50))
+Result: proposal_id = 1
+        end_time    = now + 259_200
+
+Step 2 — Vote
+─────────────
+During the 3-day window, token holders call:
+  GovContract::vote(voter_addr, proposal_id=1, support=true)   // For
+  GovContract::vote(voter_addr, proposal_id=1, support=false)  // Against
+
+Each call adds the voter's current token balance to votes_for or votes_against.
+
+Step 3 — Execute (after end_time)
+──────────────────────────────────
+Anyone calls: GovContract::execute_proposal(proposal_id=1, total_supply)
+
+The contract checks:
+  total_votes = votes_for + votes_against
+  quorum      = total_supply / 10          (10% of supply)
+
+  If total_votes < quorum  → status = Failed,  panic "quorum not reached"
+  If votes_for > votes_against → status = Passed, then:
+    invoke_contract(iln_contract, "update_fee_rate", [50])
+    status = Executed
+  Else → status = Failed, panic "proposal rejected"
+```
+
+---
+
+## 6. Quorum and majority rules
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Quorum threshold | 10% of `total_supply` passed to `execute_proposal` | `total_supply / 10` |
+| Majority rule | Simple majority (`votes_for > votes_against`) | Strict `>` |
+| Abstain option | Not supported; every vote is For or Against | — |
+
+> **Note:** `total_supply` is a caller-supplied argument to `execute_proposal`,
+> not read from the token contract.  An incorrect value will distort the quorum
+> check.  Future governance iterations should read supply on-chain.
+
+---
+
+## 7. Execution mechanics
+
+`execute_proposal` uses `env.invoke_contract` to call the ILN contract
+synchronously.  If the cross-contract call reverts, `execute_proposal`
+also reverts, leaving the proposal status unchanged (`Passed`).  It can be
+retried once the root cause is fixed.
+
+There is **no timelock delay** — execution happens in the same transaction as
+the `execute_proposal` call, immediately after the voting window closes.
+
+---
+
+## 8. Security considerations
+
+### Quorum attacks
+
+An attacker with > 10% of supply can reach quorum alone.  Mitigations:
+- Increase the quorum threshold (via a governance proposal on `UpdateMaxDiscountRate` or a future `UpdateQuorum` variant).
+- Introduce a minimum proposal delay so the community can react before voting starts.
+
+### Flash-loan / balance manipulation
+
+Voting power is the live balance at `vote()` call time, not a historical
+snapshot.  A flash-loan attack could inflate voting power within a single
+transaction.  Mitigation: snapshot balances at proposal creation, or require a
+lock-up period before a voter's balance counts.
+
+### Delegation
+
+Delegation is **not implemented**.  Each token holder must vote directly.
+
+### Admin key risk
+
+`set_admin` is callable by the current admin only and is outside governance
+scope.  A compromised admin key can bypass governance entirely for
+`set_admin` and `set_distribution_contract`.
+
+An `AdminChanged` event is emitted on every admin transition, providing an
+on-chain audit trail.
+
+### Double-proposal spam
+
+There is no minimum token balance or deposit required to create a proposal,
+and no cooldown period.  Anyone can flood the governance queue.  A future
+`min_proposal_deposit` guard is recommended.
+
+---
+
+## 9. Past governance decisions
 
 *This section serves as a historical record of community decisions.*
 
-- *(Currently empty — no past governance decisions have been made yet!)*
-
+- *(Currently empty — no proposals have been executed yet.)*

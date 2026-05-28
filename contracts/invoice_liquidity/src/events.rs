@@ -16,6 +16,9 @@ pub struct InvoiceSubmitted {
     pub due_date: u64,
     pub discount_rate: u32,
     pub status: InvoiceStatus,
+    /// Ledger timestamp when the invoice was submitted.  Included so indexers
+    /// can reconstruct the full invoice record from events alone.
+    pub timestamp: u64,
 }
 
 #[contractevent(topics = ["updated"])]
@@ -104,4 +107,27 @@ pub struct InvoiceCancelled {
     pub invoice_id: u64,
     pub freelancer: Address,
     pub status: InvoiceStatus,
+}
+
+/// Emitted whenever the contract admin address is updated.
+/// Provides a permanent on-chain audit trail for admin transitions.
+#[contractevent(topics = ["admin_changed"])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminChanged {
+    pub old_admin: Address,
+    pub new_admin: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
+}
+
+#[contractevent(topics = ["reputation_updated"])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReputationUpdated {
+    #[topic]
+    pub address: Address,
+    pub old_score: u32,
+    pub new_score: u32,
+    pub invoices_submitted: u64,
+    pub invoices_paid: u64,
+    pub invoices_defaulted: u64,
 }

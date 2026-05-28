@@ -13,12 +13,13 @@ use soroban_sdk::{
 };
 
 use events::{
-    InvoiceCancelled, InvoiceDefaulted, InvoiceFunded, InvoicePaid, InvoiceSubmitted,
-    InvoiceTransferred, InvoiceUpdated,
+    AdminChanged, InvoiceCancelled, InvoiceDefaulted, InvoiceFunded, InvoicePaid, InvoiceSubmitted,
+    InvoiceTransferred, InvoiceUpdated, ReputationUpdated,
 };
 use invoice::{
-    get_invoice_funders, get_payer_score, invoice_exists, load_invoice, next_invoice_id,
-    save_invoice, save_invoice_funders, set_payer_score, StorageKey,
+    get_invoice_funders, get_payer_score, get_payer_stats, invoice_exists, load_invoice,
+    next_invoice_id, save_invoice, save_invoice_funders, set_payer_score, set_payer_stats,
+    StorageKey,
 };
 
 // ----------------------------------------------------------------
@@ -72,9 +73,14 @@ impl InvoiceLiquidityContract {
 
     // ------------------------------------------------------------
     pub fn set_admin(env: Env, new_admin: Address) {
-        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
-        admin.require_auth();
+        let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        old_admin.require_auth();
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
+        env.events().publish_event(&AdminChanged {
+            old_admin,
+            new_admin,
+            timestamp: env.ledger().timestamp(),
+        });
     }
 
     pub fn update_fee_rate(env: Env, rate: u32) {
@@ -165,6 +171,7 @@ impl InvoiceLiquidityContract {
         };
 
         save_invoice(&env, &invoice);
+        record_invoice_submission(&env, &invoice.payer);
 
         env.events().publish_event(&InvoiceSubmitted {
             invoice_id: invoice.id,
@@ -175,6 +182,7 @@ impl InvoiceLiquidityContract {
             due_date: invoice.due_date,
             discount_rate: invoice.discount_rate,
             status: invoice.status.clone(),
+            timestamp: env.ledger().timestamp(),
         });
 
         Ok(id)
@@ -284,6 +292,7 @@ impl InvoiceLiquidityContract {
             };
 
             save_invoice(&env, &invoice);
+            record_invoice_submission(&env, &invoice.payer);
 
             env.events().publish_event(&InvoiceSubmitted {
                 invoice_id: invoice.id,
@@ -294,6 +303,7 @@ impl InvoiceLiquidityContract {
                 due_date: invoice.due_date,
                 discount_rate: invoice.discount_rate,
                 status: invoice.status.clone(),
+                timestamp: env.ledger().timestamp(),
             });
 
             ids.push_back(id);
@@ -593,7 +603,12 @@ impl InvoiceLiquidityContract {
 
         // --- Update payer reputation ---
         let current_score = get_payer_score(&env, &invoice.payer);
-        set_payer_score(&env, &invoice.payer, current_score + 1);
+        apply_reputation_update(
+            &env,
+            &invoice.payer,
+            current_score.saturating_add(1),
+            ReputationStatUpdate::Paid,
+        );
 
         env.events().publish_event(&InvoicePaid {
             invoice_id: invoice.id,
@@ -729,11 +744,12 @@ impl InvoiceLiquidityContract {
         // Emit defaulted event
         // --- Update payer reputation ---
         let current_score = get_payer_score(&env, &invoice.payer);
-        if current_score > 5 {
-            set_payer_score(&env, &invoice.payer, current_score - 5);
-        } else {
-            set_payer_score(&env, &invoice.payer, 0);
-        }
+        apply_reputation_update(
+            &env,
+            &invoice.payer,
+            current_score.saturating_sub(5),
+            ReputationStatUpdate::Defaulted,
+        );
 
         env.events().publish_event(&InvoiceDefaulted {
             invoice_id: invoice.id,
@@ -800,6 +816,49 @@ fn token_client<'a>(env: &'a Env, token: &Address) -> TokenClient<'a> {
 
 fn discount_rate_as_i128(rate: u32) -> i128 {
     rate as i128
+}
+
+enum ReputationStatUpdate {
+    Paid,
+    Defaulted,
+}
+
+fn record_invoice_submission(env: &Env, payer: &Address) {
+    let mut stats = get_payer_stats(env, payer);
+    stats.invoices_submitted = stats.invoices_submitted.saturating_add(1);
+    set_payer_stats(env, payer, &stats);
+}
+
+fn apply_reputation_update(
+    env: &Env,
+    payer: &Address,
+    next_score: u32,
+    stat_update: ReputationStatUpdate,
+) {
+    let old_score = get_payer_score(env, payer);
+    let new_score = next_score.min(100);
+
+    let mut stats = get_payer_stats(env, payer);
+    match stat_update {
+        ReputationStatUpdate::Paid => {
+            stats.invoices_paid = stats.invoices_paid.saturating_add(1);
+        }
+        ReputationStatUpdate::Defaulted => {
+            stats.invoices_defaulted = stats.invoices_defaulted.saturating_add(1);
+        }
+    }
+
+    set_payer_score(env, payer, new_score);
+    set_payer_stats(env, payer, &stats);
+
+    env.events().publish_event(&ReputationUpdated {
+        address: payer.clone(),
+        old_score,
+        new_score,
+        invoices_submitted: stats.invoices_submitted,
+        invoices_paid: stats.invoices_paid,
+        invoices_defaulted: stats.invoices_defaulted,
+    });
 }
 
 fn validate_invoice_terms(
@@ -889,6 +948,7 @@ mod test;
 mod tests_arithmetic;
 mod tests_auth;
 mod tests_distribution;
+mod tests_invariants;
 mod tests_mutation;
 mod tests_protocol_fee;
 mod tests_security;
