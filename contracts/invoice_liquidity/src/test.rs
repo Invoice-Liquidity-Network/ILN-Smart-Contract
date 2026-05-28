@@ -7,6 +7,8 @@ use soroban_sdk::{
     Address, Env, Event,
 };
 
+use crate::events::ReputationUpdated;
+
 // ----------------------------------------------------------------
 // Test helpers — shared setup used across all tests
 // ----------------------------------------------------------------
@@ -876,6 +878,33 @@ fn test_perfect_payer_score() {
 }
 
 #[test]
+fn test_mark_paid_emits_reputation_updated_event() {
+    let t = setup();
+    let id = submit_standard_invoice(&t);
+
+    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT);
+    t.contract.mark_paid(&id);
+
+    let expected = ReputationUpdated {
+        address: t.payer.clone(),
+        old_score: 50,
+        new_score: 51,
+        invoices_submitted: 1,
+        invoices_paid: 1,
+        invoices_defaulted: 0,
+    }
+    .to_xdr(&t.env, &t.contract.address);
+
+    let contract_events = t.env.events().all().filter_by_contract(&t.contract.address);
+    let emitted_events = contract_events.events();
+    assert_eq!(
+        emitted_events.get(emitted_events.len() - 2),
+        Some(&expected),
+        "mark_paid must emit ReputationUpdated with the incremented score snapshot"
+    );
+}
+
+#[test]
 fn test_payer_with_default() {
     let t = setup();
     let id = submit_standard_invoice(&t);
@@ -891,4 +920,41 @@ fn test_payer_with_default() {
     let score = t.contract.payer_score(&t.payer);
 
     assert!(score < 50);
+}
+
+#[test]
+fn test_claim_default_emits_reputation_updated_event_with_accumulated_counts() {
+    let t = setup();
+    let paid_id = submit_standard_invoice(&t);
+
+    t.contract.fund_invoice(&t.funder, &paid_id, &INVOICE_AMOUNT);
+    t.contract.mark_paid(&paid_id);
+
+    let defaulted_id = submit_standard_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &defaulted_id, &INVOICE_AMOUNT);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += DUE_DATE_OFFSET + 1;
+    t.env.ledger().set(ledger);
+
+    t.contract.claim_default(&t.funder, &defaulted_id);
+
+    let expected = ReputationUpdated {
+        address: t.payer.clone(),
+        old_score: 51,
+        new_score: 46,
+        invoices_submitted: 2,
+        invoices_paid: 1,
+        invoices_defaulted: 1,
+    }
+    .to_xdr(&t.env, &t.contract.address);
+
+    let contract_events = t.env.events().all().filter_by_contract(&t.contract.address);
+    let emitted_events = contract_events.events();
+    assert_eq!(
+        emitted_events.get(emitted_events.len() - 2),
+        Some(&expected),
+        "claim_default must emit ReputationUpdated with the decremented score snapshot"
+    );
 }

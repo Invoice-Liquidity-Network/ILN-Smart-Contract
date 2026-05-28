@@ -50,9 +50,9 @@ pub struct InvoiceParams {
 #[contracttype]
 #[derive(Clone, Debug, Default)]
 pub struct PayerStats {
-    pub total_invoices: u64,
-    pub paid_on_time: u64,
-    pub defaults: u64,
+    pub invoices_submitted: u64,
+    pub invoices_paid: u64,
+    pub invoices_defaulted: u64,
     pub total_volume: i128,
 }
 
@@ -66,6 +66,7 @@ pub enum StorageKey {
     InvoiceCount,        // auto-increment counter for IDs
     Token,               // USDC token address
     PayerScore(Address), // Reputation score for a payer
+    PayerStats(Address), // Reputation counters for a payer
     InvoiceFunders(u64), // List of funders for a partially funded invoice
     ApprovedToken(Address),
     TokenList,
@@ -131,6 +132,19 @@ pub fn set_payer_score(env: &Env, payer: &Address, score: u32) {
     env.storage()
         .persistent()
         .set(&StorageKey::PayerScore(payer.clone()), &score);
+}
+
+pub fn get_payer_stats(env: &Env, payer: &Address) -> PayerStats {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PayerStats(payer.clone()))
+        .unwrap_or_default()
+}
+
+pub fn set_payer_stats(env: &Env, payer: &Address, stats: &PayerStats) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PayerStats(payer.clone()), stats);
 }
 
 /// Get the list of funders and their contributions for an invoice

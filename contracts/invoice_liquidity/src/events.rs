@@ -105,3 +105,16 @@ pub struct InvoiceCancelled {
     pub freelancer: Address,
     pub status: InvoiceStatus,
 }
+
+#[contractevent(topics = ["reputation_updated"])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReputationUpdated {
+    #[topic]
+    pub address: Address,
+    pub old_score: u32,
+    pub new_score: u32,
+    pub invoices_submitted: u64,
+    pub invoices_paid: u64,
+    pub invoices_defaulted: u64,
+}
+
