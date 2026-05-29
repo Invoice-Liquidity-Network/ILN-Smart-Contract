@@ -116,7 +116,7 @@ fn assert_full_lifecycle_for_token(
     let lp_before = token.client.balance(&env.lp);
     let payer_before = token.client.balance(&env.payer);
 
-    env.contract.fund_invoice(&env.lp, &invoice_id, &amount);
+    env.contract.fund_invoice(&env.lp, &invoice_id, &token.address, &amount);
 
     let discount = expected_discount(amount);
     assert_eq!(
@@ -187,7 +187,7 @@ fn test_admin_removing_token_mid_flight_does_not_break_existing_invoice_settleme
 
     env.contract.remove_token(&env.eurc.address);
 
-    env.contract.fund_invoice(&env.lp, &invoice_id, &amount);
+    env.contract.fund_invoice(&env.lp, &invoice_id, &env.eurc.address, &amount);
     env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
 
     let invoice = env.contract.get_invoice(&invoice_id);
@@ -208,9 +208,9 @@ fn test_same_lp_can_settle_invoices_independently_across_different_tokens() {
     let eurc_lp_before = env.eurc.client.balance(&env.lp);
 
     env.contract
-        .fund_invoice(&env.lp, &usdc_invoice, &usdc_amount);
+        .fund_invoice(&env.lp, &usdc_invoice, &env.usdc.address, &usdc_amount);
     env.contract
-        .fund_invoice(&env.lp, &eurc_invoice, &eurc_amount);
+        .fund_invoice(&env.lp, &eurc_invoice, &env.eurc.address, &eurc_amount);
 
     env.contract.mark_paid(&usdc_invoice, &INVOICE_AMOUNT);
 
@@ -258,9 +258,9 @@ fn test_amounts_preserve_precision_for_6_and_7_decimal_token_paths() {
     let xlm_lp_before = env.xlm.client.balance(&env.lp);
 
     env.contract
-        .fund_invoice(&env.lp, &eurc_invoice, &eurc_amount);
+        .fund_invoice(&env.lp, &eurc_invoice, &env.eurc.address, &eurc_amount);
     env.contract
-        .fund_invoice(&env.lp, &xlm_invoice, &xlm_amount);
+        .fund_invoice(&env.lp, &xlm_invoice, &env.xlm.address, &xlm_amount);
 
     assert_eq!(
         env.eurc.client.balance(&env.freelancer) - eurc_freelancer_before,
@@ -282,4 +282,55 @@ fn test_amounts_preserve_precision_for_6_and_7_decimal_token_paths() {
         env.xlm.client.balance(&env.lp) - xlm_lp_before,
         expected_discount(xlm_amount),
     );
+}
+
+// ----------------------------------------------------------------
+// Issue #17: Token mismatch guard
+// ----------------------------------------------------------------
+
+#[test]
+fn test_fund_invoice_with_wrong_token_is_rejected() {
+    let env = setup();
+    let amount = 1_000_000_000;
+
+    // Submit a USDC invoice
+    let invoice_id = submit_invoice(&env, &env.usdc, amount);
+
+    // Attempt to fund with EURC — must be rejected
+    let result = env
+        .contract
+        .try_fund_invoice(&env.lp, &invoice_id, &env.eurc.address, &amount);
+
+    assert_eq!(result, Err(Ok(ContractError::TokenMismatch)));
+}
+
+#[test]
+fn test_fund_invoice_with_correct_token_succeeds() {
+    let env = setup();
+    let amount = 1_000_000_000;
+
+    let invoice_id = submit_invoice(&env, &env.usdc, amount);
+
+    // Fund with the correct token — must succeed
+    env.contract
+        .fund_invoice(&env.lp, &invoice_id, &env.usdc.address, &amount);
+
+    assert_eq!(
+        env.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded
+    );
+}
+
+#[test]
+fn test_fund_eurc_invoice_with_usdc_is_rejected() {
+    let env = setup();
+    let amount = 25_000_000;
+
+    let invoice_id = submit_invoice(&env, &env.eurc, amount);
+
+    let result = env
+        .contract
+        .try_fund_invoice(&env.lp, &invoice_id, &env.usdc.address, &amount);
+
+    assert_eq!(result, Err(Ok(ContractError::TokenMismatch)));
 }

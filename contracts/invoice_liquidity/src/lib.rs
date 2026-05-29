@@ -652,6 +652,7 @@ impl InvoiceLiquidityContract {
         env: Env,
         funder: Address,
         invoice_id: u64,
+        token: Address,
         fund_amount: i128,
     ) -> Result<(), ContractError> {
         if is_paused(&env) {
@@ -673,6 +674,10 @@ impl InvoiceLiquidityContract {
         }
 
         let mut invoice = load_invoice(&env, invoice_id);
+
+        if invoice.token != token {
+            return Err(ContractError::TokenMismatch);
+        }
 
         if invoice.status == InvoiceStatus::Pending && env.ledger().timestamp() >= invoice.due_date
         {
@@ -697,7 +702,7 @@ impl InvoiceLiquidityContract {
         }
 
         // --- Execute transfer ---
-        let token = token_client(&env, &invoice.token);
+        let token_client_ref = token_client(&env, &invoice.token);
         let contract_address = env.current_contract_address();
 
         // Handle XLM precision if needed (SAC wrapper handles conversion internally)
@@ -713,7 +718,7 @@ impl InvoiceLiquidityContract {
             / 10_000;
         let cost = normalized_fund_amount - fund_discount;
 
-        token.transfer(&funder, &contract_address, &cost);
+        token_client_ref.transfer(&funder, &contract_address, &cost);
 
         // --- Update contributor list ---
         let mut funders = get_invoice_funders(&env, invoice_id);
@@ -743,7 +748,7 @@ impl InvoiceLiquidityContract {
                 / 10_000;
             let freelancer_payout = invoice.amount - discount_amount;
 
-            token.transfer(&contract_address, &invoice.freelancer, &freelancer_payout);
+            token_client_ref.transfer(&contract_address, &invoice.freelancer, &freelancer_payout);
 
             invoice.status = InvoiceStatus::Funded;
             invoice.funded_at = Some(env.ledger().timestamp());

@@ -41,4 +41,6 @@ pub enum ContractError {
     DueDateTooFar = 28,
     SelfInvoice = 29,
     OverpaymentRejected = 30,
+    /// Provided token does not match the invoice's denomination token.
+    TokenMismatch = 31,
 }

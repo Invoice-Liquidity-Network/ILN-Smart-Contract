@@ -113,7 +113,7 @@ fn test_fund_invoice_with_xlm() {
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Fund invoice with XLM
-    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &invoice_id, &xlm_address, &XLM_INVOICE_AMOUNT).unwrap();
 
     let invoice = client.get_invoice(&invoice_id).unwrap();
     assert_eq!(invoice.status, InvoiceStatus::Funded);
@@ -150,7 +150,7 @@ fn test_mark_paid_with_xlm() {
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
-    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &invoice_id, &xlm_address, &XLM_INVOICE_AMOUNT).unwrap();
 
     // Mint XLM to payer for payment
     xlm_admin.mint(&payer, &XLM_INVOICE_AMOUNT);
@@ -192,7 +192,7 @@ fn test_partial_funding_with_xlm() {
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Partially fund with XLM
-    client.fund_invoice(&funder, &invoice_id, &XLM_FUND_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &invoice_id, &xlm_address, &XLM_FUND_AMOUNT).unwrap();
 
     let invoice = client.get_invoice(&invoice_id).unwrap();
     assert_eq!(invoice.status, InvoiceStatus::PartiallyFunded);
@@ -223,7 +223,7 @@ fn test_xlm_volume_tracking() {
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
-    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &invoice_id, &xlm_address, &XLM_INVOICE_AMOUNT).unwrap();
 
     // Check that XLM volume is tracked
     let stats = client.get_contract_stats();
@@ -257,7 +257,7 @@ fn test_mixed_token_operations() {
     ).unwrap();
 
     usdc_admin.mint(&funder, &USDC_INVOICE_AMOUNT);
-    client.fund_invoice(&funder, &usdc_invoice_id, &USDC_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &usdc_invoice_id, &usdc_address, &USDC_INVOICE_AMOUNT).unwrap();
 
     // Submit XLM invoice
     let xlm_invoice_id = client.submit_invoice(
@@ -270,7 +270,7 @@ fn test_mixed_token_operations() {
     ).unwrap();
 
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
-    client.fund_invoice(&funder, &xlm_invoice_id, &XLM_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &xlm_invoice_id, &xlm_address, &XLM_INVOICE_AMOUNT).unwrap();
 
     // Verify both volumes are tracked correctly
     let stats = client.get_contract_stats();
@@ -303,7 +303,7 @@ fn test_xlm_precision_in_calculations() {
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Fund and verify discount calculation is correct with 7 decimal precision
-    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT).unwrap();
+    client.fund_invoice(&funder, &invoice_id, &xlm_address, &XLM_INVOICE_AMOUNT).unwrap();
 
     let invoice = client.get_invoice(&invoice_id).unwrap();
     

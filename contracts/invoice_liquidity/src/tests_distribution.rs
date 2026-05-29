@@ -110,7 +110,7 @@ fn distribution_hooks_track_lp_freelancer_and_payer() {
         &usdc.address,
     );
 
-    invoice.fund_invoice(&funder, &submitted, &invoice_amount);
+    invoice.fund_invoice(&funder, &submitted, &usdc_id.address(), &invoice_amount);
     assert_eq!(dist.lp_volume(&funder), invoice_amount);
 
     invoice.mark_paid(&submitted, &invoice_amount);

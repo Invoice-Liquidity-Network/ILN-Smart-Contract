@@ -100,10 +100,10 @@ fn test_scenario_1_double_funding_attempt() {
     );
 
     // LP 1 funds => success
-    t.contract.fund_invoice(&t.lp1, &id, &amount);
+    t.contract.fund_invoice(&t.lp1, &id, &t.token.address, &amount);
 
     // LP 2 attempts to fund => AlreadyFunded
-    let result = t.contract.try_fund_invoice(&t.lp2, &id, &amount);
+    let result = t.contract.try_fund_invoice(&t.lp2, &id, &t.token.address, &amount);
     assert_eq!(
         result,
         Err(Ok(ContractError::AlreadyFunded)),
@@ -137,7 +137,7 @@ fn test_scenario_2_fund_after_cancel() {
     mock_cancel_invoice(&t.env, &t.contract.address, id);
 
     // Assert: Attempting to fund the cancelled invoice must fail
-    let result = t.contract.try_fund_invoice(&t.lp1, &id, &amount);
+    let result = t.contract.try_fund_invoice(&t.lp1, &id, &t.token.address, &amount);
     
     assert!(
         result.is_err(),
@@ -179,7 +179,7 @@ fn test_scenario_3_fund_after_expiry() {
     t.env.ledger().set(ledger);
 
     // Attempt to fund => must return an error
-    let result = t.contract.try_fund_invoice(&t.lp1, &id, &amount);
+    let result = t.contract.try_fund_invoice(&t.lp1, &id, &t.token.address, &amount);
     
     assert!(
         result.is_err(),
@@ -215,7 +215,7 @@ fn test_scenario_4_rapid_state_reads() {
     assert_eq!(inv_1a.status, inv_1b.status);
 
     // Execute Funding
-    t.contract.fund_invoice(&t.lp1, &id, &amount);
+    t.contract.fund_invoice(&t.lp1, &id, &t.token.address, &amount);
 
     // State 2 Reads (Simulating rapid polls immediately post-execution)
     let inv_2a = t.contract.get_invoice(&id);
@@ -251,13 +251,13 @@ fn test_scenario_5_fund_mark_paid_fund_again() {
     );
 
     // First funding succeeds
-    t.contract.fund_invoice(&t.lp1, &id, &amount);
+    t.contract.fund_invoice(&t.lp1, &id, &t.token.address, &amount);
 
     // Invoice is settled by payer
     t.contract.mark_paid(&id, &INVOICE_AMOUNT);
 
     // Second LP (or same) attempts to fund the settled invoice => AlreadyPaid
-    let result = t.contract.try_fund_invoice(&t.lp2, &id, &amount);
+    let result = t.contract.try_fund_invoice(&t.lp2, &id, &t.token.address, &amount);
     
     assert_eq!(
         result,

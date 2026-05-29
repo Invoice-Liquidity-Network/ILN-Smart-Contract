@@ -95,7 +95,7 @@ fn regression_wasm32_target_independence() {
     assert_eq!(id, 1);
 
     // Fund the invoice
-    t.contract.fund_invoice(&t.funder, &id, &ONE_USDC);
+    t.contract.fund_invoice(&t.funder, &id, &t.token.address, &ONE_USDC);
 
     // Verify funding worked
     let invoice = t.contract.get_invoice(&id);
@@ -131,7 +131,7 @@ fn regression_discount_rounding_minimum_amount() {
     assert_eq!(invoice.discount_rate, ONE_BPS);
 
     // Fund the invoice and verify the discount calculation doesn't underflow
-    t.contract.fund_invoice(&t.funder, &id, &ONE_USDC);
+    t.contract.fund_invoice(&t.funder, &id, &t.token.address, &ONE_USDC);
 
     // Verify final state - should have funded amount, not negative
     let funded_invoice = t.contract.get_invoice(&id);
@@ -292,7 +292,7 @@ fn regression_fund_exact_amount_no_dust() {
     let funder_balance_before = t.token.balance(&t.funder);
 
     // Fund exactly the invoice amount
-    t.contract.fund_invoice(&t.funder, &id, &ONE_USDC);
+    t.contract.fund_invoice(&t.funder, &id, &t.token.address, &ONE_USDC);
 
     // Verify invoice is fully funded
     let invoice = t.contract.get_invoice(&id);

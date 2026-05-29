@@ -68,6 +68,7 @@ fn emits_invoice_paid_event_with_full_settlement_details() {
     client.fund_invoice(
         &lp,
         &invoice_id,
+        &token,
         &1_000_000_i128,
     );
 

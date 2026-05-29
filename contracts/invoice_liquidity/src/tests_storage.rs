@@ -111,7 +111,7 @@ fn test_fund_invoice_extends_ttl() {
     t.env.ledger().set(ledger);
 
     // Call fund_invoice which should refresh the TTL on the entry
-    t.contract.fund_invoice(&t.funder, &id, &amount);
+    t.contract.fund_invoice(&t.funder, &id, &t.token.address, &amount);
 
     let updated_ttl = t.env.as_contract(&t.contract.address, || {
         t.env.storage().persistent().get_ttl(&key)

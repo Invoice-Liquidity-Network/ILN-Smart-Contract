@@ -122,7 +122,7 @@ fn test_contract_stats_increments_on_fund() {
         &t.token.address,
     );
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT);
+    t.contract.fund_invoice(&t.funder, &invoice_id, &t.token.address, &INVOICE_AMOUNT);
 
     let stats = t.contract.get_contract_stats();
     assert_eq!(stats.total_invoices, 1);
@@ -145,7 +145,7 @@ fn test_contract_stats_increments_on_mark_paid() {
         &t.token.address,
     );
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT);
+    t.contract.fund_invoice(&t.funder, &invoice_id, &t.token.address, &INVOICE_AMOUNT);
     t.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
 
     let stats = t.contract.get_contract_stats();
@@ -219,7 +219,7 @@ fn test_pause_blocks_fund_invoice() {
 
     t.contract.pause();
 
-    let result = t.contract.try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT);
+    let result = t.contract.try_fund_invoice(&t.funder, &invoice_id, &t.token.address, &INVOICE_AMOUNT);
 
     assert!(result.is_err());
     assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
@@ -239,7 +239,7 @@ fn test_pause_blocks_mark_paid() {
         &t.token.address,
     );
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT);
+    t.contract.fund_invoice(&t.funder, &invoice_id, &t.token.address, &INVOICE_AMOUNT);
     t.contract.pause();
 
     let result = t.contract.try_mark_paid(&invoice_id, &INVOICE_AMOUNT);
@@ -284,7 +284,7 @@ fn test_pause_blocks_claim_default() {
         &t.token.address,
     );
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT);
+    t.contract.fund_invoice(&t.funder, &invoice_id, &t.token.address, &INVOICE_AMOUNT);
 
     // Advance time past due date
     let mut ledger = t.env.ledger().get();

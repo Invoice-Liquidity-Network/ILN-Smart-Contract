@@ -113,7 +113,7 @@ fn test_benchmark_all_functions() {
     // 2. Benchmark: fund_invoice
     // ----------------------------------------------------------------
     b1.env.cost_estimate().budget().reset_unlimited();
-    b1.contract.fund_invoice(&b1.lp, &id, &amount);
+    b1.contract.fund_invoice(&b1.lp, &id, &t.token.address, &amount);
     
     let cpu_fund = b1.env.cost_estimate().budget().cpu_instruction_cost();
     let mem_fund = b1.env.cost_estimate().budget().memory_bytes_cost();
@@ -150,7 +150,7 @@ fn test_benchmark_all_functions() {
         &300,
         &b2.token,
     );
-    b2.contract.fund_invoice(&b2.lp, &id2, &amount);
+    b2.contract.fund_invoice(&b2.lp, &id2, &t.token.address, &amount);
     
     // Simulate past due date
     let mut ledger = b2.env.ledger().get();

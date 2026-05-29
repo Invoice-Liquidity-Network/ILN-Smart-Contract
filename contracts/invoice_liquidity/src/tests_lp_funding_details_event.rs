@@ -82,6 +82,7 @@ fn tests_lp_funding_details_event() {
     client.fund_invoice(
         &lp,
         &invoice_id,
+        &token_address,
         &5_000_000i128,
     );
 

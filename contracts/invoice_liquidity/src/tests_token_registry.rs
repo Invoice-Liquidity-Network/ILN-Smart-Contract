@@ -147,7 +147,7 @@ fn test_fund_and_mark_paid_flow() {
     ).unwrap();
 
     // fund invoice
-    client.fund_invoice(&funder, &id, &1000).unwrap();
+    client.fund_invoice(&funder, &id, &token, &1000).unwrap();
 
     // mark as paid
     client.mark_paid(&id, &INVOICE_AMOUNT).unwrap();

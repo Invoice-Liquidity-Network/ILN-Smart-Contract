@@ -31,7 +31,7 @@ fn test_list_invoices_by_lp_pagination() {
             &300,
             &t.token.address,
         );
-        t.contract.fund_invoice(&lp, &id, &(1_000_000_000 + i as i128));
+        t.contract.fund_invoice(&lp, &id, &t.token.address, &(1_000_000_000 + i as i128));
     }
 
     // Page 0, size 2
@@ -79,8 +79,8 @@ fn test_list_invoices_by_lp_no_duplicates_on_partial_funding() {
     );
 
     // Fund partially twice
-    t.contract.fund_invoice(&lp, &id, &500_000_000);
-    t.contract.fund_invoice(&lp, &id, &500_000_000);
+    t.contract.fund_invoice(&lp, &id, &t.token.address, &500_000_000);
+    t.contract.fund_invoice(&lp, &id, &t.token.address, &500_000_000);
 
     // Should only appear once in LP index
     let result = t.contract.list_invoices_by_lp(&lp, &0, &10);
@@ -113,8 +113,8 @@ fn test_list_invoices_by_lp_multiple_lps() {
     );
 
     // lp1 funds half, lp2 funds half
-    t.contract.fund_invoice(&lp1, &id, &500_000_000);
-    t.contract.fund_invoice(&lp2, &id, &500_000_000);
+    t.contract.fund_invoice(&lp1, &id, &t.token.address, &500_000_000);
+    t.contract.fund_invoice(&lp2, &id, &t.token.address, &500_000_000);
 
     // Both should see the invoice
     assert_eq!(t.contract.list_invoices_by_lp(&lp1, &0, &10).len(), 1);

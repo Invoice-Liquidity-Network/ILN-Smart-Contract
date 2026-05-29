@@ -95,7 +95,7 @@ fn make_defaulted_invoice(t: &AppealTestEnv) -> u64 {
         &t.token.address,
     );
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT);
+    t.contract.fund_invoice(&t.funder, &id, &t.token.address, &INVOICE_AMOUNT);
 
     // Advance time past due_date.
     let mut ledger = t.env.ledger().get();
@@ -261,7 +261,7 @@ fn test_fund_appealed_invoice_fails() {
     t.contract.appeal_default(&id, &evidence_hash(&t.env));
 
     // Invoice is Appealed — no new funding allowed.
-    let result = t.contract.try_fund_invoice(&t.funder, &id, &INVOICE_AMOUNT);
+    let result = t.contract.try_fund_invoice(&t.funder, &id, &t.token.address, &INVOICE_AMOUNT);
     assert_eq!(result, Err(Ok(ContractError::InvoiceAppealed)));
 }
 

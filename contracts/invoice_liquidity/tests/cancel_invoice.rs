@@ -83,7 +83,7 @@ fn cannot_cancel_funded_invoice() {
     let usdc_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
     usdc_client.mint(&funder, &1_000_000);
 
-    client.fund_invoice(&funder, &id, &1_000_000);
+    client.fund_invoice(&funder, &id, &token, &1_000_000);
 
     let result = client.try_cancel_invoice(&id);
     assert_eq!(result, Err(Ok(ContractError::AlreadyFunded)));

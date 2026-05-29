@@ -132,6 +132,7 @@ fn fund_invoice_args(t: &AuthTestEnv, invoice_id: u64) -> soroban_sdk::Vec<Val> 
         &t.env,
         t.funder.clone().into_val(&t.env),
         invoice_id.into_val(&t.env),
+        t.token_address.clone().into_val(&t.env),
         INVOICE_AMOUNT.into_val(&t.env),
     ]
 }
