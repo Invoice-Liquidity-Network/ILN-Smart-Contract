@@ -44,7 +44,7 @@ jobs:
         run: pnpm --filter @iln/sdk run build
 
       - name: Generate Changelog
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --verbose
