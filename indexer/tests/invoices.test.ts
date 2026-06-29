@@ -169,3 +169,53 @@ describe('GET /invoices/:id', () => {
     expect(res.body.createdAt).toBe(1700000000);
   });
 });
+
+describe('GET /invoices', () => {
+  let db: ReturnType<typeof createTestDb>;
+  let app: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createTestDb();
+    app = createTestApp(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('should return all invoices when no query parameters are provided', async () => {
+    seedInvoice(db, { id: 1, token: 'USDC', status: 'Pending', freelancer: 'G1' });
+    seedInvoice(db, { id: 2, token: 'USDC', status: 'Funded', freelancer: 'G2' });
+
+    const res = await request(app).get('/invoices');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('max-age=10');
+    expect(res.body.invoices).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+  });
+
+  it('should filter by state, token, and submitter', async () => {
+    seedInvoice(db, { id: 1, token: 'USDC', status: 'Pending', freelancer: 'G1' });
+    seedInvoice(db, { id: 2, token: 'XLM', status: 'Funded', freelancer: 'G1' });
+    seedInvoice(db, { id: 3, token: 'USDC', status: 'Pending', freelancer: 'G2' });
+
+    const res = await request(app).get('/invoices?state=Pending&token=USDC&submitter=G1');
+    expect(res.status).toBe(200);
+    expect(res.body.invoices).toHaveLength(1);
+    expect(res.body.invoices[0].id).toBe(1);
+    expect(res.body.total).toBe(1);
+  });
+
+  it('should support pagination', async () => {
+    seedInvoice(db, { id: 1 });
+    seedInvoice(db, { id: 2 });
+    seedInvoice(db, { id: 3 });
+
+    const res = await request(app).get('/invoices?page=2&pageSize=2&sortBy=createdAt&sortOrder=asc');
+    expect(res.status).toBe(200);
+    expect(res.body.invoices).toHaveLength(1);
+    expect(res.body.total).toBe(3);
+    expect(res.body.page).toBe(2);
+    expect(res.body.pageSize).toBe(2);
+  });
+});
