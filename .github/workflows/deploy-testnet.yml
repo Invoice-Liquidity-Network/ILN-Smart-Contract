@@ -14,7 +14,7 @@ jobs:
     outputs:
       deployment_summary: ${{ steps.summary.outputs.deployment_summary }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
