@@ -308,10 +308,11 @@ cargo test -p invoice_liquidity
 cargo test -p iln_governance
 cargo test -p iln_distribution
 cargo test -p reputation_bonus
+cargo test -p insurance_pool
 
 # Useful flags
 cargo test -p invoice_liquidity -- --nocapture   # show stdout
-cargo test -p invoice_liquidity test_name        # filter by name
+cargo test -p insurance_pool test_name             # filter by name
 ```
 
 Tests run on your native architecture via `soroban-sdk` test utilities — no WASM build needed.
@@ -416,6 +417,7 @@ Closes #101
 - [ ] `cargo clippy --all-targets -- -D warnings` — zero warnings
 - [ ] `cargo test` — all tests pass
 - [ ] `cargo test -p iln_fuzz` — fuzz suite passes
+- [ ] `cargo test -p insurance_pool` — insurance pool tests pass
 - [ ] Coverage ≥ 95 % if `invoice_liquidity` was modified
 - [ ] New behaviour is covered by tests
 - [ ] `cargo build-wasm` succeeds (required for any contract change)
