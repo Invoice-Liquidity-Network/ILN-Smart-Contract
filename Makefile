@@ -165,6 +165,9 @@ test: test-rust ## Run the Rust unit/integration test suite
 test-rust: ## Run cargo test for the whole workspace
 	cargo test
 
+test-insurance: ## Run tests for the insurance pool contract
+	cargo test -p insurance_pool
+
 test-e2e: ## Run the end-to-end test suite (tests/e2e)
 	cd tests/e2e && $(PKG) run test:e2e
 

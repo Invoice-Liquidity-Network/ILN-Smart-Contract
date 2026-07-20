@@ -46,6 +46,7 @@ falls back to `npm`:
 make install      # install dependencies across all TS packages
 make build        # build the contracts (cargo) + the @iln/sdk package
 make test         # cargo test (Rust workspace)
+make test-insurance  # cargo test -p insurance_pool (insurance pool contract)
 make test-e2e     # end-to-end suite in tests/e2e
 make lint         # cargo fmt --check + clippy
 make docs         # regenerate the SDK API docs
@@ -417,7 +418,7 @@ Closes #101
 - [ ] `cargo clippy --all-targets -- -D warnings` — zero warnings
 - [ ] `cargo test` — all tests pass
 - [ ] `cargo test -p iln_fuzz` — fuzz suite passes
-- [ ] `cargo test -p insurance_pool` — insurance pool tests pass
+- [ ] `cargo test -p insurance_pool` — insurance pool tests pass (if `insurance_pool` was modified)
 - [ ] Coverage ≥ 95 % if `invoice_liquidity` was modified
 - [ ] New behaviour is covered by tests
 - [ ] `cargo build-wasm` succeeds (required for any contract change)
