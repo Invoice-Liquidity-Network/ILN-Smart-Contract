@@ -7,6 +7,15 @@ declare module "@iln/sdk" {
     invoicesDefaulted: number;
   }
 
+  export interface InvoiceNftMetadata {
+    amount: bigint;
+    dueDate: bigint;
+    discountRate: number;
+    token: string;
+    owner: string;
+    mintedAt: bigint;
+  }
+
   export class ILNClient {
     static testnet(
       signer?: unknown,
@@ -23,5 +32,7 @@ declare module "@iln/sdk" {
       signer?: unknown;
     }): ILNClient;
     getReputation(address: string): Promise<ReputationProfile>;
+    queryNftMetadata(invoiceId: bigint): Promise<InvoiceNftMetadata | null>;
+    queryNftOwner(invoiceId: bigint): Promise<string | null>;
   }
 }

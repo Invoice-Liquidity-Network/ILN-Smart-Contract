@@ -89,6 +89,8 @@ export class ILNClient {
   private _getReputation?: typeof import("./methods/reputation.js").getReputation;
   private _getContractStats?: typeof import("./methods/stats.js").getContractStats;
   private _getTopPayers?: typeof import("./methods/topPayers.js").getTopPayers;
+  private _queryNftMetadata?: typeof import("./methods/nft.js").queryNftMetadata;
+  private _queryNftOwner?: typeof import("./methods/nft.js").queryNftOwner;
   private _getPoolBalance?: typeof import("./methods/insurance.js").getPoolBalance;
   private _getCoverage?: typeof import("./methods/insurance.js").getCoverage;
   private _isEnrolled?: typeof import("./methods/insurance.js").isEnrolled;
@@ -229,6 +231,30 @@ export class ILNClient {
         .getTopPayers;
     }
     return this._getTopPayers(this.rpc, this.contractId, limit, this.networkPassphrase);
+  }
+
+  async queryNftMetadata(invoiceId: bigint) {
+    if (!this._queryNftMetadata) {
+      this._queryNftMetadata = (await import("./methods/nft.js")).queryNftMetadata;
+    }
+    return this._queryNftMetadata(
+      this.rpc,
+      this.contractId,
+      invoiceId,
+      this.networkPassphrase,
+    );
+  }
+
+  async queryNftOwner(invoiceId: bigint) {
+    if (!this._queryNftOwner) {
+      this._queryNftOwner = (await import("./methods/nft.js")).queryNftOwner;
+    }
+    return this._queryNftOwner(
+      this.rpc,
+      this.contractId,
+      invoiceId,
+      this.networkPassphrase,
+    );
   }
 
   /**

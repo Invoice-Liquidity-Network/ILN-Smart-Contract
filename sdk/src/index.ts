@@ -9,6 +9,11 @@ export { getReputation } from "./methods/reputation.js";
 export { getContractStats } from "./methods/stats.js";
 export { getTopPayers } from "./methods/topPayers.js";
 export {
+  queryNftMetadata,
+  queryNftOwner,
+  type InvoiceNftMetadata,
+} from "./methods/nft.js";
+export {
   getAllowance,
   buildApproveTransaction,
   isAllowanceSufficient,
