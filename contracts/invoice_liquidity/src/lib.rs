@@ -12,6 +12,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod invoice;
+pub mod nft;
 pub mod rate_logic;
 pub mod storage;
 pub mod top_payers;
@@ -22,6 +23,8 @@ pub mod oracle_interface;
 mod tests_discount_rate;
 #[cfg(test)]
 mod tests_lifecycle_integration;
+#[cfg(test)]
+mod tests_nft_query;
 mod tests_lp_pagination;
 mod tests_new_features;
 mod tests_pagination;
@@ -35,6 +38,7 @@ pub use crate::invoice::{
     AppealRecord, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode,
     ReputationProfile, ReputationScore, TopPayerEntry,
 };
+pub use crate::nft::InvoiceNftMetadata;
 pub use crate::storage::DataKey;
 pub use config::{Config, ConfigError};
 pub use errors::ContractError;
@@ -2278,6 +2282,47 @@ impl InvoiceLiquidityContract {
     /// Access: Anyone
     pub fn get_invoice_count(env: Env) -> u64 {
         crate::invoice::read_next_invoice_id(&env) - 1
+    }
+
+    // ----------------------------------------------------------------
+    // query_nft_metadata
+    // ----------------------------------------------------------------
+    /// Get NFT metadata for an invoice
+    ///
+    /// Returns complete NFT metadata including invoice ID, amount, due date,
+    /// discount rate, token address, current owner, and mint timestamp.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `invoice_id` - The invoice ID
+    ///
+    /// # Returns
+    /// Option containing the NFT metadata if the NFT exists, None otherwise
+    ///
+    /// # Access
+    /// Anyone
+    pub fn query_nft_metadata(env: Env, invoice_id: u64) -> Option<crate::nft::InvoiceNftMetadata> {
+        crate::nft::query_nft_metadata(env, invoice_id)
+    }
+
+    // ----------------------------------------------------------------
+    // query_nft_owner
+    // ----------------------------------------------------------------
+    /// Get the owner of an invoice NFT
+    ///
+    /// Returns the current owner address of the NFT representing the invoice.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `invoice_id` - The invoice ID
+    ///
+    /// # Returns
+    /// Option containing the owner address if the NFT exists, None otherwise
+    ///
+    /// # Access
+    /// Anyone
+    pub fn query_nft_owner(env: Env, invoice_id: u64) -> Option<Address> {
+        crate::nft::query_nft_owner(env, invoice_id)
     }
 }
 

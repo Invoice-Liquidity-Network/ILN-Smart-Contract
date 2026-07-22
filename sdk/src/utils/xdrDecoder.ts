@@ -262,3 +262,52 @@ function parseProposalStatus(status: string): ProposalStatus {
   // Fallback to Active for unknown statuses
   return "Active" as ProposalStatus;
 }
+
+// ---------------------------------------------------------------------------
+// NFT Metadata decoder
+// ---------------------------------------------------------------------------
+
+/**
+ * NFT Metadata: complete information about an invoice NFT
+ */
+export interface InvoiceNftMetadata {
+  /** The invoice ID this NFT represents. */
+  invoiceId: bigint;
+  /** Full invoice amount in stroops. */
+  amount: bigint;
+  /** Unix timestamp of when the invoice is due. */
+  dueDate: number;
+  /** Discount rate in basis points (e.g. 300 = 3.00%). */
+  discountRate: number;
+  /** Token used for the invoice. */
+  token: string;
+  /** Current owner of the NFT. */
+  owner: string;
+  /** Timestamp when the NFT was minted. */
+  mintedAt: number;
+}
+
+/**
+ * Decode an InvoiceNftMetadata from native contract response (after scValToNative).
+ *
+ * @param raw - Native object from scValToNative(sim.result.retval)
+ * @returns Decoded InvoiceNftMetadata object
+ *
+ * @example
+ * ```ts
+ * const raw = scValToNative(sim.result.retval);
+ * const nftMetadata = decodeNftMetadata(raw);
+ * console.log(nftMetadata.invoiceId);
+ * ```
+ */
+export function decodeNftMetadata(raw: Record<string, unknown>): InvoiceNftMetadata {
+  return {
+    invoiceId: BigInt(String(raw["invoice_id"])),
+    amount: BigInt(String(raw["amount"])),
+    dueDate: Number(raw["due_date"]),
+    discountRate: Number(raw["discount_rate"]),
+    token: String(raw["token"]),
+    owner: String(raw["owner"]),
+    mintedAt: Number(raw["minted_at"]),
+  };
+}

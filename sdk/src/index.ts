@@ -41,6 +41,7 @@ export type {
   AllowanceParams,
   AllowanceResult,
 } from "./types.js";
+export type { InvoiceNftMetadata } from "./utils/xdrDecoder.js";
 export type {
   ILNEvent,
   ILNEventType,
@@ -49,6 +50,7 @@ export type {
 } from "./events/types.js";
 
 export { getInvoice, listInvoicesBySubmitter, listInvoicesByLP } from "./methods/queries.js";
+export { getNftMetadata, getNftOwner } from "./methods/nft.js";
 export { submitInvoice } from "./methods/submitInvoice.js";
 export { transferLPPosition } from "./methods/transferLPPosition.js";
 export { cancelInvoice } from "./methods/cancelInvoice.js";

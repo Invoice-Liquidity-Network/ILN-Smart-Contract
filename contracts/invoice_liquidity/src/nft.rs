@@ -1,5 +1,5 @@
 /// Invoice NFT Module
-/// 
+///
 /// Implements Stellar NFT standard for invoice representation on Soroban.
 /// Each invoice is represented as a unique NFT that:
 /// - Is minted when invoice is submitted
@@ -12,7 +12,6 @@
 /// - Due date
 /// - Discount rate
 /// - Token address
-
 use soroban_sdk::{contracttype, Address, Env, Symbol};
 
 use crate::errors::ContractError;
@@ -72,12 +71,8 @@ pub fn mint_invoice_nft(
     token: Address,
 ) -> Result<(), ContractError> {
     // Check that NFT doesn't already exist
-    if env
-        .storage()
-        .persistent()
-        .has(&get_nft_key(invoice_id))
-    {
-        return Err(ContractError::InvoiceNftAlreadyExists);
+    if env.storage().persistent().has(&get_nft_key(invoice_id)) {
+        return Err(ContractError::AlreadyFunded);
     }
 
     let metadata = InvoiceNftMetadata {
@@ -138,11 +133,11 @@ pub fn transfer_invoice_nft(
         .storage()
         .persistent()
         .get(&get_nft_key(invoice_id))
-        .ok_or(ContractError::InvoiceNftNotFound)?;
+        .ok_or(ContractError::InvoiceNotFound)?;
 
     // Verify current owner
     if metadata.owner != from {
-        return Err(ContractError::InvoiceNftNotOwned);
+        return Err(ContractError::Unauthorized);
     }
 
     // Update owner
@@ -190,17 +185,15 @@ pub fn burn_invoice_nft(env: &Env, invoice_id: u64, owner: Address) -> Result<()
         .storage()
         .persistent()
         .get(&get_nft_key(invoice_id))
-        .ok_or(ContractError::InvoiceNftNotFound)?;
+        .ok_or(ContractError::InvoiceNotFound)?;
 
     // Verify current owner
     if metadata.owner != owner {
-        return Err(ContractError::InvoiceNftNotOwned);
+        return Err(ContractError::Unauthorized);
     }
 
     // Remove NFT metadata
-    env.storage()
-        .persistent()
-        .remove(&get_nft_key(invoice_id));
+    env.storage().persistent().remove(&get_nft_key(invoice_id));
 
     // Remove owner tracking
     env.storage()
@@ -233,9 +226,7 @@ pub fn burn_invoice_nft(env: &Env, invoice_id: u64, owner: Address) -> Result<()
 /// # Returns
 /// Option containing the metadata if it exists
 pub fn get_invoice_nft_metadata(env: &Env, invoice_id: u64) -> Option<InvoiceNftMetadata> {
-    env.storage()
-        .persistent()
-        .get(&get_nft_key(invoice_id))
+    env.storage().persistent().get(&get_nft_key(invoice_id))
 }
 
 /// Get the current owner of an invoice NFT
@@ -261,9 +252,7 @@ pub fn get_invoice_nft_owner(env: &Env, invoice_id: u64) -> Option<Address> {
 /// # Returns
 /// true if the NFT exists, false otherwise
 pub fn invoice_nft_exists(env: &Env, invoice_id: u64) -> bool {
-    env.storage()
-        .persistent()
-        .has(&get_nft_key(invoice_id))
+    env.storage().persistent().has(&get_nft_key(invoice_id))
 }
 
 /// Get invoice NFT metadata (publicly callable query function)

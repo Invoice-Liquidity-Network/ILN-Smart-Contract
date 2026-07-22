@@ -34,8 +34,12 @@ describeOrSkip("invoice lifecycle (testnet)", () => {
   const server = testnetServer();
   const contractId = ILNClient.testnet().contractId;
 
-  const submitter = Keypair.fromSecret(requireSecret("TEST_SUBMITTER_SECRET"));
-  const lp = Keypair.fromSecret(requireSecret("TEST_LP_SECRET"));
+  const submitter = hasIntegrationSecrets()
+    ? Keypair.fromSecret(requireSecret("TEST_SUBMITTER_SECRET"))
+    : (null as unknown as Keypair);
+  const lp = hasIntegrationSecrets()
+    ? Keypair.fromSecret(requireSecret("TEST_LP_SECRET"))
+    : (null as unknown as Keypair);
 
   const signAsSubmitter = keypairSignTx(submitter, server);
   const signAsLp = keypairSignTx(lp, server);
