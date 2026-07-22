@@ -1,128 +1,86 @@
 import {
+  Account,
+  BASE_FEE,
   Contract,
+  nativeToScVal,
+  Networks,
+  scValToNative,
   SorobanRpc,
   TransactionBuilder,
-  BASE_FEE,
-  scValToNative,
-  nativeToScVal,
-  Account,
 } from "@stellar/stellar-sdk";
-import { ILNError } from "../errors.js";
-import { decodeNftMetadata, type InvoiceNftMetadata } from "../utils/xdrDecoder.js";
 import { retry } from "../utils/retry.js";
 
-/**
- * Fetch NFT metadata for an invoice.
- * @param server Soroban RPC server instance
- * @param contractAddress The contract's address
- * @param invoiceId The invoice ID
- * @param sourceAccount Account used for simulation (does not consume sequence or fees)
- * @param networkPassphrase The network passphrase
- * @returns The NFT metadata if it exists, null otherwise
- * @throws {ILNError} On simulation errors
- * @example
- * ```ts
- * const metadata = await getNftMetadata(server, contractAddress, 42n, sourceAccount, Networks.TESTNET);
- * if (metadata) {
- *   console.log(`NFT owner: ${metadata.owner}`);
- * }
- * ```
- */
-export async function getNftMetadata(
-  server: SorobanRpc.Server,
-  contractAddress: string,
-  invoiceId: bigint,
-  sourceAccount: Account,
-  networkPassphrase: string
-): Promise<InvoiceNftMetadata | null> {
-  const contract = new Contract(contractAddress);
-  const op = contract.call(
-    "query_nft_metadata",
-    nativeToScVal(invoiceId, { type: "u64" })
-  );
-
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase,
-  })
-    .addOperation(op)
-    .setTimeout(30)
-    .build();
-
-  const sim = await retry(() => server.simulateTransaction(tx));
-
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw ILNError.fromError(sim.error);
-  }
-
-  if (!sim.result?.retval) {
-    return null;
-  }
-
-  const raw = scValToNative(sim.result.retval);
-
-  // Handle Option type: if raw is null/none, return null
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-
-  return decodeNftMetadata(raw as Record<string, unknown>);
+export interface InvoiceNftMetadata {
+  amount: bigint;
+  dueDate: bigint;
+  discountRate: number;
+  token: string;
+  owner: string;
+  mintedAt: bigint;
 }
 
-/**
- * Fetch the owner address of an invoice NFT.
- * @param server Soroban RPC server instance
- * @param contractAddress The contract's address
- * @param invoiceId The invoice ID
- * @param sourceAccount Account used for simulation (does not consume sequence or fees)
- * @param networkPassphrase The network passphrase
- * @returns The owner address if the NFT exists, null otherwise
- * @throws {ILNError} On simulation errors
- * @example
- * ```ts
- * const owner = await getNftOwner(server, contractAddress, 42n, sourceAccount, Networks.TESTNET);
- * if (owner) {
- *   console.log(`Invoice NFT owner: ${owner}`);
- * }
- * ```
- */
-export async function getNftOwner(
+async function simulateNftQuery(
   server: SorobanRpc.Server,
-  contractAddress: string,
+  contractId: string,
+  method: "query_nft_metadata" | "query_nft_owner",
   invoiceId: bigint,
-  sourceAccount: Account,
-  networkPassphrase: string
-): Promise<string | null> {
-  const contract = new Contract(contractAddress);
-  const op = contract.call(
-    "query_nft_owner",
-    nativeToScVal(invoiceId, { type: "u64" })
+  networkPassphrase: string,
+): Promise<unknown | null> {
+  const operation = new Contract(contractId).call(
+    method,
+    nativeToScVal(invoiceId, { type: "u64" }),
   );
-
-  const tx = new TransactionBuilder(sourceAccount, {
+  const source = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
+  const transaction = new TransactionBuilder(source, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    .addOperation(op)
+    .addOperation(operation)
     .setTimeout(30)
     .build();
-
-  const sim = await retry(() => server.simulateTransaction(tx));
-
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw ILNError.fromError(sim.error);
+  const simulation = await retry(() => server.simulateTransaction(transaction));
+  if (SorobanRpc.Api.isSimulationError(simulation)) {
+    throw new Error(`${method} simulation failed: ${simulation.error}`);
   }
+  return simulation.result?.retval ? scValToNative(simulation.result.retval) : null;
+}
 
-  if (!sim.result?.retval) {
-    return null;
-  }
+export async function queryNftMetadata(
+  server: SorobanRpc.Server,
+  contractId: string,
+  invoiceId: bigint,
+  networkPassphrase: string = Networks.TESTNET,
+): Promise<InvoiceNftMetadata | null> {
+  const raw = (await simulateNftQuery(
+    server,
+    contractId,
+    "query_nft_metadata",
+    invoiceId,
+    networkPassphrase,
+  )) as Record<string, unknown> | null;
+  if (!raw) return null;
+  return {
+    amount: BigInt(String(raw.amount)),
+    dueDate: BigInt(String(raw.due_date ?? raw.dueDate)),
+    discountRate: Number(raw.discount_rate ?? raw.discountRate),
+    token: String(raw.token),
+    owner: String(raw.owner),
+    mintedAt: BigInt(String(raw.minted_at ?? raw.mintedAt)),
+  };
+}
 
-  const raw = scValToNative(sim.result.retval);
-
-  // Handle Option type: if raw is null/none, return null
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-
-  return String(raw);
+export async function queryNftOwner(
+  server: SorobanRpc.Server,
+  contractId: string,
+  invoiceId: bigint,
+  networkPassphrase: string = Networks.TESTNET,
+): Promise<string | null> {
+  const owner = await simulateNftQuery(
+    server,
+    contractId,
+    "query_nft_owner",
+    invoiceId,
+    networkPassphrase,
+  );
+  return owner === null ? null : String(owner);
 }

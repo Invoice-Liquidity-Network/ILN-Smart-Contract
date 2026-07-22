@@ -7,9 +7,13 @@ declare module "@iln/sdk" {
     invoicesDefaulted: number;
   }
 
-  export interface TopPayer {
-    address: string;
-    score: number;
+  export interface InvoiceNftMetadata {
+    amount: bigint;
+    dueDate: bigint;
+    discountRate: number;
+    token: string;
+    owner: string;
+    mintedAt: bigint;
   }
 
   export class ILNClient {
@@ -28,6 +32,7 @@ declare module "@iln/sdk" {
       signer?: unknown;
     }): ILNClient;
     getReputation(address: string): Promise<ReputationProfile>;
-    getTopPayers(limit: number): Promise<TopPayer[]>;
+    queryNftMetadata(invoiceId: bigint): Promise<InvoiceNftMetadata | null>;
+    queryNftOwner(invoiceId: bigint): Promise<string | null>;
   }
 }

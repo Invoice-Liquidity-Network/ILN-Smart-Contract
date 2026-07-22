@@ -18,7 +18,7 @@ import { makeStatusCommand } from "./commands/status.js";
 import { makeReputationCommand } from "./commands/reputation.js";
 import { makeCompletionCommand } from "./commands/completion.js";
 import { makePauseCommand, makeUnpauseCommand } from "./commands/pause.js";
-import { makeTopPayersCommand } from "./commands/top-payers.js";
+import { makeNftCommand } from "./commands/nft.js";
 
 const program = new Command();
 
@@ -41,6 +41,6 @@ program.addCommand(makeReputationCommand());
 program.addCommand(makeCompletionCommand());
 program.addCommand(makePauseCommand());
 program.addCommand(makeUnpauseCommand());
-program.addCommand(makeTopPayersCommand());
+program.addCommand(makeNftCommand());
 
 program.parse(process.argv);
