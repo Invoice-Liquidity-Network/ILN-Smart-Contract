@@ -94,3 +94,4 @@ export type {
   SorobanOperation,
 } from "./utils/feeCalculator.js";
 export { getTokenDecimals } from "./methods/getTokenDecimals.js";
+export { getLpScore } from "./methods/getLpScore.js";
