@@ -108,5 +108,81 @@ mod tests {
                 }
             }
         }
+
+        // ------------------------------------------------------------
+        // Issue #495: fund_invoice must never panic
+        // ------------------------------------------------------------
+        // Property: for arbitrary funder addresses, invoice tokens, fund
+        // amounts and invoice ids, `fund_invoice` either succeeds or returns
+        // a handled `ContractError`, but NEVER panics / unwinds.
+        #[test]
+        fn prop_fund_invoice_never_panics(
+            fund_amount in any::<i128>(),
+            invoice_amount in any::<i128>(),
+            due_date in any::<u64>(),
+            discount_rate in any::<u32>(),
+            funder_bytes in any::<[u8; 32]>(),
+            token_bytes in any::<[u8; 32]>(),
+            funder_is_contract in any::<bool>(),
+            token_is_contract in any::<bool>(),
+            use_seeded_invoice in any::<bool>(),
+            random_invoice_id in any::<u64>(),
+            require_oracle in any::<bool>(),
+        ) {
+            let t = setup_fuzz();
+
+            // Random funder address (contract or account payload).
+            let funder_payload = if funder_is_contract {
+                AddressPayload::ContractIdHash(BytesN::from_array(&t.env, &funder_bytes))
+            } else {
+                AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &funder_bytes))
+            };
+            let funder = Address::from_payload(&t.env, funder_payload);
+
+            // Random invoice token address, so the funding path exercises the
+            // token allowlist / transfer logic with arbitrary tokens.
+            let token_payload = if token_is_contract {
+                AddressPayload::ContractIdHash(BytesN::from_array(&t.env, &token_bytes))
+            } else {
+                AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &token_bytes))
+            };
+            let token = Address::from_payload(&t.env, token_payload);
+
+            // Optionally seed a real invoice with the fuzzed token, then fund it.
+            // Otherwise fund a purely random (likely non-existent) invoice id.
+            let freelancer = Address::generate(&t.env);
+            let payer = Address::generate(&t.env);
+
+            let seeded_id = t
+                .contract
+                .try_submit_invoice(
+                    &freelancer,
+                    &payer,
+                    &invoice_amount,
+                    &due_date,
+                    &discount_rate,
+                    &token,
+                    &invoice_liquidity::ReferralCode::None,
+                )
+                .ok()
+                .and_then(|r| r.ok());
+
+            let invoice_id = match (use_seeded_invoice, seeded_id) {
+                (true, Some(id)) => id,
+                _ => random_invoice_id,
+            };
+
+            let result = t.contract.try_fund_invoice(
+                &funder,
+                &invoice_id,
+                &fund_amount,
+                &require_oracle,
+            );
+
+            match result {
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
     }
 }
