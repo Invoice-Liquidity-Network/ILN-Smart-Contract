@@ -11,6 +11,7 @@ crate-type = ["lib"]
 [dependencies]
 soroban-sdk = { workspace = true, features = ["hazmat"] }
 invoice_liquidity = { path = "../invoice_liquidity" }
+insurance_pool = { path = "../insurance_pool" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

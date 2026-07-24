@@ -246,3 +246,121 @@ mod tests {
         }
     }
 }
+
+// ================================================================
+// Issue #500: insurance pool claim / reentrancy fuzzing
+// ================================================================
+#[cfg(test)]
+mod insurance_tests {
+    use insurance_pool::{InsuranceError, InsurancePool, InsurancePoolClient};
+    use proptest::prelude::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    const COVERAGE: i128 = 1_000_000_000;
+
+    struct InsFuzzEnv {
+        env: Env,
+        client: InsurancePoolClient<'static>,
+    }
+
+    fn setup_insurance() -> InsFuzzEnv {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, InsurancePool);
+        let client = InsurancePoolClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &COVERAGE);
+
+        InsFuzzEnv { env, client }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        // claim must never panic-unwind for arbitrary invoice ids.
+        // With an empty pool every claim must be rejected (PoolEmpty),
+        // never silently succeed.
+        #[test]
+        fn prop_claim_empty_pool_always_rejected(invoice_id in any::<u64>()) {
+            let t = setup_insurance();
+
+            // No premiums deposited => empty pool.
+            prop_assert_eq!(t.client.get_pool_balance(), 0);
+
+            let res = t.client.try_claim(&invoice_id);
+            // Empty pool must reject, not pay out.
+            prop_assert_eq!(
+                res,
+                Err(Ok(soroban_sdk::Error::from(InsuranceError::PoolEmpty)))
+            );
+            prop_assert!(!t.client.is_claimed(&invoice_id));
+        }
+
+        // Double-claim rejection: a second claim for the same invoice id must
+        // be rejected with AlreadyClaimed and must not pay out or drain the
+        // pool a second time (reentrancy / double-spend guard).
+        #[test]
+        fn prop_double_claim_rejected(
+            invoice_id in any::<u64>(),
+            premium in 1i128..1_000_000_000_000i128,
+        ) {
+            let t = setup_insurance();
+            let lp = Address::generate(&t.env);
+
+            // Fund the pool so the first claim can pay out.
+            t.client.deposit_premium(&lp, &premium);
+            let balance_before = t.client.get_pool_balance();
+
+            // First claim succeeds and marks the invoice claimed.
+            let first = t.client.claim(&invoice_id);
+            prop_assert!(first > 0);
+            prop_assert!(t.client.is_claimed(&invoice_id));
+
+            let balance_after_first = t.client.get_pool_balance();
+            prop_assert_eq!(balance_after_first, balance_before - first);
+
+            // Second claim for the same invoice must be rejected.
+            let second = t.client.try_claim(&invoice_id);
+            prop_assert_eq!(
+                second,
+                Err(Ok(soroban_sdk::Error::from(InsuranceError::AlreadyClaimed)))
+            );
+
+            // Balance must be unchanged by the rejected double-claim.
+            prop_assert_eq!(t.client.get_pool_balance(), balance_after_first);
+        }
+
+        // General robustness: an interleaved sequence of claims across random
+        // invoice ids never panics and never double-pays the same id.
+        #[test]
+        fn prop_claim_sequence_never_double_pays(
+            ids in prop::collection::vec(any::<u64>(), 1..8),
+            premium in 1i128..1_000_000_000_000i128,
+        ) {
+            let t = setup_insurance();
+            let lp = Address::generate(&t.env);
+            t.client.deposit_premium(&lp, &premium);
+
+            for id in ids.iter() {
+                let already = t.client.is_claimed(id);
+                let res = t.client.try_claim(id);
+                if already {
+                    // A repeated id in the sequence must be rejected.
+                    prop_assert_eq!(
+                        res,
+                        Err(Ok(soroban_sdk::Error::from(InsuranceError::AlreadyClaimed)))
+                    );
+                } else {
+                    // Either paid (Ok) or rejected because the pool drained
+                    // (PoolEmpty) — never a panic-unwind.
+                    match res {
+                        Ok(_) => prop_assert!(t.client.is_claimed(id)),
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+    }
+}
