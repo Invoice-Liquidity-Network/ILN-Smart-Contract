@@ -184,5 +184,65 @@ mod tests {
                 Err(_) => {}
             }
         }
+
+        // ------------------------------------------------------------
+        // Issue #497: dispute_invoice must never panic
+        // ------------------------------------------------------------
+        // Property: for arbitrary invoice ids and reason hashes the dispute
+        // flow completes gracefully (Ok or handled ContractError) and never
+        // panics.
+        #[test]
+        fn prop_dispute_invoice_never_panics(
+            invoice_amount in any::<i128>(),
+            due_date in any::<u64>(),
+            discount_rate in any::<u32>(),
+            token_bytes in any::<[u8; 32]>(),
+            token_is_contract in any::<bool>(),
+            reason_hash_bytes in any::<[u8; 32]>(),
+            use_seeded_invoice in any::<bool>(),
+            random_invoice_id in any::<u64>(),
+        ) {
+            let t = setup_fuzz();
+
+            let token_payload = if token_is_contract {
+                AddressPayload::ContractIdHash(BytesN::from_array(&t.env, &token_bytes))
+            } else {
+                AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &token_bytes))
+            };
+            let token = Address::from_payload(&t.env, token_payload);
+
+            let freelancer = Address::generate(&t.env);
+            let payer = Address::generate(&t.env);
+
+            // Optionally seed a real, disputable invoice so the happy path is
+            // exercised too; otherwise dispute a random (likely missing) id.
+            let seeded_id = t
+                .contract
+                .try_submit_invoice(
+                    &freelancer,
+                    &payer,
+                    &invoice_amount,
+                    &due_date,
+                    &discount_rate,
+                    &token,
+                    &invoice_liquidity::ReferralCode::None,
+                )
+                .ok()
+                .and_then(|r| r.ok());
+
+            let invoice_id = match (use_seeded_invoice, seeded_id) {
+                (true, Some(id)) => id,
+                _ => random_invoice_id,
+            };
+
+            let reason_hash = BytesN::from_array(&t.env, &reason_hash_bytes);
+
+            let result = t.contract.try_dispute_invoice(&invoice_id, &reason_hash);
+
+            match result {
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
     }
 }
