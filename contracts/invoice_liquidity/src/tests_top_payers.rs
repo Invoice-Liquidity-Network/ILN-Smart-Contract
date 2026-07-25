@@ -68,7 +68,6 @@ fn test_top_payers_updates_after_many_score_changes() {
     // Exercise heap maintenance across multiple smaller batches to stay within
     // Soroban test resource limits while still exceeding the top-50 capacity.
     for batch in 0..3u32 {
-        t.env.cost_estimate().budget().reset_unlimited();
         t.env.as_contract(&t.contract.address, || {
             for i in 0..20u32 {
                 let payer = Address::generate(&t.env);
@@ -78,7 +77,6 @@ fn test_top_payers_updates_after_many_score_changes() {
         });
     }
 
-    t.env.cost_estimate().budget().reset_unlimited();
     t.env.as_contract(&t.contract.address, || {
         let leader = tracked.get(tracked.len() - 1).unwrap();
         invoice::set_payer_score(&t.env, &leader, 40);
@@ -115,7 +113,14 @@ fn test_mark_paid_updates_top_payers_heap() {
     assert_eq!(t.contract.payer_score(&t.payer), 50);
     assert_eq!(t.contract.get_top_payers(&10).len(), 0);
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &amount,
+        &due_date,
+        &discount_rate,
+        &t.token.address,
+        &ReferralCode::None,
     );
     t.contract.fund_invoice(&t.funder, &id, &amount, &false);
     t.contract.mark_paid(&id, &amount);

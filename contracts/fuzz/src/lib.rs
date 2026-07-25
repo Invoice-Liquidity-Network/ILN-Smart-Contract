@@ -2,7 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use invoice_liquidity::{InvoiceLiquidityContract, InvoiceLiquidityContractClient};
+    use iln_governance::{GovernanceContract, GovernanceContractClient};
+    use invoice_liquidity::{InvoiceLiquidityContract, InvoiceLiquidityContractClient, ReferralCode};
     use proptest::prelude::*;
     use soroban_sdk::{
         address_payload::AddressPayload,
@@ -67,21 +68,21 @@ mod tests {
             } else {
                 AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &payer_bytes))
             };
-            let payer = Address::from_payload(&t.env, payer_payload);
+            let payer = Address::from_val(&t.env, &payer_payload);
 
             let freelancer_payload = if freelancer_is_contract {
                 AddressPayload::ContractIdHash(BytesN::from_array(&t.env, &freelancer_bytes))
             } else {
                 AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &freelancer_bytes))
             };
-            let freelancer = Address::from_payload(&t.env, freelancer_payload);
+            let freelancer = Address::from_val(&t.env, &freelancer_payload);
 
             let token_payload = if token_is_contract {
                 AddressPayload::ContractIdHash(BytesN::from_array(&t.env, &token_bytes))
             } else {
                 AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&t.env, &token_bytes))
             };
-            let token = Address::from_payload(&t.env, token_payload);
+            let token = Address::from_val(&t.env, &token_payload);
 
             // Call try_submit_invoice with fuzzed random inputs.
             // We want to ensure that regardless of the fuzzed inputs,
@@ -94,6 +95,7 @@ mod tests {
                 &due_date,
                 &discount_rate,
                 &token,
+                &ReferralCode::None,
             );
 
             // We assert that the call completes gracefully (i.e. returning a Result),
@@ -107,6 +109,72 @@ mod tests {
                     // Handled validation error (e.g. InvalidAmount, InvalidDiscountRate, etc.)
                 }
             }
+        }
+
+        #[test]
+        fn prop_cancel_invoice_never_panics(
+            invoice_id in any::<u64>(),
+        ) {
+            let t = setup_fuzz();
+            let _ = t.contract.try_cancel_invoice(&invoice_id);
+        }
+
+        #[test]
+        fn prop_appeal_default_never_panics(
+            invoice_id in any::<u64>(),
+            evidence_bytes in any::<[u8; 32]>(),
+        ) {
+            let t = setup_fuzz();
+            let evidence = BytesN::from_array(&t.env, &evidence_bytes);
+            let _ = t.contract.try_appeal_default(&invoice_id, &evidence);
+        }
+
+        #[test]
+        fn prop_cast_vote_never_panics(
+            proposal_id in any::<u64>(),
+            support in any::<bool>(),
+            voter_bytes in any::<[u8; 32]>(),
+            voter_is_contract in any::<bool>(),
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register_contract(None, GovernanceContract);
+            let gov = GovernanceContractClient::new(&env, &contract_id);
+            
+            // Initialize gov contract
+            let admin = Address::generate(&env);
+            let token = Address::generate(&env);
+            let _ = gov.try_initialize(&admin, &token);
+
+            let voter_payload = if voter_is_contract {
+                AddressPayload::ContractIdHash(BytesN::from_array(&env, &voter_bytes))
+            } else {
+                AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&env, &voter_bytes))
+            };
+            let voter = Address::from_val(&env, &voter_payload);
+
+            let _ = gov.try_cast_vote(&voter, &proposal_id, &support);
+        }
+
+        #[test]
+        fn prop_delegate_votes_never_panics(
+            delegator_bytes in any::<[u8; 32]>(),
+            delegate_bytes in any::<[u8; 32]>(),
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+            let contract_id = env.register_contract(None, GovernanceContract);
+            let gov = GovernanceContractClient::new(&env, &contract_id);
+            
+            // Initialize gov contract
+            let admin = Address::generate(&env);
+            let token = Address::generate(&env);
+            let _ = gov.try_initialize(&admin, &token);
+
+            let delegator = Address::from_val(&env, &AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&env, &delegator_bytes)));
+            let delegate = Address::from_val(&env, &AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&env, &delegate_bytes)));
+
+            let _ = gov.try_delegate_votes(&delegator, &delegate);
         }
     }
 }

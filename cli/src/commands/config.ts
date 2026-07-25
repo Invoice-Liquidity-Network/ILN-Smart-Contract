@@ -16,6 +16,7 @@ import {
   resetConfig,
   setConfigValue,
 } from "../config.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export function makeConfigCommand(): Command {
   const cmd = new Command("config").description(
@@ -29,12 +30,16 @@ export function makeConfigCommand(): Command {
       "Set a config value (keys: network, rpcUrl, defaultProfile)"
     )
     .action((key: string, value: string) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         setConfigValue(key, value);
-        console.log(`✓ Set ${key} = ${value}`);
+        formatOutput({ key, value, set: true }, json, () => {
+          console.log(`✓ Set ${key} = ${value}`);
+        });
       } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        process.exit(1);
+        formatError((err as Error).message, "CONFIG_ERROR", json);
       }
     });
 
@@ -43,28 +48,33 @@ export function makeConfigCommand(): Command {
     .command("get <key>")
     .description("Get a single config value")
     .action((key: string) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       const val = getConfigValue(key as "network" | "rpcUrl" | "defaultProfile");
       if (val === undefined) {
-        console.error(`Key "${key}" not found in config.`);
-        process.exit(1);
+        formatError(`Key "${key}" not found in config.`, "KEY_NOT_FOUND", json);
       }
-      console.log(val);
+      formatOutput({ key, value: val }, json, () => {
+        console.log(val);
+      });
     });
 
   // iln config list
   cmd
     .command("list")
     .description("Show all current config values")
-    .option("--json", "Output as JSON")
+    .option("--json", "Output as JSON (also available as global flag)")
     .action((opts: { json?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = opts.json || isJsonMode(parentOpts);
+
       const cfg = loadConfig();
-      if (opts.json) {
-        console.log(JSON.stringify(cfg, null, 2));
-      } else {
+      formatOutput(cfg, json, () => {
         for (const [k, v] of Object.entries(cfg)) {
           console.log(`${k}: ${v}`);
         }
-      }
+      });
     });
 
   // iln config reset
@@ -72,8 +82,13 @@ export function makeConfigCommand(): Command {
     .command("reset")
     .description("Restore all config values to defaults")
     .action(() => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       resetConfig();
-      console.log("✓ Config reset to defaults.");
+      formatOutput({ reset: true }, json, () => {
+        console.log("✓ Config reset to defaults.");
+      });
     });
 
   return cmd;

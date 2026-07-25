@@ -164,7 +164,9 @@ impl FeeOnTransferToken {
         let received = amount.checked_sub(fee).unwrap_or(0);
         let key_to = FeeTokenDataKey::Balance(to.clone());
         let to_balance: i128 = env.storage().persistent().get(&key_to).unwrap_or(0);
-        env.storage().persistent().set(&key_to, &(to_balance + received));
+        env.storage()
+            .persistent()
+            .set(&key_to, &(to_balance + received));
     }
 
     pub fn balance(env: Env, who: Address) -> i128 {

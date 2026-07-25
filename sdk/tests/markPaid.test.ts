@@ -8,7 +8,7 @@ vi.mock('../src/methods/queries.js');
 
 describe('markPaid', () => {
   const mockServer = { simulateTransaction: vi.fn() } as unknown as SorobanRpc.Server;
-  const mockAccount = new Account('G123', '1');
+  const mockAccount = new Account("GAGZSXAR7P7PASD2PGYISBMEZCMSI35TRJXYZTZNNCAUZRDEMHQM2XJS", "1");
   const mockSign = vi.fn((tx) => tx);
 
   it('throws if payment exceeds outstanding', async () => {

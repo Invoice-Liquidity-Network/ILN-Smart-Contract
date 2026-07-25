@@ -60,8 +60,5 @@ pub fn check_payer_verified(env: &Env, payer: &Address) -> bool {
     if !result.verified {
         return false;
     }
-    env.ledger()
-        .timestamp()
-        .saturating_sub(result.timestamp)
-        <= ORACLE_STALENESS_THRESHOLD_SECS
+    env.ledger().timestamp().saturating_sub(result.timestamp) <= ORACLE_STALENESS_THRESHOLD_SECS
 }

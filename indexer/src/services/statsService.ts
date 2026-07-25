@@ -29,6 +29,10 @@ interface CachedStats {
 
 let cachedStats: CachedStats | null = null;
 
+export function clearStatsCache(): void {
+  cachedStats = null;
+}
+
 export function getProtocolStats(
   db: Database.Database,
   cacheTtlMs: number = 60000
@@ -132,8 +136,4 @@ export function getStatsHistory(
 export function refreshStats(db: Database.Database): ProtocolStats {
   cachedStats = null;
   return getProtocolStats(db);
-}
-
-export function clearStatsCache(): void {
-  cachedStats = null;
 }

@@ -119,8 +119,7 @@ fn mt02_partial_fund_keeps_status_partially_funded() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // Fund exactly half the invoice amount
     let half = INVOICE_AMOUNT / 2;
@@ -148,13 +147,13 @@ fn mt03_payer_score_increases_by_exactly_one_on_settlement() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     let score_before = t.contract.payer_score(&t.payer);
     assert_eq!(score_before, 50, "default score should be 50");
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
     t.contract.mark_paid(&id, &INVOICE_AMOUNT);
 
     let score_after = t.contract.payer_score(&t.payer);
@@ -176,10 +175,10 @@ fn mt04_payer_score_decreases_by_exactly_five_on_default() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
     // Advance ledger past due date
     let mut ledger = t.env.ledger().get();
@@ -216,10 +215,10 @@ fn mt05_payer_score_floors_at_zero_not_negative() {
     // `> 5` guard were mutated to `> 0`.  With the correct guard the result is 0.
     for _ in 0..9 {
         let current_due = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-        let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let id = t.contract.submit_invoice(&ReferralCode::None);
 
-        t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+        t.contract
+            .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
         let mut ledger = t.env.ledger().get();
         ledger.timestamp += DUE_DATE_OFFSET + 1;
@@ -236,8 +235,7 @@ fn mt05_payer_score_floors_at_zero_not_negative() {
 
     // 10th default: score is 5, NOT > 5, so guard should floor it to 0
     let last_due = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-    let last_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let last_id = t.contract.submit_invoice(&ReferralCode::None);
 
     t.contract
         .fund_invoice(&t.funder, &last_id, &INVOICE_AMOUNT, &false);

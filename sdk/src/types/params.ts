@@ -1,4 +1,5 @@
-export type SupportedToken = 'USDC' | 'EURC' | 'XLM' | string;
+import type { SupportedToken } from "@invoice-liquidity/types";
+export type { SupportedToken };
 
 export interface SubmitInvoiceParams {
   payer: string;

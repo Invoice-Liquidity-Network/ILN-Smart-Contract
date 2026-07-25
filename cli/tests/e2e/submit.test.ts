@@ -5,7 +5,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeSubmitCommand } from "../../src/commands/submit";
 import type { SubmitResult } from "../../src/commands/submit-types";
 
-const VALID_PAYER = "GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFG";
+const VALID_PAYER = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTU23";
 
 function makeResult(overrides: Partial<SubmitResult> = {}): SubmitResult {
   return {
@@ -43,7 +43,7 @@ describe("iln submit — flag-based mode", () => {
     );
     expect(logs.some((l) => l.includes("INV-001"))).toBe(true);
     expect(logs.some((l) => l.includes("TX123ABC"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("does not call prompter when all flags are provided", async () => {
@@ -57,7 +57,7 @@ describe("iln submit — flag-based mode", () => {
     ], { from: "user" });
 
     expect(prompter).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error for invalid payer address", async () => {
@@ -72,6 +72,6 @@ describe("iln submit — flag-based mode", () => {
     ], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

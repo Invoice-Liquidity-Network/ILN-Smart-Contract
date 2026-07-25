@@ -1,12 +1,15 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "module": "commonjs",
+    "moduleResolution": "node",
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false,
     "outDir": "dist",
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@iln/sdk": ["../sdk/src/index.ts"]
+      "@iln/sdk": ["./src/@iln-sdk.d.ts"]
     }
   },
   "include": ["src/**/*"],

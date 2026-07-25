@@ -5,7 +5,7 @@
   "description": "Invoice Liquidity Network Smart Contracts",
   "packageManager": "pnpm@9.0.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "preinstall": "npx only-allow pnpm",

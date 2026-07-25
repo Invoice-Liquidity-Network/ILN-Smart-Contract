@@ -127,7 +127,8 @@ fn test_dispute_funded_invoice() {
         &ReferralCode::None,
     );
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
     t.contract.dispute_invoice(&id, &reason_hash(&t.env));
 
@@ -171,7 +172,8 @@ fn test_cannot_mark_paid_disputed_invoice() {
         &ReferralCode::None,
     );
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
     t.contract.dispute_invoice(&id, &reason_hash(&t.env));
 
@@ -199,7 +201,8 @@ fn test_resolve_dispute_upheld_refunds_lp() {
 
     let initial_funder_balance = t.token.balance(&t.funder);
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
     assert_eq!(t.token.balance(&t.funder), initial_funder_balance - cost);
 
@@ -230,7 +233,8 @@ fn test_resolve_dispute_rejected_restores_funded_status() {
         &ReferralCode::None,
     );
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
     t.contract.dispute_invoice(&id, &reason_hash(&t.env));
 
     // Admin rejects dispute (resolution = 2)

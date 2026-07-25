@@ -3,8 +3,8 @@
 // This file contains conservative storage-roundtrip checks for the compressed
 // invoice and dispute/appeal record representations.
 
-use super::*;
 use super::test::setup;
+use super::*;
 use soroban_sdk::BytesN;
 
 #[test]

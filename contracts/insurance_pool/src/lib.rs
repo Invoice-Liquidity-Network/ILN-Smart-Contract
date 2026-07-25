@@ -98,7 +98,10 @@ impl InsurancePool {
 
     /// The configured flat per-claim coverage cap.
     pub fn get_coverage(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::Coverage).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::Coverage)
+            .unwrap_or(0)
     }
 
     /// Returns `true` if a claim has already been processed for `invoice_id`.
@@ -110,7 +113,11 @@ impl InsurancePool {
     }
 
     fn require_admin(env: &Env) -> Address {
-        match env.storage().instance().get::<DataKey, Address>(&DataKey::Admin) {
+        match env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Admin)
+        {
             Some(admin) => {
                 admin.require_auth();
                 admin
@@ -179,9 +186,17 @@ impl InsurancePoolInterface for InsurancePool {
             panic_with_error!(&env, InsuranceError::PoolEmpty);
         }
 
-        let coverage: i128 = env.storage().instance().get(&DataKey::Coverage).unwrap_or(0);
+        let coverage: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Coverage)
+            .unwrap_or(0);
         // Stub payout: flat coverage cap, bounded by available balance.
-        let payout = if coverage < balance { coverage } else { balance };
+        let payout = if coverage < balance {
+            coverage
+        } else {
+            balance
+        };
 
         env.storage()
             .instance()
@@ -190,7 +205,8 @@ impl InsurancePoolInterface for InsurancePool {
             .persistent()
             .set(&DataKey::Claimed(invoice_id), &true);
 
-        env.events().publish((symbol_short!("claimed"), invoice_id), payout);
+        env.events()
+            .publish((symbol_short!("claimed"), invoice_id), payout);
         payout
     }
 

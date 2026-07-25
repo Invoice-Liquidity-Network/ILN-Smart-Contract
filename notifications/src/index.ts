@@ -9,9 +9,11 @@ import { createEmailClient } from './delivery/emailClient.js';
 import { DeliveryHistoryStore } from './delivery/deliveryHistory.js';
 import { createWebhooksRouter } from './api/webhooks.js';
 import { createSlackRouter } from './api/slack.js';
+import { createTelegramRouter } from './api/telegram.js';
 import { createEmailSubscriptionsRouter } from './api/email.js';
 import { createEmailNotificationsRouter } from './api/emailNotifications.js';
 import type { SlackSubscription } from './api/slack.js';
+import type { TelegramSubscription } from './api/telegram.js';
 
 const db = createNotificationsDatabase(config.dbPath);
 const port = config.port;
@@ -36,11 +38,13 @@ const emailDelivery = new EmailDeliveryService(
 );
 
 const slackStore = new Map<string, SlackSubscription>();
+const telegramStore = new Map<string, TelegramSubscription>();
 
 const app = express();
 app.use(express.json());
 app.use(createWebhooksRouter(store, delivery, historyStore));
 app.use(createSlackRouter(slackStore));
+app.use(createTelegramRouter(telegramStore));
 app.use(
   createEmailSubscriptionsRouter(emailStore, emailDelivery, {
     tokenSecret: config.emailTokenSecret,

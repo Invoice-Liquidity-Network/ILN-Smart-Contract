@@ -83,11 +83,18 @@ export class ILNClient {
   /** Deployed invoice-liquidity contract address. */
   readonly contractId: string;
   /** Optional signer for authenticated methods. */
-  readonly signer?: ISigner;
+  readonly signer?: ISigner | undefined;
 
   // Cached imports (lazy-loaded for tree-shaking)
   private _getReputation?: typeof import("./methods/reputation.js").getReputation;
   private _getContractStats?: typeof import("./methods/stats.js").getContractStats;
+  private _getTopPayers?: typeof import("./methods/topPayers.js").getTopPayers;
+  private _getPoolBalance?: typeof import("./methods/insurance.js").getPoolBalance;
+  private _getCoverage?: typeof import("./methods/insurance.js").getCoverage;
+  private _isEnrolled?: typeof import("./methods/insurance.js").isEnrolled;
+  private _getPremiumsPaid?: typeof import("./methods/insurance.js").getPremiumsPaid;
+  private _getInsurancePoolInfo?: typeof import("./methods/insurance.js").getInsurancePoolInfo;
+  private _getDistributionAccrual?: typeof import("./methods/distribution.js").getDistributionAccrual;
 
   constructor(config: ILNClientConfig) {
     this.rpc = new SorobanRpc.Server(config.rpcUrl);
@@ -122,9 +129,8 @@ export class ILNClient {
         options?.contractId ??
         // Published testnet deployment: the canonical contract ID from
         // the latest testnet CI/CD deployment. Update here when redeploying.
-        // TODO: replace with actual testnet contract ID once deployed
-        "CD2Q6M76VFLHNHDNROENMX7PJ5OBYBMVPM73S4M6XAJXN3NKCBJQPLUC",
-      signer,
+        "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+      ...(signer ? { signer } : {}),
     });
   }
 
@@ -152,7 +158,7 @@ export class ILNClient {
         options?.contractId ??
         // TODO: replace with actual mainnet contract ID after mainnet deployment
         "",
-      signer,
+      ...(signer ? { signer } : {}),
     });
   }
 
@@ -206,6 +212,116 @@ export class ILNClient {
     }
     return this._getContractStats(this.rpc, this.contractId, this.networkPassphrase);
   }
+
+  /**
+   * Fetch the top payers leaderboard.
+   *
+   * Read-only; does not require a signer.
+   *
+   * @param limit - Maximum number of entries to return (default 10)
+   * @returns Array of TopPayerEntry sorted by descending score
+   */
+  async getTopPayers(
+    limit: number = 10
+  ): Promise<import("./methods/topPayers.js").TopPayerEntry[]> {
+    if (!this._getTopPayers) {
+      this._getTopPayers = (await import("./methods/topPayers.js"))
+        .getTopPayers;
+    }
+    return this._getTopPayers(this.rpc, this.contractId, limit, this.networkPassphrase);
+  }
+
+  /**
+   * Fetch the current insurance pool balance.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   */
+  async getInsurancePoolBalance(
+    insurancePoolContractId: string
+  ): Promise<bigint> {
+    if (!this._getPoolBalance) {
+      this._getPoolBalance = (await import("./methods/insurance.js")).getPoolBalance;
+    }
+    return this._getPoolBalance(this.rpc, insurancePoolContractId, this.networkPassphrase);
+  }
+
+  /**
+   * Fetch the configured insurance coverage cap.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   */
+  async getInsurancePoolCoverage(
+    insurancePoolContractId: string
+  ): Promise<bigint> {
+    if (!this._getCoverage) {
+      this._getCoverage = (await import("./methods/insurance.js")).getCoverage;
+    }
+    return this._getCoverage(this.rpc, insurancePoolContractId, this.networkPassphrase);
+  }
+
+  /**
+   * Check if a liquidity provider is enrolled in the insurance pool.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   * @param lpAddress - LP's Stellar address
+   */
+  async isInsurancePoolEnrolled(
+    insurancePoolContractId: string,
+    lpAddress: string
+  ): Promise<boolean> {
+    if (!this._isEnrolled) {
+      this._isEnrolled = (await import("./methods/insurance.js")).isEnrolled;
+    }
+    return this._isEnrolled(this.rpc, insurancePoolContractId, lpAddress, this.networkPassphrase);
+  }
+
+  /**
+   * Fetch the total premiums paid by an LP.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   * @param lpAddress - LP's Stellar address
+   */
+  async getInsurancePoolPremiumsPaid(
+    insurancePoolContractId: string,
+    lpAddress: string
+  ): Promise<bigint> {
+    if (!this._getPremiumsPaid) {
+      this._getPremiumsPaid = (await import("./methods/insurance.js")).getPremiumsPaid;
+    }
+    return this._getPremiumsPaid(this.rpc, insurancePoolContractId, lpAddress, this.networkPassphrase);
+  }
+
+  /**
+   * Fetch all insurance pool info for an LP.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   * @param lpAddress - LP's Stellar address
+   */
+  async getInsurancePoolInfo(
+    insurancePoolContractId: string,
+    lpAddress: string
+  ): Promise<import("@invoice-liquidity/types").InsurancePoolInfo> {
+    if (!this._getInsurancePoolInfo) {
+      this._getInsurancePoolInfo = (await import("./methods/insurance.js")).getInsurancePoolInfo;
+    }
+    return this._getInsurancePoolInfo(this.rpc, insurancePoolContractId, lpAddress, this.networkPassphrase);
+  }
+
+  /**
+   * Fetch a participant's accrued distribution tokens.
+   *
+   * @param distributionContractId - Deployed distribution contract address
+   * @param participantAddress - Stellar address of the participant
+   */
+  async getDistributionAccrual(
+    distributionContractId: string,
+    participantAddress: string
+  ): Promise<number> {
+    if (!this._getDistributionAccrual) {
+      this._getDistributionAccrual = (await import("./methods/distribution.js")).getDistributionAccrual;
+    }
+    return this._getDistributionAccrual(this.rpc, distributionContractId, participantAddress, this.networkPassphrase);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +364,34 @@ class ILNSingleton {
 
   async getContractStats() {
     return this.client.getContractStats();
+  }
+
+  async getTopPayers(limit: number = 10) {
+    return this.client.getTopPayers(limit);
+  }
+
+  async getInsurancePoolBalance(insurancePoolContractId: string) {
+    return this.client.getInsurancePoolBalance(insurancePoolContractId);
+  }
+
+  async getInsurancePoolCoverage(insurancePoolContractId: string) {
+    return this.client.getInsurancePoolCoverage(insurancePoolContractId);
+  }
+
+  async isInsurancePoolEnrolled(insurancePoolContractId: string, lpAddress: string) {
+    return this.client.isInsurancePoolEnrolled(insurancePoolContractId, lpAddress);
+  }
+
+  async getInsurancePoolPremiumsPaid(insurancePoolContractId: string, lpAddress: string) {
+    return this.client.getInsurancePoolPremiumsPaid(insurancePoolContractId, lpAddress);
+  }
+
+  async getInsurancePoolInfo(insurancePoolContractId: string, lpAddress: string) {
+    return this.client.getInsurancePoolInfo(insurancePoolContractId, lpAddress);
+  }
+
+  async getDistributionAccrual(distributionContractId: string, participantAddress: string) {
+    return this.client.getDistributionAccrual(distributionContractId, participantAddress);
   }
 }
 

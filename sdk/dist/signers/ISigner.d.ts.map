@@ -1,0 +1,1 @@
+{"version":3,"file":"ISigner.d.ts","sourceRoot":"","sources":["../../src/signers/ISigner.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,EAAE,UAAU,EAAE,MAAM,sBAAsB,CAAC;AAEpE;;;;;GAKG;AACH,MAAM,WAAW,OAAO;IACtB,sDAAsD;IACtD,QAAQ,CAAC,SAAS,EAAE,MAAM,CAAC;IAE3B;;;;;;;;;;;;;OAaG;IACH,eAAe,CACb,EAAE,EAAE,WAAW,EACf,MAAM,EAAE,UAAU,CAAC,MAAM,GACxB,OAAO,CAAC,MAAM,CAAC,CAAC;CACpB"}

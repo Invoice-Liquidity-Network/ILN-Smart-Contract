@@ -5,7 +5,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeSubmitCommand } from "../../src/commands/submit";
 import type { SubmitResult } from "../../src/commands/submit-types";
 
-const VALID_PAYER = "GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFG";
+const VALID_PAYER = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTU23";
 
 function makeResult(): SubmitResult {
   return {
@@ -42,7 +42,7 @@ describe("iln submit --dry-run", () => {
     const output = logs.join("\n");
     expect(output).toContain("dry-run");
     expect(output).toContain(VALID_PAYER);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("dry-run output is valid JSON", async () => {
@@ -64,7 +64,7 @@ describe("iln submit --dry-run", () => {
     const jsonLine = logs.find((l) => l.trim().startsWith("{"));
     expect(jsonLine).toBeDefined();
     expect(() => JSON.parse(jsonLine!)).not.toThrow();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("dry-run exits cleanly (no process.exit call)", async () => {
@@ -77,6 +77,6 @@ describe("iln submit --dry-run", () => {
     ], { from: "user" });
 
     expect(exit).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

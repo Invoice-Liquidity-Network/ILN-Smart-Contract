@@ -28,8 +28,7 @@ fn submit_emits_reputation_updated_increments_submitted() {
 
     let events_before = t.env.events().all().events().len();
 
-    t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    t.contract.submit_invoice(&ReferralCode::None);
 
     // At least one new event was emitted
     assert!(t.env.events().all().events().len() > events_before);
@@ -49,12 +48,10 @@ fn submit_second_invoice_increments_submitted_count_to_two() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    t.contract.submit_invoice(&ReferralCode::None);
 
     let due_date2 = due_date + 1;
-    t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    t.contract.submit_invoice(&ReferralCode::None);
 
     let profile = t.contract.get_reputation(&t.freelancer);
     assert_eq!(profile.invoices_submitted, 2);
@@ -71,10 +68,10 @@ fn mark_paid_emits_reputation_updated_for_payer_score_and_paid_count() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let invoice_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
 
     let events_before = t.env.events().all().events().len();
     t.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
@@ -96,10 +93,10 @@ fn mark_paid_emits_reputation_updated_for_freelancer_paid_count() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let invoice_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
     t.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
 
     // Freelancer: submitted=1 (from submit) + paid=1 (from mark_paid)
@@ -118,10 +115,10 @@ fn claim_default_emits_reputation_updated_score_penalty_and_defaulted_count() {
     let t = setup();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let invoice_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
 
     // Advance past due date to allow default
     let mut li = t.env.ledger().get();
@@ -151,10 +148,10 @@ fn claim_default_score_floored_at_zero_when_score_below_penalty() {
 
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let invoice_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &false);
 
     let mut li = t.env.ledger().get();
     li.timestamp = due_date + 1;
@@ -219,5 +216,8 @@ fn score_decay_does_not_emit_event_when_score_unchanged() {
     let events_after = t.env.events().all().events().len();
 
     assert_eq!(score, crate::constants::DEFAULT_PAYER_SCORE);
-    assert_eq!(events_after, events_before, "no event for unchanged default score");
+    assert_eq!(
+        events_after, events_before,
+        "no event for unchanged default score"
+    );
 }

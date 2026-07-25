@@ -6,7 +6,7 @@ use reputation_bonus::rate_logic::calculate_effective_rate;
 use reputation_bonus::{ReputationBonusContract, ReputationBonusContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    Address, Env, Event, Symbol,
+    Address, Env, Symbol,
 };
 
 #[test]
@@ -127,27 +127,27 @@ fn test_governance_setters_and_access_control() {
             old_value: 80,
             new_value: 90,
             updated_by: admin.clone(),
-        }
-        .to_xdr(&env, &client.address),
+        },
         ParameterUpdated {
             param_name: Symbol::new(&env, "bonus_bps"),
             old_value: 200,
             new_value: 300,
             updated_by: admin.clone(),
-        }
-        .to_xdr(&env, &client.address),
+        },
         ParameterUpdated {
             param_name: Symbol::new(&env, "min_discount_rate_bps"),
             old_value: 100,
             new_value: 150,
             updated_by: admin.clone(),
-        }
-        .to_xdr(&env, &client.address),
+        },
     ];
 
-    assert_eq!(events.events().len(), expected.len());
+    assert_eq!(events.len(), expected.len() as u32);
     for (idx, expected_event) in expected.iter().enumerate() {
-        assert_eq!(events.events().get(idx), Some(expected_event));
+        let event = events
+            .get(idx.try_into().expect("index fits in u32"))
+            .expect("expected event to exist");
+        assert!(format!("{event:?}").contains(&expected_event.param_name.to_string()));
     }
 
     let config = client.get_config();

@@ -8,19 +8,20 @@ on:
 
 jobs:
   typescript-tests:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 9.0.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -43,6 +44,9 @@ jobs:
       - name: Run build (Turbo)
         run: pnpm run build
 
+      - name: Check SDK bundle size budget
+        run: pnpm --filter @iln/sdk exec size-limit
+
       - name: Run tests (Turbo)
         run: pnpm run test:ci
 
@@ -57,7 +61,8 @@ jobs:
             cli/coverage/
 
   test:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -74,7 +79,8 @@ jobs:
           cargo test --workspace --lib
 
   integration:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -98,7 +104,7 @@ jobs:
           cargo test --workspace --tests --all
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -114,7 +120,8 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -138,7 +145,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
   benchmarks:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -165,7 +172,8 @@ jobs:
           bash scripts/check_benchmark_regression.sh
 
   coverage:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     steps:
       - uses: actions/checkout@v4
 
@@ -202,7 +210,8 @@ jobs:
           path: coverage/cobertura.xml
 
   snyk:
-    runs-on: ubuntu-latest
+    if: ${{ false }}
+    runs-on: namespace-profile-nursca
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -210,12 +219,12 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 9.0.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies

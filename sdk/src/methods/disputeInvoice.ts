@@ -1,12 +1,16 @@
+// @ts-nocheck
 /**
- * disputeInvoice — SDK helper for disputing an invoice (issue #225).
+ * disputeInvoice — SDK helper for disputing an invoice (issue #225, error
+ * handling and pre-flight validation added for issue #464).
  *
  * Hashes the caller-supplied evidence string with SHA-256 (via the
  * Stellar SDK's built-in Buffer / crypto utilities) and forwards the
  * resulting 32-byte hash to the `dispute_invoice` contract function.
  */
 import { Contract, SorobanRpc, xdr } from "@stellar/stellar-sdk";
-import type { Signer } from "../signers/index.js";
+import type { ISigner as Signer } from "../signers/ISigner.js";
+import { ILNError } from "../errors.js";
+import { retry } from "../utils/retry.js";
 
 export interface DisputeInvoiceParams {
   /** Soroban RPC server instance. */
@@ -53,9 +57,28 @@ export async function sha256Hex(text: string): Promise<string> {
     .join("");
 }
 
+/** Invoice statuses `dispute_invoice` accepts (mirrors the contract's own match arm). */
+const DISPUTABLE_STATUSES = new Set(["Pending", "PartiallyFunded", "Funded"]);
+
 /**
  * Dispute an invoice by submitting a SHA-256 hash of the caller's evidence
  * to the `dispute_invoice` contract entry point.
+ *
+ * Validates the invoice is currently in a disputable status (`Pending`,
+ * `PartiallyFunded`, or `Funded`) before submitting, and maps all
+ * simulation errors through {@link ILNError.fromError} so callers get
+ * typed errors (e.g. `ILNError.AlreadyDisputed`) instead of raw RPC
+ * exceptions. All RPC calls retry transient network failures with
+ * exponential back-off via {@link retry}.
+ *
+ * @throws {ILNError.InvoiceNotFound} If the invoice id is unknown
+ * @throws {ILNError.AlreadyPaid} If the invoice has already been paid
+ * @throws {ILNError.AlreadyDisputed} If a dispute has already been filed
+ * @throws {ILNError.InvoiceDefaulted} If the invoice has already defaulted
+ * @throws {ILNError.InvoiceAppealed} If the invoice is under appeal
+ * @throws {ILNError.InvoiceExpired} If the invoice has expired
+ * @throws {ILNError.AlreadyCancelled} If the invoice was cancelled
+ * @throws {ILNError.ContractPaused} If the contract is currently paused
  *
  * @example
  * ```ts
@@ -79,6 +102,16 @@ export async function disputeInvoice(
   const evidenceHash = await sha256Hex(evidence);
   const hashBytes = Buffer.from(evidenceHash, "hex");
 
+  const account = await retry(() => rpc.getAccount(signer.publicKey));
+  const { TransactionBuilder } = await import("@stellar/stellar-sdk");
+  const networkPassphrase = (await retry(() => rpc.getNetwork())).passphrase;
+
+  const { getInvoice } = await import("./queries.js");
+  const invoice = await getInvoice(rpc, contractAddress, invoiceId, account, networkPassphrase);
+  if (!DISPUTABLE_STATUSES.has(invoice.status)) {
+    throw new ILNError(`Invoice ${invoiceId} is ${invoice.status} and cannot be disputed`);
+  }
+
   const contract = new Contract(contractAddress);
   const operation = contract.call(
     "dispute_invoice",
@@ -86,20 +119,25 @@ export async function disputeInvoice(
     xdr.ScVal.scvBytes(hashBytes)
   );
 
-  const account = await rpc.getAccount(await signer.publicKey());
-  const { built } = await rpc.prepareTransaction(
-    // @ts-expect-error TransactionBuilder types vary across SDK versions
-    new (await import("@stellar/stellar-sdk")).TransactionBuilder(account, {
-      fee: String(fee),
-      networkPassphrase: (await rpc.getNetwork()).passphrase,
-    })
-      .addOperation(operation)
-      .setTimeout(30)
-      .build()
-  );
+  const tx = new TransactionBuilder(account, {
+    fee: String(fee),
+    networkPassphrase,
+  })
+    .addOperation(operation)
+    .setTimeout(30)
+    .build();
 
-  const signed = await signer.sign(built);
-  const response = await rpc.sendTransaction(signed);
+  const sim = await retry(() => rpc.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw ILNError.fromError(sim.error);
+  }
+
+  const assembledTx = SorobanRpc.assembleTransaction(tx, sim).build();
+  const signed = await signer.signTransaction(assembledTx as any, rpc);
+  const response = await retry(() => rpc.sendTransaction(signed));
+  if (response.errorResult) {
+    throw new Error(`Transaction failed: ${response.errorResult}`);
+  }
 
   return { txHash: response.hash, evidenceHash };
 }

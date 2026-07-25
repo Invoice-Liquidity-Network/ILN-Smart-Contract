@@ -1,0 +1,1 @@
+{"version":3,"file":"status-formatter.d.ts","sourceRoot":"","sources":["../../src/commands/status-formatter.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,YAAY,EAAE,MAAM,mBAAmB,CAAC;AAErE,wBAAgB,UAAU,CAAC,KAAK,EAAE,YAAY,GAAG,MAAM,CAUtD;AAED,wBAAgB,eAAe,CAAC,OAAO,EAAE,MAAM,GAAG,MAAM,CAQvD;AAED,wBAAgB,YAAY,CAAC,GAAG,EAAE,aAAa,GAAG,MAAM,CAiBvD"}

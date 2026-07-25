@@ -9,6 +9,7 @@
  */
 import { Command } from "commander";
 import type { MarketplaceListing, MarketplaceOptions } from "./marketplace-types.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export type ListingsFetcher = () => Promise<MarketplaceListing[]>;
 
@@ -73,14 +74,18 @@ export function makeMarketplaceCommand(
     .option("--sort <yield|amount|due>", "Sort order", "yield")
     .option("--filter <key=value>", "Filter (e.g. token=USDC)")
     .action(async (opts: { sort?: string; filter?: string }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         let listings = await fetchListings();
         listings = applyFilter(listings, opts.filter);
         listings = applySort(listings, opts.sort as MarketplaceOptions["sort"]);
-        printListingsTable(listings);
+        formatOutput(listings, json, () => {
+          printListingsTable(listings);
+        });
       } catch (err) {
-        console.error(`Marketplace error: ${(err as Error).message}`);
-        process.exit(1);
+        formatError((err as Error).message, "MARKETPLACE_ERROR", json);
       }
     });
 

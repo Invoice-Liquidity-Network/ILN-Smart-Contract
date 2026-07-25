@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::test::setup;
+use crate::ReferralCode;
 use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address};
 
 #[test]
@@ -18,10 +19,9 @@ fn test_list_invoices_by_lp_pagination() {
 
     // Submit 5 invoices and fund them all with the same LP
     for i in 0..5 {
-        let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let id = t.contract.submit_invoice(&ReferralCode::None);
         t.contract
-            .fund_invoice(&lp, &id, &(1_000_000_000 + i as i128, &false));
+            .fund_invoice(&lp, &id, &(1_000_000_000 + i as i128), &false);
     }
 
     // Page 0, size 2
@@ -59,8 +59,7 @@ fn test_list_invoices_by_lp_no_duplicates_on_partial_funding() {
     let payer = Address::generate(env);
     let due_date = env.ledger().timestamp() + 86400 * 30;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // Fund partially twice
     t.contract.fund_invoice(&lp, &id, &500_000_000, &false);
@@ -87,8 +86,7 @@ fn test_list_invoices_by_lp_multiple_lps() {
     let payer = Address::generate(env);
     let due_date = env.ledger().timestamp() + 86400 * 30;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // lp1 funds half, lp2 funds half
     t.contract.fund_invoice(&lp1, &id, &500_000_000, &false);

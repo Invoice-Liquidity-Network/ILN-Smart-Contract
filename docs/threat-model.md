@@ -531,6 +531,119 @@ Some token implementations allow partial transfers. If token transfers less than
 
 ---
 
+### G. INSURANCE POOL SPECIFIC THREATS
+
+#### G1. Premium Manipulation
+
+**Description:**  
+The insurance pool allows members to deposit premiums. If premium calculations are incorrect or the admin can manipulate premium rates, members may overpay or underfund the pool.
+
+**Attack Scenario:**
+```
+1. Admin calls update_premium_rate() with inflated rate (e.g. 50% instead of 5%)
+2. Members attempting to enroll see high premium cost
+3. Members are priced out of insurance
+4. Pool remains underfunded or fills slowly
+5. When claims occur, pool cannot cover losses
+```
+
+**Current Mitigation:**
+- ✅ **Configurable Parameters:** Premium rates are set via governance (admin-controlled)
+- ✅ **Public Events:** Premium rate changes emit events for monitoring
+- ✅ **Enrollment Validation:** Members must explicitly approve premium amounts
+
+**Residual Risk:** ⚠️ **MEDIUM**
+- Admin can unilaterally set premium rates
+- No bounds checking on premium_rate_bps (could be set to 100%+ of pool coverage)
+- Members may not understand premium mechanics (off-chain communication required)
+- No automatic premium rate discovery mechanism (rates are hardcoded by admin)
+
+**Recommendation:**
+- Add parameter bounds: `premium_rate_bps` should be capped at reasonable % (e.g., <= 1000 bps or 10%)
+- Document premium model and member communication (expected rates, annual yield)
+- Consider gradual premium increases (no step changes > 100 bps per update)
+- Monitor enrollment trends for drop-offs after rate increases
+
+#### G2. Claim Fraud & Moral Hazard
+
+**Description:**  
+Members can submit claims on defaults. Without proper verification, a member could coordinate with a payer to fraudulently claim insurance (moral hazard attack).
+
+**Attack Scenario:**
+```
+1. Member A and Payer B collude
+2. Member A submits invoice to Payer B (high amount, reasonable terms)
+3. Member A and Payer B stage a default (Payer B intentionally doesn't pay)
+4. Member A claims insurance for full invoice amount
+5. Pool pays out fraudulent claim
+6. Payer B and Member A split the payout off-chain
+```
+
+**Current Mitigation:**
+- ✅ **Enrollment Verification:** Pool can verify member address and require KYC (off-chain)
+- ✅ **Invoice History:** Claims are tied to actual invoice_liquidity defaults (immutable on-chain)
+- ✅ **Admin Review:** Admin can investigate claims and contest fraud
+- ✅ **Payer Reputation:** Payers with low default history are less incentivized to stage defaults
+
+**Residual Risk:** ⚠️ **HIGH**
+- No cryptographic proof of member legitimacy or payer creditworthiness
+- Admin review is manual and subjective
+- Repeated small defaults by same payer pair may not be detected
+- Pool does not validate that invoice terms are "reasonable" (collusion incentives opaque)
+
+**Recommendation:**
+- **Implement Claims Adjudication:** Require admin or DAO multi-sig approval for large claims (> threshold)
+- **Fraud Detection:** Monitor for patterns:
+  - Same member + same payer submitting multiple defaults in short window
+  - Member submitting claims shortly after enrollment
+  - Payer default rate >> average default rate in system
+- **Claim Dispute Window:** Allow community to dispute claims for X days before payout
+- **Proof of Loss:** Require evidence (invoice, evidence of payment attempt) off-chain
+- **KYC for High-Value Claims:** Require identity verification for claims > pool balance threshold
+
+#### G3. Pool Drainage / Insolvency Risk
+
+**Description:**  
+The pool accepts claims up to enrolled capacity. If claim frequency exceeds projections, the pool may become insolvent and unable to cover all claims.
+
+**Attack Scenario:**
+```
+1. Pool enrolls $10M in coverage with $1M premiums
+2. Unexpectedly high default rate in ILN network (10% vs expected 2%)
+3. Members submit $2M in claims in one week
+4. Pool only has $1M in premiums + interest ($100k) = $1.1M available
+5. Pool is insolvent; claims are partially paid or stuck in queue
+6. Later claims are rejected due to insufficient funds
+```
+
+**Current Mitigation:**
+- ✅ **Capacity Tracking:** Pool tracks total coverage committed and premium collected
+- ✅ **Funding Mechanism:** Premiums accumulate in pool for payout reserves
+- ✅ **Admin Oversight:** Admin can pause claims or enroll new members if capacity is exceeded
+- ✅ **Transparent Reserves:** On-chain balance is queryable (members can check solvency)
+
+**Residual Risk:** ⚠️ **HIGH**
+- No automatic trigger to halt enrollment if claims exceed safe reserves
+- Premium rates may be too low to cover expected default rates
+- Pool has no reinsurance mechanism (no capital backstop)
+- Economic incentives misaligned: member wants low premiums, pool needs high premiums for safety
+- No automatic claim rejection or payout reduction if pool depletes
+
+**Recommendation:**
+- **Dynamic Premium Adjustment:** Link premium_rate_bps to pool utilization ratio:
+  - If utilization > 80%, increase premiums 10-20% automatically
+  - If utilization < 20%, decrease premiums to attract members
+- **Claim Prioritization:** Implement priority queue:
+  - Small claims (<$10k) processed immediately
+  - Large claims (>$100k) queued and processed over time
+  - First-in-first-out or pro-rata payout if insolvent
+- **Insurance Reserve Requirement:** Admin must maintain minimum reserve (e.g., 50% of enrolled coverage)
+- **Stop-Loss Mechanism:** Auto-pause enrollment if reserves fall below threshold
+- **Reinsurance or Backstop:** Establish partnership with external insurer or maintain DAO treasury reserve
+- **Clear Communication:** Publish pool solvency ratio to members, warn if approaching danger zone
+
+---
+
 ## Summary of Mitigations & Residual Risks
 
 | Threat | Severity | Mitigation | Residual Risk |
@@ -548,6 +661,9 @@ Some token implementations allow partial transfers. If token transfers less than
 | **Token Transfer Failure** | MEDIUM | Atomic transactions | LOW (Soroban guarantees) |
 | **Token Allowance Missing** | LOW | Documentation, error handling | LOW (UX issue, not security) |
 | **Partial Token Transfer** | MEDIUM | Token specification, admin control | LOW-MEDIUM (requires rogue token) |
+| **Premium Manipulation** | MEDIUM | Configurable rates, public events | MEDIUM (no bounds checking) |
+| **Claim Fraud & Moral Hazard** | HIGH | Enrollment KYC, invoice immutability, admin review | HIGH (manual verification required) |
+| **Pool Drainage / Insolvency** | HIGH | Capacity tracking, transparent reserves | HIGH (no automatic safeguards) |
 
 ---
 

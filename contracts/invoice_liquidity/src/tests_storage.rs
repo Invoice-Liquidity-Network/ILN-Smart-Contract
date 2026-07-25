@@ -60,8 +60,7 @@ fn test_submit_invoice_sets_ttl() {
     let amount = 100_000_000;
     let due_date = t.env.ledger().timestamp() + 86400;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     let key = crate::storage::DataKey::Invoice(id);
     let ttl = t.env.as_contract(&t.contract.address, || {
@@ -84,8 +83,7 @@ fn test_fund_invoice_extends_ttl() {
     let amount = 100_000_000;
     let due_date = t.env.ledger().timestamp() + 86400;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     let key = crate::storage::DataKey::Invoice(id);
     let initial_ttl = t.env.as_contract(&t.contract.address, || {
@@ -115,8 +113,7 @@ fn test_data_persistence_after_advancement() {
     let amount = 100_000_000;
     let due_date = t.env.ledger().timestamp() + 86400 * 30; // 30 days
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // Advance ledger significantly (e.g., 10,000 ledgers)
     let mut ledger = t.env.ledger().get();
@@ -134,8 +131,7 @@ fn test_data_persistence_after_advancement() {
 fn test_invoice_count_persistence_across_versions() {
     let t = setup();
 
-    t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    t.contract.submit_invoice(&ReferralCode::None);
 
     assert_eq!(t.contract.get_invoice_count(), 1);
 
@@ -149,8 +145,7 @@ fn test_invoice_count_persistence_across_versions() {
     assert_eq!(t.contract.get_invoice_count(), 1);
 
     // New submission works correctly
-    let next_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let next_id = t.contract.submit_invoice(&ReferralCode::None);
 
     assert_eq!(next_id, 2);
     assert_eq!(t.contract.get_invoice_count(), 2);
@@ -162,8 +157,7 @@ fn test_storage_ttl_near_boundary() {
     let amount = 100_000_000;
     let due_date = t.env.ledger().timestamp() + 86400;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     let key = crate::storage::DataKey::Invoice(id);
     let ttl = t.env.as_contract(&t.contract.address, || {

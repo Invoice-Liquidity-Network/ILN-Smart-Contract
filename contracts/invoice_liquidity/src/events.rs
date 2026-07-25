@@ -280,3 +280,35 @@ pub struct InvoiceTokenChanged {
     pub old_token: Address,
     pub new_token: Address,
 }
+
+// ── Invoice NFT lifecycle events (nft.rs) ─────────────────────────────────────
+
+/// Emitted when an invoice NFT is minted (invoice submitted).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvoiceNftMinted {
+    pub invoice_id: u64,
+    pub owner: Address,
+    pub amount: i128,
+    pub due_date: u32,
+    pub timestamp: u64,
+}
+
+/// Emitted when an invoice NFT is transferred (e.g. freelancer → LP on funding).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvoiceNftTransferred {
+    pub invoice_id: u64,
+    pub from: Address,
+    pub to: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when an invoice NFT is burned (invoice marked paid).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvoiceNftBurned {
+    pub invoice_id: u64,
+    pub owner: Address,
+    pub timestamp: u64,
+}

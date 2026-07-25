@@ -44,7 +44,13 @@ fn register_token(env: &Env) -> TokenInfo {
 
 /// Deploy the invoice liquidity contract with USDC (6 dec) and XLM (7 dec)
 /// as the two bootstrap tokens, returning the client and helper handles.
-fn bootstrap() -> (Env, InvoiceLiquidityContractClient<'static>, TokenInfo, TokenInfo, Address) {
+fn bootstrap() -> (
+    Env,
+    InvoiceLiquidityContractClient<'static>,
+    TokenInfo,
+    TokenInfo,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -249,8 +255,7 @@ fn test_6dec_minimum_fails_for_7_decimal_token() {
     let due_date = env.ledger().timestamp() + DUE_DATE_OFFSET;
 
     // 1_000_000 is ≥ the old hard-coded USDC floor but < 1 XLM (10_000_000)
-    let result = contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+    let result = contract.try_submit_invoice(&ReferralCode::None);
     assert_eq!(
         result,
         Err(Ok(ContractError::InvalidAmount)),
@@ -391,10 +396,8 @@ fn test_6_and_7_decimal_tokens_maintain_independent_precision() {
     // 50 XLM   = 500_000_000 (7 dec)
     let xlm_amount: i128 = 500_000_000;
 
-    let usdc_id = contract.submit_invoice(        &ReferralCode::None,
-    );
-    let xlm_id = contract.submit_invoice(        &ReferralCode::None,
-    );
+    let usdc_id = contract.submit_invoice(&ReferralCode::None);
+    let xlm_id = contract.submit_invoice(&ReferralCode::None);
 
     contract.fund_invoice(&funder, &usdc_id, &usdc_amount);
     contract.fund_invoice(&funder, &xlm_id, &xlm_amount);
@@ -417,8 +420,8 @@ fn test_6_and_7_decimal_tokens_maintain_independent_precision() {
     );
 
     // Quick sanity: 3% of the supplied amounts
-    assert_eq!(usdc_discount, 1_500_000);   // 1.5 USDC
-    assert_eq!(xlm_discount, 15_000_000);  // 1.5 XLM
+    assert_eq!(usdc_discount, 1_500_000); // 1.5 USDC
+    assert_eq!(xlm_discount, 15_000_000); // 1.5 XLM
 }
 
 // ----------------------------------------------------------------

@@ -1,5 +1,5 @@
 /// Invoice NFT Module
-/// 
+///
 /// Implements Stellar NFT standard for invoice representation on Soroban.
 /// Each invoice is represented as a unique NFT that:
 /// - Is minted when invoice is submitted
@@ -12,10 +12,10 @@
 /// - Due date
 /// - Discount rate
 /// - Token address
-
 use soroban_sdk::{contracttype, Address, Env, Symbol};
 
 use crate::errors::ContractError;
+use crate::events::{InvoiceNftBurned, InvoiceNftMinted, InvoiceNftTransferred};
 use crate::storage::DataKey;
 
 /// NFT Metadata: complete information about an invoice NFT
@@ -71,12 +71,8 @@ pub fn mint_invoice_nft(
     token: Address,
 ) -> Result<(), ContractError> {
     // Check that NFT doesn't already exist
-    if env
-        .storage()
-        .persistent()
-        .has(&get_nft_key(invoice_id))
-    {
-        return Err(ContractError::InvoiceNftAlreadyExists);
+    if env.storage().persistent().has(&get_nft_key(invoice_id)) {
+        return Err(ContractError::AlreadyFunded);
     }
 
     let metadata = InvoiceNftMetadata {
@@ -85,8 +81,8 @@ pub fn mint_invoice_nft(
         due_date,
         discount_rate,
         token,
-        owner,
-        minted_at: env.ledger().timestamp(),
+        owner: owner.clone(),
+        minted_at: env.ledger().timestamp() as u32,
     };
 
     env.storage()
@@ -97,14 +93,21 @@ pub fn mint_invoice_nft(
         .persistent()
         .set(&get_nft_owner_key(invoice_id), &owner);
 
-    // Publish NFT minting event
-    env.events().publish_event((
-        Symbol::new(env, "invoice_nft_minted"),
-        invoice_id,
-        owner,
-        amount,
-        due_date,
-    ));
+    // Publish NFT minting event (Soroban SDK: publish(topics, data))
+    env.events().publish(
+        (
+            Symbol::new(env, "invoice_nft_minted"),
+            invoice_id,
+            owner.clone(),
+        ),
+        InvoiceNftMinted {
+            invoice_id,
+            owner,
+            amount,
+            due_date,
+            timestamp: env.ledger().timestamp(),
+        },
+    );
 
     Ok(())
 }
@@ -130,11 +133,11 @@ pub fn transfer_invoice_nft(
         .storage()
         .persistent()
         .get(&get_nft_key(invoice_id))
-        .ok_or(ContractError::InvoiceNftNotFound)?;
+        .ok_or(ContractError::InvoiceNotFound)?;
 
     // Verify current owner
     if metadata.owner != from {
-        return Err(ContractError::InvoiceNftNotOwned);
+        return Err(ContractError::Unauthorized);
     }
 
     // Update owner
@@ -148,13 +151,21 @@ pub fn transfer_invoice_nft(
         .persistent()
         .set(&get_nft_owner_key(invoice_id), &to);
 
-    // Publish NFT transfer event
-    env.events().publish_event((
-        Symbol::new(env, "invoice_nft_transferred"),
-        invoice_id,
-        from,
-        to,
-    ));
+    // Publish NFT transfer event (Soroban SDK: publish(topics, data))
+    env.events().publish(
+        (
+            Symbol::new(env, "invoice_nft_transferred"),
+            invoice_id,
+            from.clone(),
+            to.clone(),
+        ),
+        InvoiceNftTransferred {
+            invoice_id,
+            from,
+            to,
+            timestamp: env.ledger().timestamp(),
+        },
+    );
 
     Ok(())
 }
@@ -174,29 +185,34 @@ pub fn burn_invoice_nft(env: &Env, invoice_id: u64, owner: Address) -> Result<()
         .storage()
         .persistent()
         .get(&get_nft_key(invoice_id))
-        .ok_or(ContractError::InvoiceNftNotFound)?;
+        .ok_or(ContractError::InvoiceNotFound)?;
 
     // Verify current owner
     if metadata.owner != owner {
-        return Err(ContractError::InvoiceNftNotOwned);
+        return Err(ContractError::Unauthorized);
     }
 
     // Remove NFT metadata
-    env.storage()
-        .persistent()
-        .remove(&get_nft_key(invoice_id));
+    env.storage().persistent().remove(&get_nft_key(invoice_id));
 
     // Remove owner tracking
     env.storage()
         .persistent()
         .remove(&get_nft_owner_key(invoice_id));
 
-    // Publish NFT burn event
-    env.events().publish_event((
-        Symbol::new(env, "invoice_nft_burned"),
-        invoice_id,
-        owner,
-    ));
+    // Publish NFT burn event (Soroban SDK: publish(topics, data))
+    env.events().publish(
+        (
+            Symbol::new(env, "invoice_nft_burned"),
+            invoice_id,
+            owner.clone(),
+        ),
+        InvoiceNftBurned {
+            invoice_id,
+            owner,
+            timestamp: env.ledger().timestamp(),
+        },
+    );
 
     Ok(())
 }
@@ -210,9 +226,7 @@ pub fn burn_invoice_nft(env: &Env, invoice_id: u64, owner: Address) -> Result<()
 /// # Returns
 /// Option containing the metadata if it exists
 pub fn get_invoice_nft_metadata(env: &Env, invoice_id: u64) -> Option<InvoiceNftMetadata> {
-    env.storage()
-        .persistent()
-        .get(&get_nft_key(invoice_id))
+    env.storage().persistent().get(&get_nft_key(invoice_id))
 }
 
 /// Get the current owner of an invoice NFT
@@ -238,9 +252,7 @@ pub fn get_invoice_nft_owner(env: &Env, invoice_id: u64) -> Option<Address> {
 /// # Returns
 /// true if the NFT exists, false otherwise
 pub fn invoice_nft_exists(env: &Env, invoice_id: u64) -> bool {
-    env.storage()
-        .persistent()
-        .has(&get_nft_key(invoice_id))
+    env.storage().persistent().has(&get_nft_key(invoice_id))
 }
 
 /// Get invoice NFT metadata (publicly callable query function)

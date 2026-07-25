@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-nursca
     if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     outputs:
       deployment_summary: ${{ steps.summary.outputs.deployment_summary }}
@@ -33,7 +33,7 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        run: cargo install --locked stellar-cli
 
       - name: Deploy contracts to testnet
         id: deploy

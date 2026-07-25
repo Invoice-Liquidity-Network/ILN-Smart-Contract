@@ -7,9 +7,10 @@ import {
   nativeToScVal,
   Account,
 } from "@stellar/stellar-sdk";
-import type { Invoice } from "../types/invoice.js";
+import type { Invoice, InvoiceState } from "@invoice-liquidity/types";
 import { ILNError } from "../errors.js";
-import { computeEffectiveYieldBps } from "./fundInvoice.js";
+import { decodeInvoice } from "../utils/xdrDecoder.js";
+import { retry } from "../utils/retry.js";
 
 /**
  * Fetch a single invoice by its ID.
@@ -48,7 +49,7 @@ export async function getInvoice(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     if (String(sim.error).includes("NotFound") || String(sim.error).includes("Error(Contract, 1)")) {
@@ -61,26 +62,8 @@ export async function getInvoice(
   }
 
   const raw = scValToNative(sim.result.retval) as Record<string, unknown>;
-  const dueDate = Number(raw["due_date"]);
-  const discountRate = Number(raw["discount_rate"]);
+  return decodeInvoice(raw);
 
-  return {
-    id: BigInt(String(raw["id"])),
-    freelancer: String(raw["freelancer"]),
-    payer: String(raw["payer"]),
-    token: String(raw["token"]),
-    amount: BigInt(String(raw["amount"])),
-    dueDate,
-    discountRate,
-    status: (raw["status"] as any)?.tag || String(raw["status"]) as any, // handle scval enum
-    funder: raw["funder"] ? String(raw["funder"]) : undefined,
-    fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-    amountFunded: BigInt(String(raw["amount_funded"])),
-    amountPaid: BigInt(String(raw["amount_paid"])),
-    referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-    submitterReputation: Number(raw["submitter_reputation"]),
-    effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-  };
 }
 
 /**
@@ -124,7 +107,7 @@ export async function listInvoicesBySubmitter(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
@@ -134,27 +117,8 @@ export async function listInvoicesBySubmitter(
   }
 
   const rawArr = scValToNative(sim.result.retval) as Record<string, unknown>[];
-  return rawArr.map(raw => {
-    const dueDate = Number(raw["due_date"]);
-    const discountRate = Number(raw["discount_rate"]);
-    return {
-      id: BigInt(String(raw["id"])),
-      freelancer: String(raw["freelancer"]),
-      payer: String(raw["payer"]),
-      token: String(raw["token"]),
-      amount: BigInt(String(raw["amount"])),
-      dueDate,
-      discountRate,
-      status: (raw["status"] as any)?.tag || String(raw["status"]) as any,
-      funder: raw["funder"] ? String(raw["funder"]) : undefined,
-      fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-      amountFunded: BigInt(String(raw["amount_funded"])),
-      amountPaid: BigInt(String(raw["amount_paid"])),
-      referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-      submitterReputation: Number(raw["submitter_reputation"]),
-      effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-    };
-  });
+  return rawArr.map(raw => decodeInvoice(raw as Record<string, unknown>));
+
 }
 
 /**
@@ -198,7 +162,7 @@ export async function listInvoicesByLP(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
@@ -208,25 +172,5 @@ export async function listInvoicesByLP(
   }
 
   const rawArr = scValToNative(sim.result.retval) as Record<string, unknown>[];
-  return rawArr.map(raw => {
-    const dueDate = Number(raw["due_date"]);
-    const discountRate = Number(raw["discount_rate"]);
-    return {
-      id: BigInt(String(raw["id"])),
-      freelancer: String(raw["freelancer"]),
-      payer: String(raw["payer"]),
-      token: String(raw["token"]),
-      amount: BigInt(String(raw["amount"])),
-      dueDate,
-      discountRate,
-      status: (raw["status"] as any)?.tag || String(raw["status"]) as any,
-      funder: raw["funder"] ? String(raw["funder"]) : undefined,
-      fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-      amountFunded: BigInt(String(raw["amount_funded"])),
-      amountPaid: BigInt(String(raw["amount_paid"])),
-      referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-      submitterReputation: Number(raw["submitter_reputation"]),
-      effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-    };
-  });
+  return rawArr.map(raw => decodeInvoice(raw as Record<string, unknown>));
 }

@@ -86,8 +86,7 @@ proptest! {
         let due_date = LEDGER_TIMESTAMP + 86_400;
         let discount_rate: u32 = 300;
 
-        let result = t.contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+        let result = t.contract.try_submit_invoice(&ReferralCode::None);
 
         prop_assert_eq!(
             result,
@@ -112,8 +111,7 @@ proptest! {
         let t = setup_fuzz();
         let due_date = LEDGER_TIMESTAMP + 86_400;
 
-        let result = t.contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+        let result = t.contract.try_submit_invoice(&ReferralCode::None);
 
         prop_assert_eq!(
             result,
@@ -128,8 +126,7 @@ proptest! {
         let due_date = LEDGER_TIMESTAMP + 86_400;
         let amount: i128 = 1_000_000_000;
 
-        let result = t.contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+        let result = t.contract.try_submit_invoice(&ReferralCode::None);
 
         prop_assert_eq!(
             result,
@@ -155,8 +152,7 @@ proptest! {
         let amount: i128 = 1_000_000_000;
         let discount_rate: u32 = 300;
 
-        let result = t.contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+        let result = t.contract.try_submit_invoice(&ReferralCode::None);
 
         prop_assert_eq!(
             result,
@@ -187,8 +183,7 @@ proptest! {
         let t = setup_fuzz();
         let due_date = LEDGER_TIMESTAMP + due_date_offset;
 
-        let result = t.contract.try_submit_invoice(try_        &ReferralCode::None,
-    );
+        let result = t.contract.try_submit_invoice(&ReferralCode::None);
 
         prop_assert!(
             result.is_ok(),

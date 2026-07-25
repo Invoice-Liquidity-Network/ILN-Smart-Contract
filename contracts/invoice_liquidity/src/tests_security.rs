@@ -105,8 +105,7 @@ fn test_overflow_max_amount_does_not_panic() {
     let disc_rate: u32 = 5_000;
 
     // Submit should succeed — amount > 0, discount valid, due date future
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // fund_invoice calls checked_mul; with i128::MAX * 5_000 overflowing,
     // the contract falls back to discount_amount = 0.
@@ -148,8 +147,7 @@ fn test_overflow_boundary_half_max_amount_no_panic() {
     let due = due_date(&t);
     let disc_rate: u32 = 5_000; // 50%
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // Must not panic
     t.contract.fund_invoice(&t.funder, &id, &amount, &false);
@@ -193,8 +191,7 @@ fn test_payout_never_negative_for_valid_inputs() {
 
         let fl_before = t.token.balance(&t.freelancer);
 
-        let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let id = t.contract.submit_invoice(&ReferralCode::None);
 
         t.contract.fund_invoice(&t.funder, &id, &amount, &false);
 
@@ -218,10 +215,8 @@ fn test_funding_invoice_a_does_not_affect_invoice_b() {
     let due = due_date(&t);
 
     // Submit two independent invoices
-    let id_a = t.contract.submit_invoice(        &ReferralCode::None,
-    );
-    let id_b = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id_a = t.contract.submit_invoice(&ReferralCode::None);
+    let id_b = t.contract.submit_invoice(&ReferralCode::None);
 
     // Check B's state before any funding
     let invoice_b_before = t.contract.get_invoice(&id_b);
@@ -232,7 +227,8 @@ fn test_funding_invoice_a_does_not_affect_invoice_b() {
     );
 
     // Fund invoice A
-    t.contract.fund_invoice(&t.funder, &id_a, &1_000_000_000, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id_a, &1_000_000_000, &false);
 
     // B's state must remain completely untouched
     let invoice_a = t.contract.get_invoice(&id_a);
@@ -285,17 +281,16 @@ fn test_storage_isolation_adjacent_invoice_ids() {
     token_admin.mint(&new_payer, &10_000_000_000);
     token_admin.mint(&new_funder, &10_000_000_000);
 
-    let id_1 = t.contract.submit_invoice(        &ReferralCode::None,
-    );
-    let id_2 = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id_1 = t.contract.submit_invoice(&ReferralCode::None);
+    let id_2 = t.contract.submit_invoice(&ReferralCode::None);
 
     // Sanity: IDs should be sequential
     assert_eq!(id_1, 1, "First invoice must have ID 1");
     assert_eq!(id_2, 2, "Second invoice must have ID 2");
 
     // Fully cycle invoice 1: fund -> mark paid
-    t.contract.fund_invoice(&new_funder, &id_1, &1_000_000_000, &false);
+    t.contract
+        .fund_invoice(&new_funder, &id_1, &1_000_000_000, &false);
     t.contract.mark_paid(&id_1, &1_000_000_000);
 
     let inv1 = t.contract.get_invoice(&id_1);

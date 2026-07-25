@@ -92,92 +92,86 @@ fn due_date(env: &StressTestEnv) -> u64 {
 #[test]
 fn test_stress_1000_invoice_lifecycles() {
     let env = setup();
-    
+
     let start_time = Instant::now();
-    
+
     let mut invoice_ids: Vec<u64> = Vec::new(&env.env);
-    
+
     // Phase 1: Submit 1000 invoices
     let submit_start = Instant::now();
-    
+
     for i in 0..NUM_INVOICES {
-        let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
         invoice_ids.push_back(invoice_id);
     }
-    
+
     let submit_duration = submit_start.elapsed();
-    
+
     // Verify invoice count
     let stats_after_submit = env.contract.get_contract_stats();
     assert_eq!(
-        stats_after_submit.total_invoices,
-        NUM_INVOICES,
+        stats_after_submit.total_invoices, NUM_INVOICES,
         "Total invoices should match submitted count"
     );
-    
+
     // Phase 2: Fund 1000 invoices
     let fund_start = Instant::now();
-    
+
     for (i, invoice_id) in invoice_ids.iter().enumerate() {
-        env.contract.fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
+        env.contract
+            .fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
     }
-    
+
     let fund_duration = fund_start.elapsed();
-    
+
     // Verify funded count
     let stats_after_fund = env.contract.get_contract_stats();
     assert_eq!(
-        stats_after_fund.total_funded,
-        NUM_INVOICES,
+        stats_after_fund.total_funded, NUM_INVOICES,
         "Total funded should match funded count"
     );
-    
+
     // Phase 3: Settle (mark as paid) 1000 invoices
     let settle_start = Instant::now();
-    
+
     for (i, invoice_id) in invoice_ids.iter().enumerate() {
         env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
     }
-    
+
     let settle_duration = settle_start.elapsed();
-    
+
     // Verify paid count
     let stats_after_settle = env.contract.get_contract_stats();
     assert_eq!(
-        stats_after_settle.total_paid,
-        NUM_INVOICES,
+        stats_after_settle.total_paid, NUM_INVOICES,
         "Total paid should match settled count"
     );
-    
+
     // Verify all invoices are in correct final state
     let verify_start = Instant::now();
-    
+
     for (i, invoice_id) in invoice_ids.iter().enumerate() {
         let invoice = env.contract.get_invoice(&invoice_id);
     }
-    
+
     let verify_duration = verify_start.elapsed();
-    
+
     // Final stats verification
     let final_stats = env.contract.get_contract_stats();
-    
+
     assert_eq!(
-        final_stats.total_invoices,
-        NUM_INVOICES,
+        final_stats.total_invoices, NUM_INVOICES,
         "Final total invoices should match"
     );
     assert_eq!(
-        final_stats.total_funded,
-        NUM_INVOICES,
+        final_stats.total_funded, NUM_INVOICES,
         "Final total funded should match"
     );
     assert_eq!(
-        final_stats.total_paid,
-        NUM_INVOICES,
+        final_stats.total_paid, NUM_INVOICES,
         "Final total paid should match"
     );
-    
+
     let total_duration = start_time.elapsed();
     // Stress test completed successfully
     // All {} invoices processed without panics
@@ -188,20 +182,19 @@ fn test_stress_1000_invoice_lifecycles() {
 #[test]
 fn test_stress_1000_concurrent_submissions() {
     let env = setup();
-    
+
     let start_time = Instant::now();
-    
+
     // Submit all invoices in rapid succession to test concurrent submission handling
     let mut invoice_ids: Vec<u64> = Vec::new(&env.env);
-    
+
     for i in 0..NUM_INVOICES {
-        let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
         invoice_ids.push_back(invoice_id);
     }
-    
+
     let submit_duration = start_time.elapsed();
-    
+
     // Verify all invoices were created and are in Pending state
     for invoice_id in invoice_ids.iter() {
         let invoice = env.contract.get_invoice(&invoice_id);
@@ -212,11 +205,10 @@ fn test_stress_1000_concurrent_submissions() {
             invoice_id
         );
     }
-    
+
     let stats = env.contract.get_contract_stats();
     assert_eq!(
-        stats.total_invoices,
-        NUM_INVOICES,
+        stats.total_invoices, NUM_INVOICES,
         "All invoices should be counted"
     );
 }
@@ -224,25 +216,25 @@ fn test_stress_1000_concurrent_submissions() {
 #[test]
 fn test_stress_1000_partial_fundings() {
     let env = setup();
-    
+
     let start_time = Instant::now();
-    
+
     // Submit invoices
     let mut invoice_ids: Vec<u64> = Vec::new(&env.env);
     for _ in 0..NUM_INVOICES {
-        let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
+        let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
         invoice_ids.push_back(invoice_id);
     }
-    
+
     // Fund each invoice with partial amounts (50% each)
     let partial_amount = INVOICE_AMOUNT / 2;
     let fund_start = Instant::now();
-    
+
     for (i, invoice_id) in invoice_ids.iter().enumerate() {
-        env.contract.fund_invoice(&env.lp, &invoice_id, &partial_amount, &false);
+        env.contract
+            .fund_invoice(&env.lp, &invoice_id, &partial_amount, &false);
     }
-    
+
     let fund_duration = fund_start.elapsed();
     for invoice_id in invoice_ids.iter() {
         let invoice = env.contract.get_invoice(&invoice_id);
@@ -253,12 +245,11 @@ fn test_stress_1000_partial_fundings() {
             invoice_id
         );
         assert_eq!(
-            invoice.amount_funded,
-            partial_amount,
+            invoice.amount_funded, partial_amount,
             "Invoice {} should have correct partial funding amount",
             invoice_id
         );
     }
-    
+
     let total_duration = start_time.elapsed();
 }

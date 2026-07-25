@@ -10,6 +10,7 @@ import * as readline from "readline";
 import { Command } from "commander";
 import type { InvoiceSummary, CancelResult } from "./cancel-types.js";
 import { validatePendingState, formatConfirmMessage } from "./cancel-helpers.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export type InvoiceFetcher = (id: string) => Promise<InvoiceSummary>;
 export type CancelExecutor = (id: string) => Promise<CancelResult>;
@@ -43,6 +44,9 @@ export function makeCancelCommand(
     .requiredOption("--id <invoice-id>", "Invoice ID to cancel")
     .option("--yes", "Skip confirmation prompt")
     .action(async (opts: { id: string; yes?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         const invoice = await fetchInvoice(opts.id);
         validatePendingState(invoice);
@@ -50,16 +54,19 @@ export function makeCancelCommand(
         if (!opts.yes) {
           const confirmed = await confirm(formatConfirmMessage(invoice));
           if (!confirmed) {
-            console.log("Cancelled — no changes made.");
+            formatOutput({ aborted: true, message: "no changes made" }, json, () => {
+              console.log("Cancelled — no changes made.");
+            });
             return;
           }
         }
 
         const result = await cancelExecutor(opts.id);
-        console.log(`Invoice #${result.invoiceId} cancelled. TX: ${result.txHash}`);
+        formatOutput(result, json, () => {
+          console.log(`Invoice #${result.invoiceId} cancelled. TX: ${result.txHash}`);
+        });
       } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        process.exit(1);
+        formatError((err as Error).message, "CANCEL_ERROR", json);
       }
     });
 

@@ -1,5 +1,5 @@
 use invoice_liquidity::{
-    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus,
+    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus, ReferralCode,
 };
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -24,7 +24,7 @@ fn setup_test(
     let xlm_id = env.register_stellar_asset_contract_v2(xlm_admin);
     let xlm = xlm_id.address();
 
-    client.initialize(&admin, &usdc, &xlm);
+    client.initialize(&admin, &usdc, &usdc, &xlm);
 
     (client, usdc, Address::generate(env), Address::generate(env))
 }
@@ -38,7 +38,15 @@ fn freelancer_can_cancel_pending() {
     let due_date = env.ledger().timestamp() + 100000;
     let discount = 100;
 
-    let id = client.submit_invoice(&freelancer, &payer, &amount, &due_date, &discount, &token, &ReferralCode::None);
+    let id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &amount,
+        &due_date,
+        &discount,
+        &token,
+        &ReferralCode::None,
+    );
 
     assert!(client.try_cancel_invoice(&id).is_ok());
 
@@ -58,6 +66,7 @@ fn non_freelancer_cannot_cancel() {
         &(env.ledger().timestamp() + 100000),
         &100,
         &token,
+        &ReferralCode::None,
     );
 
     // In Soroban tests with mock_all_auths, we'd need to mock specific auths to test failure.
@@ -77,6 +86,7 @@ fn cannot_cancel_funded_invoice() {
         &(env.ledger().timestamp() + 100000),
         &100,
         &token,
+        &ReferralCode::None,
     );
 
     // Mint tokens to funder
@@ -101,6 +111,7 @@ fn cannot_cancel_cancelled_invoice() {
         &(env.ledger().timestamp() + 100000),
         &100,
         &token,
+        &ReferralCode::None,
     );
 
     client.cancel_invoice(&id);

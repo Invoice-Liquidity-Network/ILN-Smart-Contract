@@ -9,8 +9,9 @@ publish = false
 crate-type = ["lib"]
 
 [dependencies]
-soroban-sdk = { workspace = true, features = ["hazmat"] }
-invoice_liquidity = { path = "../invoice_liquidity" }
+    soroban-sdk = { workspace = true, features = ["hazmat"] }
+    invoice_liquidity = { path = "../invoice_liquidity" }
+    iln_governance = { path = "../iln_governance" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

@@ -9,6 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { ILNError } from "../errors.js";
 import { getInvoice } from "./queries.js";
+import { retry } from "../utils/retry.js";
 
 /**
  * Cancel a pending invoice.
@@ -71,7 +72,7 @@ export async function cancelInvoice(
     .build();
 
   // Simulate to catch contract errors
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
   }
@@ -82,17 +83,17 @@ export async function cancelInvoice(
   const signedTx = await signTransaction(assembledTx);
   
   // Submit
-  const sendResult = await server.sendTransaction(signedTx);
-  if (sendResult.errorResultXdr) {
-    throw new Error(`Transaction failed: ${sendResult.errorResultXdr}`);
+  const sendResult = await retry(() => server.sendTransaction(signedTx));
+  if (sendResult.errorResult) {
+    throw new Error(`Transaction failed: ${sendResult.errorResult}`);
   }
 
   // Wait for completion
-  let status = await server.getTransaction(sendResult.hash);
+  let status = await retry(() => server.getTransaction(sendResult.hash));
   let retries = 0;
   while (status.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND && retries < 15) {
     await new Promise(r => setTimeout(r, 2000));
-    status = await server.getTransaction(sendResult.hash);
+    status = await retry(() => server.getTransaction(sendResult.hash));
     retries++;
   }
 

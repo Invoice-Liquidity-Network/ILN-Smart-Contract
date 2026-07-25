@@ -440,7 +440,10 @@ pub fn set_reputation(env: &Env, profile: &ReputationProfile) {
         || old_profile.invoices_defaulted != profile.invoices_defaulted
     {
         env.events().publish(
-            (Symbol::new(env, "reputation_updated"), profile.address.clone()),
+            (
+                Symbol::new(env, "reputation_updated"),
+                profile.address.clone(),
+            ),
             crate::events::ReputationUpdated {
                 address: profile.address.clone(),
                 old_score,
@@ -584,9 +587,7 @@ pub fn set_lp_score(env: &Env, lp: &Address, score: u32) {
             env.storage().persistent().remove(&key);
         }
     } else {
-        env.storage()
-            .persistent()
-            .set(&key, &score);
+        env.storage().persistent().set(&key, &score);
     }
 }
 

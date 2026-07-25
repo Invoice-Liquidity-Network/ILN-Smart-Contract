@@ -1,0 +1,16 @@
+{
+  "name": "@invoice-liquidity/types",
+  "version": "0.0.0",
+  "description": "Shared domain types for ILN",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsd"
+  },
+  "devDependencies": {
+    "tsd": "^0.31.0",
+    "typescript": "^5.4.0"
+  }
+}

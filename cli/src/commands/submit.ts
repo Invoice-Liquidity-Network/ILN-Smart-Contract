@@ -11,6 +11,7 @@
 import { Command } from "commander";
 import type { SubmitOptions, SubmitResult } from "./submit-types.js";
 import { printReceiptTable, bpsToYieldPct } from "./submit-receipt.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export type Prompter = () => Promise<Required<Omit<SubmitOptions, "dryRun">>>;
 export type Submitter = (opts: Required<Omit<SubmitOptions, "dryRun">>) => Promise<SubmitResult>;
@@ -92,6 +93,9 @@ export function makeSubmitCommand(
     .option("--referral <code>", "Optional referral code")
     .option("--dry-run", "Build and print transaction without signing")
     .action(async (opts: SubmitOptions) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         const isInteractive = !opts.payer && !opts.amount && !opts.rate && !opts.due;
         const params = isInteractive
@@ -106,22 +110,25 @@ export function makeSubmitCommand(
             };
 
         if (!params.payer || !validateStellarAddress(params.payer)) {
-          console.error("Error: invalid payer address");
-          process.exit(1);
+          formatError("invalid payer address", "INVALID_ADDRESS", json);
         }
 
         if (opts.dryRun) {
-          console.log("\n[dry-run] Transaction payload (not signed):");
-          console.log(JSON.stringify({ ...params, rateBps: Number(params.rate) }, null, 2));
+          const dryRunPayload = { ...params, rateBps: Number(params.rate) };
+          formatOutput(dryRunPayload, json, () => {
+            console.log("\n[dry-run] Transaction payload (not signed):");
+            console.log(JSON.stringify(dryRunPayload, null, 2));
+          });
           return;
         }
 
         const result = await submitter(params as Required<Omit<SubmitOptions, "dryRun">>);
-        console.log(`\n✓ Invoice #${result.invoiceId} submitted. TX: ${result.txHash}`);
-        printReceiptTable(result);
+        formatOutput(result, json, () => {
+          console.log(`\n✓ Invoice #${result.invoiceId} submitted. TX: ${result.txHash}`);
+          printReceiptTable(result);
+        });
       } catch (err) {
-        console.error(`Submit failed: ${(err as Error).message}`);
-        process.exit(1);
+        formatError((err as Error).message, "SUBMIT_ERROR", json);
       }
     });
 

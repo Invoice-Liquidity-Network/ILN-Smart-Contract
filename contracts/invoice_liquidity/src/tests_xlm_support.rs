@@ -85,16 +85,15 @@ fn test_submit_invoice_with_xlm_token() {
     let discount_rate = 300; // 3%
 
     // Submit invoice with XLM token
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     let invoice = client.get_invoice(&invoice_id);
     assert_eq!(invoice.token, xlm_address);
@@ -113,16 +112,15 @@ fn test_fund_invoice_with_xlm() {
     let discount_rate = 300; // 3%
 
     // Submit XLM invoice
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     // Mint XLM to funder
     let xlm_token = TokenClient::new(&env, &xlm_address);
@@ -130,8 +128,7 @@ fn test_fund_invoice_with_xlm() {
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Fund invoice with XLM
-    client
-        .fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
 
     let invoice = client.get_invoice(&invoice_id);
     assert_eq!(invoice.status, InvoiceStatus::Funded);
@@ -155,23 +152,21 @@ fn test_mark_paid_with_xlm() {
     let discount_rate = 300; // 3%
 
     // Submit and fund XLM invoice
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     let xlm_token = TokenClient::new(&env, &xlm_address);
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
-    client
-        .fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
 
     // Mint XLM to payer for payment
     xlm_admin.mint(&payer, &XLM_INVOICE_AMOUNT);
@@ -199,24 +194,22 @@ fn test_partial_funding_with_xlm() {
     let discount_rate = 300; // 3%
 
     // Submit XLM invoice
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     let xlm_token = TokenClient::new(&env, &xlm_address);
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Partially fund with XLM
-    client
-        .fund_invoice(&funder, &invoice_id, &XLM_FUND_AMOUNT, &false);
+    client.fund_invoice(&funder, &invoice_id, &XLM_FUND_AMOUNT, &false);
 
     let invoice = client.get_invoice(&invoice_id);
     assert_eq!(invoice.status, InvoiceStatus::PartiallyFunded);
@@ -234,23 +227,21 @@ fn test_xlm_volume_tracking() {
     let discount_rate = 300; // 3%
 
     // Submit and fund XLM invoice
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     let xlm_token = TokenClient::new(&env, &xlm_address);
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
-    client
-        .fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
 
     // Check that XLM volume is tracked
     let stats = client.get_contract_stats();
@@ -274,36 +265,32 @@ fn test_mixed_token_operations() {
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
 
     // Submit USDC invoice
-    let usdc_invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &USDC_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &usdc_address,
-            &ReferralCode::None,
-        );
+    let usdc_invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &USDC_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &usdc_address,
+        &ReferralCode::None,
+    );
 
     usdc_admin.mint(&funder, &USDC_INVOICE_AMOUNT);
-    client
-        .fund_invoice(&funder, &usdc_invoice_id, &USDC_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &usdc_invoice_id, &USDC_INVOICE_AMOUNT, &false);
 
     // Submit XLM invoice
-    let xlm_invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let xlm_invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
-    client
-        .fund_invoice(&funder, &xlm_invoice_id, &XLM_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &xlm_invoice_id, &XLM_INVOICE_AMOUNT, &false);
 
     // Verify both volumes are tracked correctly
     let stats = client.get_contract_stats();
@@ -322,24 +309,22 @@ fn test_xlm_precision_in_calculations() {
     let discount_rate = 300; // 3%
 
     // Submit XLM invoice
-    let invoice_id = client
-        .submit_invoice(
-            &freelancer,
-            &payer,
-            &XLM_INVOICE_AMOUNT,
-            &due_date,
-            &discount_rate,
-            &xlm_address,
-            &ReferralCode::None,
-        );
+    let invoice_id = client.submit_invoice(
+        &freelancer,
+        &payer,
+        &XLM_INVOICE_AMOUNT,
+        &due_date,
+        &discount_rate,
+        &xlm_address,
+        &ReferralCode::None,
+    );
 
     let xlm_token = TokenClient::new(&env, &xlm_address);
     let xlm_admin = StellarAssetClient::new(&env, &xlm_address);
     xlm_admin.mint(&funder, &XLM_INVOICE_AMOUNT);
 
     // Fund and verify discount calculation is correct with 7 decimal precision
-    client
-        .fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
+    client.fund_invoice(&funder, &invoice_id, &XLM_INVOICE_AMOUNT, &false);
 
     let invoice = client.get_invoice(&invoice_id);
 

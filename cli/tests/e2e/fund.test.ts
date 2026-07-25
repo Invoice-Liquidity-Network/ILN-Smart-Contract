@@ -28,7 +28,7 @@ describe("iln fund — confirmation flow", () => {
     expect(executor).toHaveBeenCalledWith("INV-101");
     expect(logs.some((l) => l.includes("Funded invoice"))).toBe(true);
     expect(logs.some((l) => l.includes("TXFUND001"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("shows amount, token, and yield in the confirm prompt", async () => {
@@ -43,7 +43,7 @@ describe("iln fund — confirmation flow", () => {
     const promptMsg = (confirm.mock.calls[0] as string[])[0];
     expect(promptMsg).toContain("500 USDC");
     expect(promptMsg).toContain("3.20%");
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("aborts when user declines confirmation", async () => {
@@ -59,7 +59,7 @@ describe("iln fund — confirmation flow", () => {
 
     expect(executor).not.toHaveBeenCalled();
     expect(logs.some((l) => l.includes("Aborted"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("skips confirmation and funds immediately with --yes", async () => {
@@ -73,7 +73,7 @@ describe("iln fund — confirmation flow", () => {
 
     expect(confirm).not.toHaveBeenCalled();
     expect(executor).toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error when fetcher throws", async () => {
@@ -86,6 +86,6 @@ describe("iln fund — confirmation flow", () => {
     await cmd.parseAsync(["--id", "INV-999"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

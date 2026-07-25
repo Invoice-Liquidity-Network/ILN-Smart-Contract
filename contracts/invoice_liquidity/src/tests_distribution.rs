@@ -101,8 +101,7 @@ fn distribution_hooks_track_lp_freelancer_and_payer() {
     env.ledger().set(ledger.clone());
 
     let due_date = ledger.timestamp + (24 * 60 * 60) + 3600; // 25 hours in the future
-    let submitted = invoice.submit_invoice(        &ReferralCode::None,
-    );
+    let submitted = invoice.submit_invoice(&ReferralCode::None);
 
     invoice.fund_invoice(&funder, &submitted, &invoice_amount, &false);
     assert_eq!(dist.lp_volume(&funder), invoice_amount);

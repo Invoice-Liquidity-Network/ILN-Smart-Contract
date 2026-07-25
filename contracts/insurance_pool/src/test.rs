@@ -103,14 +103,20 @@ fn claim_is_idempotent_per_invoice() {
     let res = s.client.try_claim(&42);
     // `claim` returns `i128` and panics with the error, so it surfaces as the
     // outer host error (a `soroban_sdk::Error`) rather than an inner `Result`.
-    assert_eq!(res, Err(Ok(soroban_sdk::Error::from(InsuranceError::AlreadyClaimed))));
+    assert_eq!(
+        res,
+        Err(Ok(soroban_sdk::Error::from(InsuranceError::AlreadyClaimed)))
+    );
 }
 
 #[test]
 fn claim_rejects_when_pool_empty() {
     let s = setup();
     let res = s.client.try_claim(&99);
-    assert_eq!(res, Err(Ok(soroban_sdk::Error::from(InsuranceError::PoolEmpty))));
+    assert_eq!(
+        res,
+        Err(Ok(soroban_sdk::Error::from(InsuranceError::PoolEmpty)))
+    );
 }
 
 #[test]

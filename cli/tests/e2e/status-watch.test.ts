@@ -32,7 +32,7 @@ describe("iln status --watch", () => {
     await cmd.parseAsync(["--id", "INV-700", "--watch"], { from: "user" });
 
     expect(mockSetInterval).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("sets interval when invoice is in a non-terminal state with --watch", async () => {
@@ -46,7 +46,7 @@ describe("iln status --watch", () => {
     await cmd.parseAsync(["--id", "INV-700", "--watch"], { from: "user" });
 
     expect(mockSetInterval).toHaveBeenCalledWith(expect.any(Function), 10_000);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("does not set interval without --watch flag even for non-terminal state", async () => {
@@ -60,6 +60,6 @@ describe("iln status --watch", () => {
     await cmd.parseAsync(["--id", "INV-700"], { from: "user" });
 
     expect(mockSetInterval).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

@@ -64,7 +64,9 @@ impl MockOracle {
             .get::<_, bool>(&MockOracleKey::ShouldPanic)
             .unwrap_or(false)
         {
-            env.storage().temporary().remove(&MockOracleKey::ShouldPanic);
+            env.storage()
+                .temporary()
+                .remove(&MockOracleKey::ShouldPanic);
             panic!("mock oracle: forced panic (set_should_panic was armed)");
         }
 
@@ -80,7 +82,10 @@ impl MockOracle {
             .get(&MockOracleKey::Timestamp)
             .unwrap_or(0u64);
 
-        VerificationResult { verified, timestamp }
+        VerificationResult {
+            verified,
+            timestamp,
+        }
     }
 
     /// Update verification status for `payer`.

@@ -30,7 +30,7 @@ concurrency:
 jobs:
     cargo-deny:
         name: Dependency Audit (cargo-deny)
-        runs-on: ubuntu-latest
+        runs-on: namespace-profile-nursca
         timeout-minutes: 15
         steps:
             - uses: actions/checkout@v6

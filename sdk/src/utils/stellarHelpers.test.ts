@@ -9,7 +9,7 @@ import {
 // ── isValidGAddress ───────────────────────────────────────────────────────────
 
 describe("isValidGAddress", () => {
-  const valid = "GABCD1234567890123456789012345678901234567890123456789012";
+  const valid = "GABCD123456789012345678901234567890123456789012345678901";
 
   it("returns true for a 56-char G-address", () => {
     expect(isValidGAddress(valid)).toBe(true);

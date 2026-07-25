@@ -28,7 +28,7 @@ describe("iln cancel — happy path", () => {
     expect(executor).toHaveBeenCalledWith("42");
     expect(logs.some((l) => l.includes("cancelled"))).toBe(true);
     expect(logs.some((l) => l.includes("TXCANCEL001"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("skips confirmation prompt with --yes flag", async () => {
@@ -43,7 +43,7 @@ describe("iln cancel — happy path", () => {
 
     expect(confirm).not.toHaveBeenCalled();
     expect(executor).toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("aborts without cancelling when user declines confirmation", async () => {
@@ -59,6 +59,6 @@ describe("iln cancel — happy path", () => {
 
     expect(executor).not.toHaveBeenCalled();
     expect(logs.some((l) => l.includes("no changes"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

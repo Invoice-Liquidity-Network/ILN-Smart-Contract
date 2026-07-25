@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from "vitest";
 /**
  * Tests for fundInvoice() — covers:
  *   - pre-approved path (no approval needed)
@@ -10,7 +10,22 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
  */
 
 import { fundInvoice, computeEffectiveYieldBps } from "./fundInvoice.js";
-import { SorobanRpc, Networks, Account, Keypair } from "@stellar/stellar-sdk";
+import { SorobanRpc, Networks, Account, Keypair, scValToNative } from "@stellar/stellar-sdk";
+
+// Mock scValToNative to control invoice decoding in tests, and Transaction
+// so signAndSubmit doesn't attempt to parse fake XDR strings.
+vi.mock("@stellar/stellar-sdk", async () => {
+  const actual = await vi.importActual<typeof import("@stellar/stellar-sdk")>("@stellar/stellar-sdk");
+  class MockTransaction {
+    sign = vi.fn();
+    constructor() {}
+  }
+  return {
+    ...actual,
+    scValToNative: vi.fn(),
+    Transaction: MockTransaction,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -29,11 +44,11 @@ import {
   isAllowanceSufficient,
 } from "../utils/allowance.js";
 
-const mockGetAllowance = getAllowance as jest.MockedFunction<typeof getAllowance>;
-const mockBuildApprove = buildApproveTransaction as jest.MockedFunction<
+const mockGetAllowance = getAllowance as vi.MockedFunction<typeof getAllowance>;
+const mockBuildApprove = buildApproveTransaction as vi.MockedFunction<
   typeof buildApproveTransaction
 >;
-const mockIsAllowanceSufficient = isAllowanceSufficient as jest.MockedFunction<
+const mockIsAllowanceSufficient = isAllowanceSufficient as vi.MockedFunction<
   typeof isAllowanceSufficient
 >;
 
@@ -41,11 +56,10 @@ const mockIsAllowanceSufficient = isAllowanceSufficient as jest.MockedFunction<
 // Test fixtures
 // ---------------------------------------------------------------------------
 
-const LP_SECRET = "SCZANGBA5RLAZ7IQVXSRQD5KXJLJPNWZPWHSB4TWJNSC2DL5CGFJ6Y2";
+const LP_SECRET = "SAQFWOYMQZD3ZQ2GMY7IXITDC7IDYMZYVEKB5LOXTMT2MCPDEUUXEN2E";
 const LP_KEYPAIR = Keypair.fromSecret(LP_SECRET);
-const LP_PUBLIC = LP_KEYPAIR.publicKey();
-const CONTRACT_ID = "CBINVOICE0000000000000000000000000000000000000000000000000";
-const TOKEN_ID = "CDTOKEN000000000000000000000000000000000000000000000000000";
+const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+const TOKEN_ID = "CAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDQF";
 
 // Minimal invoice fixture (status Pending, 30-day maturity, 3% discount)
 const MOCK_INVOICE = {
@@ -68,51 +82,16 @@ const mockServer = {
 
 // Helper: make getAccount resolve with the LP's fake account data
 function mockAccountLoad(seq = "100") {
-  (mockServer.getAccount as jest.Mock).mockResolvedValue({ sequence: seq });
+  (mockServer.getAccount as vi.Mock).mockResolvedValue({ sequence: seq });
 }
 
-// Helper: make simulateTransaction return a fake invoice via retval
-function mockInvoiceSimulation() {
-  const { nativeToScVal, xdr } = vi.importActual("@stellar/stellar-sdk");
-  // We mock scValToNative globally in jest setup; here we only need the
-  // simulateTransaction response to not be an error.
-  (mockServer.simulateTransaction as jest.Mock).mockImplementation(
-    async (tx) => {
-      // Detect call type by inspecting the mock call index
-      return {
-        result: {
-          retval: {
-            // Stubbed retval — scValToNative will be intercepted below
-            _stub: true,
-          },
-        },
-      };
-    }
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: mock @stellar/stellar-sdk at module level
-// ---------------------------------------------------------------------------
-
-// We need scValToNative to return our fake invoice for get_invoice calls
-// and our fake allowance for allowance calls. We do this via a module-level spy.
-let scValToNativeSpy: jest.SpyInstance;
-let sdkModule: typeof import("@stellar/stellar-sdk");
-
-beforeAll(async () => {
-  sdkModule = await import("@stellar/stellar-sdk");
-  scValToNativeSpy = vi.spyOn(sdkModule, "scValToNative");
-});
-
-afterAll(() => {
-  scValToNativeSpy?.mockRestore();
-});
+// scValToNative mock reference
+const mockScValToNative = scValToNative as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
   // Default: scValToNative returns the mock invoice struct
-  scValToNativeSpy.mockReturnValue({
+  mockScValToNative.mockReturnValue({
     id: "1",
     token: TOKEN_ID,
     amount: "1000000",
@@ -171,20 +150,20 @@ describe("fundInvoice — pre-approved path", () => {
       amount: 10_000_000n,
       expirationLedger: 9999,
     });
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 200,
     });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({
         ...tx,
         sign: vi.fn(),
         toEnvelope: () => ({ toXDR: () => "xdr" }),
       })
     );
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "PENDING",
       hash: "abc123fundtxhash",
     });
@@ -247,13 +226,13 @@ describe("fundInvoice — approval-needed path", () => {
       expirationLedger: 0,
     });
     mockBuildApprove.mockResolvedValue("APPROVALXDR==");
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 200,
     });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({
         ...tx,
         sign: vi.fn(),
@@ -262,7 +241,7 @@ describe("fundInvoice — approval-needed path", () => {
     );
 
     // sendTransaction: first call = approve tx, second call = fund tx
-    (mockServer.sendTransaction as jest.Mock)
+    (mockServer.sendTransaction as vi.Mock)
       .mockResolvedValueOnce({ status: "PENDING", hash: "approvetxhash" })
       .mockResolvedValueOnce({ status: "PENDING", hash: "fundtxhash" });
   });
@@ -356,13 +335,13 @@ describe("fundInvoice — approval-needed path", () => {
 describe("fundInvoice — error handling", () => {
   beforeEach(() => {
     mockAccountLoad("100");
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 200,
     });
   });
 
   it("throws when get_invoice simulation fails", async () => {
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       error: "contract trap",
       _parsed: true,
     });
@@ -373,7 +352,7 @@ describe("fundInvoice — error handling", () => {
   });
 
   it("throws when invoice status is not Pending or PartiallyFunded", async () => {
-    scValToNativeSpy.mockReturnValue({
+    mockScValToNative.mockReturnValue({
       id: "1",
       token: TOKEN_ID,
       amount: "1000000",
@@ -381,7 +360,7 @@ describe("fundInvoice — error handling", () => {
       discount_rate: 300,
       status: "Paid",
     });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
     mockGetAllowance.mockResolvedValue({ amount: 999999999n, expirationLedger: 9999 });
@@ -395,13 +374,13 @@ describe("fundInvoice — error handling", () => {
   it("throws when fund_invoice transaction errors", async () => {
     mockIsAllowanceSufficient.mockReturnValue(true);
     mockGetAllowance.mockResolvedValue({ amount: 999999999n, expirationLedger: 9999 });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({ ...tx, sign: vi.fn(), toEnvelope: () => ({ toXDR: () => "xdr" }) })
     );
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "ERROR",
       errorResult: { code: "INSUFFICIENT_BALANCE" },
     });
@@ -415,10 +394,10 @@ describe("fundInvoice — error handling", () => {
     mockIsAllowanceSufficient.mockReturnValue(false);
     mockGetAllowance.mockResolvedValue({ amount: 0n, expirationLedger: 0 });
     mockBuildApprove.mockResolvedValue("APPROVALXDR==");
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "ERROR",
       errorResult: { code: "INSUFFICIENT_BALANCE" },
     });
@@ -429,7 +408,7 @@ describe("fundInvoice — error handling", () => {
   });
 
   it("throws when getAccount fails (network error)", async () => {
-    (mockServer.getAccount as jest.Mock).mockRejectedValue(
+    (mockServer.getAccount as vi.Mock).mockRejectedValue(
       new Error("Network unreachable")
     );
 
@@ -448,21 +427,21 @@ describe("fundInvoice — PartiallyFunded invoice", () => {
     mockAccountLoad("100");
     mockIsAllowanceSufficient.mockReturnValue(true);
     mockGetAllowance.mockResolvedValue({ amount: 999999999n, expirationLedger: 9999 });
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({ sequence: 200 });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({ sequence: 200 });
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({ ...tx, sign: vi.fn(), toEnvelope: () => ({ toXDR: () => "xdr" }) })
     );
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "PENDING",
       hash: "partialtxhash",
     });
   });
 
   it("succeeds for PartiallyFunded invoices", async () => {
-    scValToNativeSpy.mockReturnValue({
+    mockScValToNative.mockReturnValue({
       id: "1",
       token: TOKEN_ID,
       amount: "1000000",
@@ -493,12 +472,12 @@ describe("fundInvoice — oracle verification", () => {
     mockAccountLoad("100");
     mockIsAllowanceSufficient.mockReturnValue(true);
     mockGetAllowance.mockResolvedValue({ amount: 999999999n, expirationLedger: 9999 });
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({ sequence: 200 });
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({ sequence: 200 });
   });
 
   it("throws when requireOracleVerification=true and oracle simulation errors", async () => {
     // First sim call = get_invoice (succeeds), second = get_price_oracle (errors)
-    (mockServer.simulateTransaction as jest.Mock)
+    (mockServer.simulateTransaction as vi.Mock)
       .mockResolvedValueOnce({ result: { retval: { _stub: true } } }) // get_invoice
       .mockResolvedValueOnce({ error: "no oracle", _parsed: true }); // get_price_oracle
 
@@ -515,7 +494,7 @@ describe("fundInvoice — oracle verification", () => {
   });
 
   it("throws when requireOracleVerification=true and oracle retval is null", async () => {
-    (mockServer.simulateTransaction as jest.Mock)
+    (mockServer.simulateTransaction as vi.Mock)
       .mockResolvedValueOnce({ result: { retval: { _stub: true } } }) // get_invoice
       .mockResolvedValueOnce({ result: { retval: null } }); // get_price_oracle
 
@@ -533,13 +512,13 @@ describe("fundInvoice — oracle verification", () => {
   });
 
   it("proceeds when requireOracleVerification=false (default)", async () => {
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({ ...tx, sign: vi.fn(), toEnvelope: () => ({ toXDR: () => "xdr" }) })
     );
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "PENDING",
       hash: "txhash",
     });
@@ -565,14 +544,14 @@ describe("fundInvoice — optional callbacks", () => {
     mockAccountLoad("100");
     mockIsAllowanceSufficient.mockReturnValue(true);
     mockGetAllowance.mockResolvedValue({ amount: 999999999n, expirationLedger: 9999 });
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({ sequence: 200 });
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({ sequence: 200 });
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: { _stub: true } },
     });
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
       async (tx) => ({ ...tx, sign: vi.fn(), toEnvelope: () => ({ toXDR: () => "xdr" }) })
     );
-    (mockServer.sendTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
       status: "PENDING",
       hash: "nocalltxhash",
     });

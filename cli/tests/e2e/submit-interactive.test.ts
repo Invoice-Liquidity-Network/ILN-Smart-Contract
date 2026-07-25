@@ -6,7 +6,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { makeSubmitCommand } from "../../src/commands/submit";
 import type { SubmitResult } from "../../src/commands/submit-types";
 
-const VALID_PAYER = "GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFG";
+const VALID_PAYER = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTU23";
 
 const MOCK_PROMPT_ANSWERS = {
   payer: VALID_PAYER,
@@ -43,7 +43,7 @@ describe("iln submit — interactive mode", () => {
 
     expect(prompter).toHaveBeenCalledTimes(1);
     expect(submitter).toHaveBeenCalledWith(expect.objectContaining({ payer: VALID_PAYER }));
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("passes all prompt answers to submitter", async () => {
@@ -63,7 +63,7 @@ describe("iln submit — interactive mode", () => {
       due: "2026-03-15",
       referral: "REF42",
     });
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("prints success message with invoice ID after interactive submit", async () => {
@@ -77,7 +77,7 @@ describe("iln submit — interactive mode", () => {
     await cmd.parseAsync([], { from: "user" });
 
     expect(logs.some((l) => l.includes("INV-INTER"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("handles prompter rejection gracefully", async () => {
@@ -91,6 +91,6 @@ describe("iln submit — interactive mode", () => {
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(submitter).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

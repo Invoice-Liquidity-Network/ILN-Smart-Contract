@@ -5,11 +5,11 @@ import { Account, SorobanRpc } from '@stellar/stellar-sdk';
 
 describe('queries', () => {
   const mockServer = { simulateTransaction: vi.fn() } as unknown as SorobanRpc.Server;
-  const mockAccount = new Account('G123', '1');
+  const mockAccount = new Account("GAGZSXAR7P7PASD2PGYISBMEZCMSI35TRJXYZTZNNCAUZRDEMHQM2XJS", "1");
 
   it('getInvoice throws InvoiceNotFound', async () => {
     // @ts-ignore
     mockServer.simulateTransaction.mockResolvedValue({ error: 'NotFound' });
-    await expect(getInvoice(mockServer, 'C123', 1n, mockAccount, 'pass')).rejects.toThrow(ILNError.InvoiceNotFound);
+    await expect(getInvoice(mockServer, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4", 1n, mockAccount, 'pass')).rejects.toThrow(ILNError.InvoiceNotFound);
   });
 });

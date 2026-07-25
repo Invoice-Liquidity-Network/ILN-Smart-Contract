@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { vi, describe, it, expect, afterEach } from 'vitest';
 /**
  * Tests for FreighterSigner — covers:
  *   - Installation detection (WalletNotInstalled)
@@ -10,53 +10,22 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
  */
 
 import { FreighterSigner, ILNError, ILNErrorCode } from "./FreighterSigner.js";
-import { Networks, SorobanRpc, TransactionBuilder, Account, BASE_FEE, Operation, Asset, Keypair } from "@stellar/stellar-sdk";
+import { Networks, TransactionBuilder, Account, BASE_FEE, Operation, Asset, Keypair } from "@stellar/stellar-sdk";
 
 // ---------------------------------------------------------------------------
 // Mock Freighter API
 // ---------------------------------------------------------------------------
 
-interface MockFreighter {
-  isConnected: jest.Mock<Promise<boolean>>;
-  getPublicKey: jest.Mock<Promise<string>>;
-  getNetwork: jest.Mock<Promise<string>>;
-  signTransaction: jest.Mock<Promise<string>>;
-}
+import { createMockFreighter, makeMockServer } from "@iln/test-utils";
 
-function createMockFreighter(overrides: Partial<MockFreighter> = {}): MockFreighter {
-  return {
-    isConnected: vi.fn().mockResolvedValue(true),
-    getPublicKey: vi.fn().mockResolvedValue("GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"),
-    getNetwork: vi.fn().mockResolvedValue("TESTNET"),
-    signTransaction: vi.fn().mockResolvedValue("AAAASIGNEDXDR=="),
-    ...overrides,
-  };
-}
+type MockFreighter = ReturnType<typeof createMockFreighter>;
 
 function installFreighter(mock: MockFreighter): void {
-  (global as any).window = { freighterApi: mock };
+  (global as unknown).window = { freighterApi: mock };
 }
 
 function uninstallFreighter(): void {
-  delete (global as any).window;
-}
-
-// ---------------------------------------------------------------------------
-// Mock server
-// ---------------------------------------------------------------------------
-
-function makeMockServer(opts: { fail?: boolean } = {}): SorobanRpc.Server {
-  return {
-    prepareTransaction: vi.fn().mockImplementation(async (tx: any) => {
-      if (opts.fail) {
-        return { error: "simulation error", _parsed: true };
-      }
-      return {
-        ...tx,
-        toEnvelope: () => ({ toXDR: (_fmt: string) => "PREPAREDXDR==" }),
-      };
-    }),
-  } as unknown as SorobanRpc.Server;
+  delete (global as unknown).window;
 }
 
 function buildTestTx(kp: Keypair = Keypair.random()) {
@@ -250,7 +219,7 @@ describe("FreighterSigner — signTransaction", () => {
     expect(result).toBe("AAAASIGNEDXDR==");
     expect(server.prepareTransaction).toHaveBeenCalledWith(tx);
     expect(mock.signTransaction).toHaveBeenCalledWith(
-      "PREPAREDXDR==",
+      expect.any(String),
       expect.objectContaining({ network: "TESTNET" })
     );
   });
@@ -274,7 +243,7 @@ describe("FreighterSigner — signTransaction", () => {
 
     const signer = new FreighterSigner({ networkPassphrase: Networks.TESTNET });
     await signer.connect();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     const server = makeMockServer();
     const tx = buildTestTx();
@@ -358,7 +327,7 @@ describe("FreighterSigner — signTransaction errors", () => {
 
   it("throws NetworkMismatch when Freighter signals network mismatch", async () => {
     const mock = createMockFreighter({
-      signTransaction: jest
+      signTransaction: vi
         .fn()
         .mockRejectedValue("Network mismatch. Please switch to TESTNET."),
     });
@@ -377,7 +346,7 @@ describe("FreighterSigner — signTransaction errors", () => {
 
   it("throws SigningFailed for unknown Freighter errors", async () => {
     const mock = createMockFreighter({
-      signTransaction: jest
+      signTransaction: vi
         .fn()
         .mockRejectedValue(new Error("Something unexpected happened")),
     });

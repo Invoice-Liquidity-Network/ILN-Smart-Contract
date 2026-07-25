@@ -24,7 +24,7 @@ describe("iln marketplace — list", () => {
     expect(fetcher).toHaveBeenCalled();
     expect(logs.some((l) => l.includes("INV-A"))).toBe(true);
     expect(logs.some((l) => l.includes("INV-B"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("prints no-results message when list is empty", async () => {
@@ -36,7 +36,7 @@ describe("iln marketplace — list", () => {
     await cmd.parseAsync([], { from: "user" });
 
     expect(logs.some((l) => l.toLowerCase().includes("no pending"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });
 

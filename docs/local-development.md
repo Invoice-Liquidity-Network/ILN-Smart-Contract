@@ -1,908 +1,367 @@
-# Local Development Guide for ILN Smart Contracts
+# Local Development Guide
 
-This guide walks you through setting up a complete local development environment for the ILN smart contracts, including a local Stellar node via Docker for integration testing without depending on the testnet.
-
----
-
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Part 1: Rust & Stellar CLI Setup](#part-1-rust--stellar-cli-setup)
-3. [Part 2: Local Stellar Node with Docker](#part-2-local-stellar-node-with-docker)
-4. [Part 3: Building Contracts](#part-3-building-contracts)
-5. [Part 4: Running Tests](#part-4-running-tests)
-6. [Part 5: Deploying to Local Node](#part-5-deploying-to-local-node)
-7. [Local Development Workflow](#local-development-workflow)
-8. [Common Issues and Fixes](#common-issues-and-fixes)
-9. [Helper Scripts](#helper-scripts)
-10. [CI/CD Integration](#cicd-integration)
-
----
+This guide sets up the full ILN local stack: Soroban contracts, SDK, CLI, indexer, notifications service, and the Docker services used by local integration work.
 
 ## Prerequisites
 
-| Tool | Minimum version | Platform |
-|------|----------------|----------|
-| Rust | 1.74 | Any |
-| Git | any recent | Any |
-| Docker | 20.10+ | Linux, macOS, Windows (with WSL2) |
-| Docker Compose | 2.0+ | Any |
-| curl | any recent | Any |
+| Tool | Version | Why it is needed |
+|------|---------|------------------|
+| Git | Recent | Clone the repository and submodules. |
+| Node.js | 20.x LTS or newer | Run the SDK, CLI, indexer, notifications service, and TypeScript scripts. |
+| pnpm | 9.x or newer | Preferred package manager for contributors. The repo also includes npm lockfiles, so `npm ci` is acceptable per service. |
+| Docker Desktop / Docker Engine | 24.x or newer | Run the local Stellar quickstart node and notifications Postgres container. |
+| Docker Compose | v2.x | Start and inspect the local stack. |
+| Rust | 1.74 or newer | Build and test Soroban smart contracts. |
+| Stellar CLI | Latest stable | Configure local/testnet networks, fund accounts, deploy, and invoke contracts. |
+| curl | Recent | Health checks and install scripts. |
 
-> **Windows Users:** Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run all commands in an Ubuntu terminal.
+Windows contributors should use Ubuntu on WSL2 and run all commands from the WSL terminal. Docker Desktop must have WSL integration enabled for that distribution.
 
----
+## Clone
 
-## Part 1: Rust & Stellar CLI Setup
+Clone with submodules so future vendored examples or contract fixtures are included:
 
-### 1.1 Install rustup
+```bash
+git clone --recurse-submodules https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract.git
+cd ILN-Smart-Contract
+git submodule update --init --recursive
+```
+
+If you already cloned without submodules, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+## Install Toolchains
+
+Install Rust and the Soroban WASM target:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
-```
-
-Verify:
-```bash
-rustc --version  # should be ≥ 1.74
-cargo --version
-```
-
-### 1.2 Add the WASM target
-
-Soroban contracts compile to `wasm32v1-none`:
-
-```bash
+rustup update stable
 rustup target add wasm32v1-none
 ```
 
-Verify:
-```bash
-rustup target list --installed | grep wasm32v1
-# Output: wasm32v1-none-unknown
-```
-
-### 1.3 Install Stellar CLI
+Install the Stellar CLI:
 
 ```bash
 cargo install --locked stellar-cli --features opt
 stellar --version
 ```
 
-If you already have an older version, re-run the command above to upgrade.
-
-### 1.4 Clone the repository
+Install Node.js 20 and pnpm:
 
 ```bash
-git clone https://github.com/directorfloo/ILN-Smart-Contract.git
-cd ILN-Smart-Contract
+node --version
+corepack enable
+corepack prepare pnpm@latest --activate
+pnpm --version
 ```
 
-### 1.5 Verify the build
+The repo currently has separate package manifests under `sdk/`, `cli/`, `indexer/`, and `notifications/` rather than a root pnpm workspace. Run package-manager commands from the service directory.
+
+## Environment Variables
+
+Local contract deployment writes `.contracts-local.env`. Source it before running scripts that need contract IDs:
 
 ```bash
-cargo build
+source .contracts-local.env
 ```
 
-This verifies that the dependency graph resolves correctly. No WASM is generated at this stage.
+| Variable | Used by | Default | Description |
+|----------|---------|---------|-------------|
+| `INVOICE_LIQUIDITY_ID` | Local deploy output, SDK examples, scripts | none | Deployed `invoice_liquidity` contract ID. Created by `scripts/deploy-local.sh`. |
+| `ILN_GOVERNANCE_ID` | Local deploy output | none | Deployed governance contract ID. |
+| `ILN_DISTRIBUTION_ID` | Local deploy output | none | Deployed distribution contract ID. |
+| `REPUTATION_BONUS_ID` | Local deploy output | none | Deployed reputation bonus contract ID. |
+| `NETWORK` | Local deploy output | `local` | Stellar CLI network name used during deployment. |
+| `SOURCE` | Local deploy output | `alice` | Stellar CLI key name used to deploy local contracts. |
+| `SOROBAN_RPC_URL` | `scripts/smoke-test.ts`, migration scripts | `https://soroban-testnet.stellar.org` | RPC endpoint for smoke tests or migration helpers. Use `http://localhost:8000` for local quickstart. |
+| `NETWORK_PASSPHRASE` | `scripts/smoke-test.ts`, migration scripts | Stellar testnet passphrase | Network passphrase for the target chain. Local standalone passphrase is `Standalone Network ; February 2021`. |
+| `CONTRACT_ID` | `scripts/smoke-test.ts` | none | Contract ID to smoke test. Usually set to `$INVOICE_LIQUIDITY_ID`. |
+| `ADMIN_SECRET` | `scripts/migrate-v1-v2.ts` | none | Secret key for the admin account authorized to migrate contracts. Do not commit this value. |
+| `V1_WASM` | `scripts/migrate-v1-v2.ts` | none | Path to the previous WASM when testing migrations. |
+| `V2_WASM` | `scripts/migrate-v1-v2.ts` | none | Path to the new WASM when testing migrations. |
+| `V2_WASM_HASH` | `scripts/migrate-v1-v2.ts` | none | Uploaded hash for the new WASM. |
+| `STELLAR_TESTNET_DEPLOYER_SECRET` | `scripts/deploy-testnet.sh`, deploy workflow | none | Testnet deployer secret key. Store only in shell secrets or GitHub Actions secrets. |
+| `TEST_SUBMITTER_SECRET` | SDK integration tests | none | Friendbot-funded testnet submitter secret. Integration tests skip when absent. |
+| `TEST_LP_SECRET` | SDK integration tests | none | Friendbot-funded testnet liquidity-provider secret. Integration tests skip when absent. |
+| `TEST_RPC_URL` | SDK integration tests | Stellar testnet RPC | Optional SDK integration RPC override. |
+| `PORT` | Indexer and notifications | `3001` | HTTP listen port. Use different ports if running both services at once. |
+| `DB_PATH` | Indexer | `./indexer.db` | SQLite database path for indexed state. |
+| `CACHE_TTL_MS` | Indexer | `60000` | Cache time-to-live in milliseconds for API responses. |
+| `DATABASE_URL` | Docker Compose notifications container | `postgres://notifications:notifications@notifications-db:5432/notifications` | Postgres DSN passed to the container. The current local service code uses its in-memory/default store, but Compose defines this for database-backed deployments. |
 
----
+Recommended local shell setup:
 
-## Part 2: Local Stellar Node with Docker
-
-This section sets up a local Stellar network using Docker, perfect for end-to-end integration testing.
-
-### 2.1 Install Docker
-
-**Linux:**
 ```bash
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-newgrp docker
+export SOROBAN_RPC_URL=http://localhost:8000
+export NETWORK_PASSPHRASE="Standalone Network ; February 2021"
+export PORT=3002
 ```
 
-**macOS:**
+## Install Service Dependencies
+
+Install dependencies in each Node service:
+
 ```bash
-# Using Homebrew
-brew install docker
-brew install docker-compose
-
-# Or download Docker Desktop from https://www.docker.com/products/docker-desktop
+(cd sdk && pnpm install)
+(cd cli && pnpm install)
+(cd indexer && pnpm install)
+(cd notifications && pnpm install)
 ```
 
-**Windows (WSL2):**
-1. Install WSL2: https://learn.microsoft.com/en-us/windows/wsl/install
-2. Install Docker Desktop for Windows with WSL2 backend
-3. Run all commands in WSL2 terminal
+If pnpm is unavailable, use the checked-in npm lockfiles:
 
-Verify:
 ```bash
-docker --version
-docker compose --version
+(cd sdk && npm ci)
+(cd cli && npm ci)
+(cd indexer && npm ci)
+(cd notifications && npm install)
 ```
 
-### 2.2 Create docker-compose.yml for Local Stellar Network
+## Start Docker Services
 
-Create the following file at the repository root:
+The checked-in `docker-compose.yml` starts:
 
-```yaml
-# docker-compose.yml
-version: '3.8'
+| Service | Port | Health check |
+|---------|------|--------------|
+| `stellar` | `8000`, `11626` | `curl http://localhost:8000/ledger` |
+| `notifications-db` | host `5433` to container `5432` | `pg_isready -U notifications` |
+| `notifications` | `3001` | `curl http://localhost:3001/health` |
 
-services:
-  stellar:
-    image: stellar/stellar-quickstart:latest
-    container_name: iln-stellar-local
-    ports:
-      - "8000:8000"  # HTTP port
-      - "11626:11626" # Peer port
-    environment:
-      - NETWORK_MODE=standalone
-      - STELLAR_NETWORK_ID=local
-      - STELLAR_CAPTIVE_CORE_CONFIG_PATH=/etc/stellar/captive-core.cfg
-    volumes:
-      - stellar-data:/opt/stellar
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 5s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
-
-volumes:
-  stellar-data:
-
-networks:
-  default:
-    name: iln-local-network
-```
-
-Save this as `docker-compose.yml` in the repository root.
-
-### 2.3 Start the Local Stellar Node
+Start the local Stellar node first:
 
 ```bash
 docker compose up -d stellar
+docker compose ps
+curl -s http://localhost:8000/ledger
 ```
 
-Wait for the container to be healthy:
-```bash
-docker compose logs -f stellar | grep "ready"
-```
-
-The local Stellar RPC will be available at `http://localhost:8000/`.
-
-### 2.4 Verify the Local Node is Running
+Then start the notifications database and containerized notifications service when needed:
 
 ```bash
-curl -X GET http://localhost:8000/ledger
+docker compose up -d notifications-db notifications
+docker compose ps
+curl -s http://localhost:3001/health
 ```
 
-Expected output (JSON ledger info):
-```json
-{
-  "sequence": "1",
-  "hash": "...",
-  ...
-}
-```
-
----
-
-## Part 3: Building Contracts
-
-### 3.1 Build for Debug (Unit Tests)
+Inspect logs:
 
 ```bash
-cargo build
+docker compose logs -f stellar
+docker compose logs -f notifications
 ```
 
-This compiles all workspace members in debug mode and verifies dependencies.
-
-### 3.2 Build WASM for Deployment
+Stop services:
 
 ```bash
-cargo build --target wasm32v1-none --release
+docker compose down
 ```
 
-Or use the convenience alias:
-```bash
-cargo build-wasm
-```
-
-Output files appear in `target/wasm32v1-none/release/`:
-- `invoice_liquidity.wasm`
-- `iln_governance.wasm`
-- `iln_distribution.wasm`
-- `reputation_bonus.wasm`
-
-### 3.3 Check Binary Sizes
+Remove local volumes only when you want a clean chain/database:
 
 ```bash
-ls -lh target/wasm32v1-none/release/*.wasm
+docker compose down -v
 ```
 
-Expected sizes: 10–80 KB per contract (due to `opt-level = "z"` in release profile).
+## Configure Local Stellar
 
----
-
-## Part 4: Running Tests
-
-### 4.1 Unit and Integration Tests
-
-All tests run on your native architecture (no Wasm required) via `soroban-sdk` test utilities:
+The helper script verifies Docker, Rust, Stellar CLI, and the WASM target; starts the Stellar container; configures a `local` Stellar CLI network; creates `alice`; and funds it.
 
 ```bash
-# Run all tests
-cargo test
-
-# Run tests for a specific contract
-cargo test -p invoice_liquidity
-cargo test -p iln_governance
-cargo test -p reputation_bonus
-cargo test -p iln_distribution
-```
-
-### 4.2 Useful Test Flags
-
-```bash
-# Show stdout (useful for proptest failure output)
-cargo test -p invoice_liquidity -- --nocapture
-
-# Filter by test name
-cargo test -p invoice_liquidity test_update_max_discount
-
-# Run a specific test module
-cargo test -p invoice_liquidity tests_discount_invariants
-
-# Skip slow property-based tests
-cargo test -p invoice_liquidity -- --skip prop_
-
-# Run with thread count = 1 (useful for debugging)
-cargo test -p invoice_liquidity -- --test-threads=1 --nocapture
-```
-
-### 4.3 Fuzz Suite
-
-The `iln_fuzz` crate uses `proptest` for property-based testing:
-
-```bash
-cargo test -p iln_fuzz
-```
-
-This runs thousands of random test cases and may take 1–2 minutes.
-
-### 4.4 Benchmark Tests
-
-Invoice Liquidity includes benchmark tests:
-
-```bash
-cargo test -p invoice_liquidity benchmark -- --nocapture
-```
-
-Results are compared against baseline:
-```bash
-bash scripts/check_benchmark_regression.sh
-```
-
-### 4.5 Mutation Testing (Optional)
-
-Test mutation coverage with `cargo-mutants`:
-
-```bash
-cargo install cargo-mutants
-cargo mutants --package invoice_liquidity
-```
-
----
-
-## Part 5: Deploying to Local Node
-
-### 5.1 Configure Stellar CLI for Local Network
-
-```bash
-stellar network add \
-  --global local \
-  --rpc-url http://localhost:8000 \
-  --network-passphrase "Standalone Network ; February 2021"
-```
-
-Verify:
-```bash
-stellar network ls
-```
-
-### 5.2 Create and Fund a Local Test Account
-
-```bash
-# Generate a key
-stellar keys generate --global alice
-stellar keys address alice
-
-# Output: G...XXXX (save this)
-
-# Fund the account (local node provides free XLM)
-stellar account fund alice --network local
-```
-
-> The local Stellar network automatically funds new accounts with 10,000 XLM.
-
-### 5.3 Build and Upload WASM
-
-```bash
-# Build the contract
-cargo build-wasm
-
-# Upload the WASM
-WASM_HASH=$(stellar contract upload \
-  --network local \
-  --source alice \
-  --wasm target/wasm32v1-none/release/invoice_liquidity.wasm | grep -oP 'WASM hash: \K\w+')
-
-echo "WASM Hash: $WASM_HASH"
-```
-
-### 5.4 Deploy the Contract
-
-```bash
-CONTRACT_ID=$(stellar contract deploy \
-  --network local \
-  --source alice \
-  --wasm-hash $WASM_HASH | grep -oP 'Contract ID: \K\w+')
-
-echo "Contract ID: $CONTRACT_ID"
-```
-
-Save the contract ID for future invocations.
-
-### 5.5 Initialize the Contract
-
-First, create SAC (Stellar Asset Contract) tokens for testing:
-
-```bash
-# Create USDC SAC
-USDC_SAC=$(stellar contract deploy \
-  --network local \
-  --source alice \
-  --asset USDC:$(stellar keys address alice) | grep -oP 'Contract ID: \K\w+')
-
-echo "USDC SAC: $USDC_SAC"
-```
-
-Then initialize the main contract:
-
-```bash
-stellar contract invoke \
-  --network local \
-  --source alice \
-  --id $CONTRACT_ID \
-  -- initialize \
-  --admin $(stellar keys address alice) \
-  --usdc_token "$USDC_SAC" \
-  --xlm_sac "$(stellar keys address alice)"  # Using alice as mock for testing
-```
-
-### 5.6 Verify Contract on Local Node
-
-```bash
-stellar contract info \
-  --network local \
-  --id $CONTRACT_ID
-```
-
----
-
-## Local Development Workflow
-
-### Typical Workflow Loop
-
-1. **Make code changes**
-   ```bash
-   # Edit contract code
-   vim contracts/invoice_liquidity/src/lib.rs
-   ```
-
-2. **Run unit tests**
-   ```bash
-   cargo test -p invoice_liquidity -- --nocapture
-   ```
-
-3. **Build WASM**
-   ```bash
-   cargo build-wasm
-   ```
-
-4. **Deploy to local node**
-   ```bash
-   stellar contract upload --network local --source alice \
-     --wasm target/wasm32v1-none/release/invoice_liquidity.wasm
-   stellar contract deploy --network local --source alice --wasm-hash $HASH
-   ```
-
-5. **Test on local chain**
-   ```bash
-   stellar contract invoke --network local --source alice \
-     --id $CONTRACT_ID -- submit_invoice ...
-   ```
-
-### Quick Test Script
-
-Create `scripts/local-test.sh`:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-echo "=== Running unit tests ==="
-cargo test -p invoice_liquidity -- --nocapture
-
-echo "=== Building WASM ==="
-cargo build-wasm
-
-echo "=== All checks passed ==="
-```
-
-Run it:
-```bash
-chmod +x scripts/local-test.sh
-./scripts/local-test.sh
-```
-
----
-
-## Common Issues and Fixes
-
-### Issue: Docker daemon not running
-
-**Error:**
-```
-Cannot connect to the Docker daemon at unix:///var/run/docker.sock. 
-Is the docker daemon running?
-```
-
-**Fix:**
-```bash
-# Linux
-sudo systemctl start docker
-sudo usermod -aG docker $USER
-newgrp docker
-
-# macOS
-open /Applications/Docker.app
-
-# Windows (WSL2)
-# Restart Docker Desktop
-```
-
-### Issue: Port 8000 already in use
-
-**Error:**
-```
-Error starting container: bind: address already in use
-```
-
-**Fix:**
-```bash
-# Find the process using port 8000
-lsof -i :8000
-
-# Kill it
-kill -9 <PID>
-
-# Or use a different port in docker-compose.yml
-# Change "8000:8000" to "8001:8000"
-```
-
-### Issue: "wasm32v1-none not found" when building
-
-**Error:**
-```
-error: target 'wasm32v1-none-unknown' not installed
-```
-
-**Fix:**
-```bash
-rustup target add wasm32v1-none
-rustup target list --installed
-```
-
-### Issue: Stellar CLI not found
-
-**Error:**
-```bash
-stellar: command not found
-```
-
-**Fix:**
-```bash
-# Ensure cargo bin is in PATH
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# Reinstall
-cargo install --locked stellar-cli --features opt --force
-
-# Verify
-stellar --version
-```
-
-### Issue: Local node is not healthy
-
-**Error:**
-```
-docker-compose: stella health check failed
-```
-
-**Fix:**
-```bash
-# Check logs
-docker compose logs stellar
-
-# Restart the container
-docker compose restart stellar
-
-# Wait for health
-docker compose ps stellar
-# Should show Status: Up (healthy)
-```
-
-### Issue: Contract deployment fails with "invalid contract"
-
-**Error:**
-```
-Error: invalid contract (XDR error)
-```
-
-**Fix:**
-1. Ensure WASM was built with correct target:
-   ```bash
-   cargo build --target wasm32v1-none --release
-   file target/wasm32v1-none/release/invoice_liquidity.wasm
-   # Should output: WebAssembly (wasm) binary module
-   ```
-
-2. Verify the WASM hash matches:
-   ```bash
-   stellar contract upload --network local --source alice \
-     --wasm target/wasm32v1-none/release/invoice_liquidity.wasm
-   ```
-
-### Issue: Test timeout on property-based tests
-
-**Error:**
-```
-test tests_discount_invariants::prop_discount_rate ... timeout
-```
-
-**Fix:**
-```bash
-# Increase test timeout
-RUST_TEST_TIME_UNIT=10000 RUST_TEST_TIME_INTEGRATION=30000 cargo test
-
-# Or skip slow tests during development
-cargo test -- --skip prop_
-```
-
-### Issue: "Network not found" when invoking contract
-
-**Error:**
-```
-Error: network "local" not found
-```
-
-**Fix:**
-```bash
-# Verify network is configured
-stellar network ls
-
-# Reconfigure if needed
-stellar network remove local
-stellar network add --global local \
-  --rpc-url http://localhost:8000 \
-  --network-passphrase "Standalone Network ; February 2021"
-```
-
-### Issue: Out of memory when building
-
-**Error:**
-```
-error: could not compile 'invoice_liquidity' ... memory allocation failed
-```
-
-**Fix:**
-```bash
-# Clean build artifacts
-cargo clean
-
-# Increase swap (Linux)
-sudo fallocate -l 4G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# Try again with parallel jobs limited
-cargo build -j 2
-```
-
----
-
-## Helper Scripts
-
-### Setup Local Environment (One-Shot)
-
-Create `scripts/setup-local-env.sh`:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-echo "=== Setting up local development environment ==="
-
-# Check prerequisites
-echo "Checking Docker..."
-if ! command -v docker &> /dev/null; then
-  echo "❌ Docker not installed. Please install from https://www.docker.com"
-  exit 1
-fi
-
-echo "Checking Stellar CLI..."
-if ! command -v stellar &> /dev/null; then
-  echo "❌ Stellar CLI not installed. Installing..."
-  cargo install --locked stellar-cli --features opt
-fi
-
-echo "Checking Rust WASM target..."
-if ! rustup target list --installed | grep -q wasm32v1-none; then
-  echo "Adding WASM target..."
-  rustup target add wasm32v1-none
-fi
-
-echo "Starting local Stellar node..."
-docker compose up -d stellar
-
-echo "Waiting for node to be healthy..."
-for i in {1..30}; do
-  if docker compose exec stellar curl -s http://localhost:8000/ledger > /dev/null 2>&1; then
-    echo "✅ Stellar node is healthy"
-    break
-  fi
-  echo "  Waiting... ($i/30)"
-  sleep 2
-done
-
-echo "Configuring Stellar CLI..."
-stellar network add --global local \
-  --rpc-url http://localhost:8000 \
-  --network-passphrase "Standalone Network ; February 2021" \
-  --override || true
-
-echo "Creating and funding test account..."
-stellar keys generate --global alice || true
-ALICE=$(stellar keys address alice)
-echo "Account: $ALICE"
-
-# Fund account
-stellar account fund alice --network local || true
-
-echo ""
-echo "✅ Local development environment is ready!"
-echo ""
-echo "Next steps:"
-echo "  1. Build contracts: cargo build-wasm"
-echo "  2. Run tests: cargo test"
-echo "  3. See docs/local-development.md for deployment steps"
-```
-
-Run it:
-```bash
-chmod +x scripts/setup-local-env.sh
 ./scripts/setup-local-env.sh
 ```
 
-### Deploy All Contracts Locally
-
-Create `scripts/deploy-local.sh`:
+Manual equivalent:
 
 ```bash
-#!/bin/bash
-set -euo pipefail
+docker compose up -d stellar
+stellar network add \
+  --global local \
+  --rpc-url http://localhost:8000 \
+  --network-passphrase "Standalone Network ; February 2021" \
+  --override
+stellar keys generate --global alice
+stellar account fund alice --network local
+```
 
-NETWORK="${1:-local}"
-SOURCE="${2:-alice}"
+Verify:
 
-echo "=== Deploying ILN contracts to $NETWORK ==="
+```bash
+stellar network ls
+stellar keys address alice
+curl -s http://localhost:8000/ledger
+```
 
-# Build WASM
-echo "Building contracts..."
+## Build And Deploy Contracts
+
+Run native Rust checks:
+
+```bash
+cargo build
+cargo test
+```
+
+Build optimized Soroban WASM:
+
+```bash
+make build
+# or
 cargo build --target wasm32v1-none --release
-
-declare -A CONTRACTS=(
-  ["invoice_liquidity"]="target/wasm32v1-none/release/invoice_liquidity.wasm"
-  ["iln_governance"]="target/wasm32v1-none/release/iln_governance.wasm"
-  ["iln_distribution"]="target/wasm32v1-none/release/iln_distribution.wasm"
-  ["reputation_bonus"]="target/wasm32v1-none/release/reputation_bonus.wasm"
-)
-
-declare -A CONTRACT_IDS
-
-for name in "${!CONTRACTS[@]}"; do
-  wasm_path="${CONTRACTS[$name]}"
-  
-  if [[ ! -f "$wasm_path" ]]; then
-    echo "❌ WASM not found: $wasm_path"
-    exit 1
-  fi
-  
-  echo ""
-  echo "Deploying $name..."
-  
-  # Upload WASM
-  WASM_HASH=$(stellar contract upload \
-    --network "$NETWORK" \
-    --source "$SOURCE" \
-    --wasm "$wasm_path" 2>&1 | grep -oP 'WASM hash: \K\w+')
-  
-  # Deploy contract
-  CONTRACT_ID=$(stellar contract deploy \
-    --network "$NETWORK" \
-    --source "$SOURCE" \
-    --wasm-hash "$WASM_HASH" 2>&1 | grep -oP 'Contract ID: \K\w+')
-  
-  CONTRACT_IDS[$name]=$CONTRACT_ID
-  echo "✅ $name deployed: $CONTRACT_ID"
-done
-
-echo ""
-echo "=== Deployment Summary ==="
-for name in "${!CONTRACT_IDS[@]}"; do
-  echo "$name: ${CONTRACT_IDS[$name]}"
-done
-
-# Save to file for later use
-cat > .contracts-local.env <<EOF
-INVOICE_LIQUIDITY_ID=${CONTRACT_IDS[invoice_liquidity]}
-ILN_GOVERNANCE_ID=${CONTRACT_IDS[iln_governance]}
-ILN_DISTRIBUTION_ID=${CONTRACT_IDS[iln_distribution]}
-REPUTATION_BONUS_ID=${CONTRACT_IDS[reputation_bonus]}
-NETWORK=$NETWORK
-EOF
-
-echo ""
-echo "Contract IDs saved to .contracts-local.env"
 ```
 
-Run it:
-```bash
-chmod +x scripts/deploy-local.sh
-./scripts/deploy-local.sh
-```
-
-### Stop Local Node
-
-Create `scripts/stop-local.sh`:
+Deploy every contract to the local network:
 
 ```bash
-#!/bin/bash
-docker compose down
-echo "✅ Local Stellar node stopped"
+./scripts/deploy-local.sh local alice
+source .contracts-local.env
+echo "$INVOICE_LIQUIDITY_ID"
 ```
 
-Run it:
+Run the smoke test against the local deployment:
+
 ```bash
-chmod +x scripts/stop-local.sh
-./scripts/stop-local.sh
+CONTRACT_ID="$INVOICE_LIQUIDITY_ID" \
+SOROBAN_RPC_URL=http://localhost:8000 \
+NETWORK_PASSPHRASE="Standalone Network ; February 2021" \
+npx --yes tsx scripts/smoke-test.ts
 ```
 
----
+## Run Services Individually
 
-## CI/CD Integration
+### SDK
 
-### GitHub Actions Workflow
-
-Create `.github/workflows/local-integration-tests.yml`:
-
-```yaml
-name: Local Integration Tests
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    services:
-      stellar:
-        image: stellar/stellar-quickstart:latest
-        options: >-
-          --health-cmd "curl -f http://localhost:8000/ledger"
-          --health-interval 5s
-          --health-timeout 10s
-          --health-retries 10
-        ports:
-          - 8000:8000
-
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      
-      - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
-      
-      - name: Configure local network
-        run: |
-          stellar network add --global local \
-            --rpc-url http://localhost:8000 \
-            --network-passphrase "Standalone Network ; February 2021" \
-            --override
-      
-      - name: Run unit tests
-        run: cargo test
-      
-      - name: Build WASM
-        run: cargo build --target wasm32v1-none --release
-      
-      - name: Run fuzz tests
-        run: cargo test -p iln_fuzz
-      
-      - name: Check benchmark regression
-        run: bash scripts/check_benchmark_regression.sh
+```bash
+cd sdk
+pnpm install
+pnpm run build
+pnpm test
 ```
 
----
+The SDK is a library, so it does not start a server. Use `docs/sdk-integration.md` and `sdk/README.md` for client examples.
 
-## Troubleshooting Tips
+### CLI
 
-1. **Always check logs first:**
-   ```bash
-   docker compose logs stellar
-   cargo test -- --nocapture
-   ```
+```bash
+cd cli
+pnpm install
+pnpm run build
+node dist/index.js config set network testnet
+node dist/index.js config set rpcUrl https://soroban-testnet.stellar.org
+node dist/index.js wallet list
+```
 
-2. **Clean slate:**
-   ```bash
-   cargo clean
-   docker compose down -v
-   ./scripts/setup-local-env.sh
-   ```
+For local-network experiments, set the RPC URL to `http://localhost:8000`. The current CLI config accepts `testnet` or `mainnet` as network names, so local RPC use is best kept to commands that do not validate the network enum.
 
-3. **Verify versions:**
-   ```bash
-   rustc --version
-   cargo --version
-   stellar --version
-   docker --version
-   ```
+### Indexer
 
-4. **Test one thing at a time:**
-   ```bash
-   # Don't test everything at once — isolate failures
-   cargo test -p invoice_liquidity tests_discount_rate
-   ```
+```bash
+cd indexer
+pnpm install
+PORT=3002 DB_PATH=./indexer.db CACHE_TTL_MS=60000 pnpm run dev
+```
 
-5. **Use verbose output for debugging:**
-   ```bash
-   RUST_LOG=debug cargo test -- --nocapture --test-threads=1
-   stellar contract invoke --network local ... --verbose
-   ```
+Verify in another terminal:
 
----
+```bash
+curl -s http://localhost:3002/health || true
+curl -s http://localhost:3002/stats || true
+```
 
-## Next Steps
+Routes may vary as the indexer evolves; see `indexer/src/app.ts` for the current API.
 
-- Review [Architecture.md](Architecture.md) for system design
-- Read [Contract ABI](contract-abi.md) for available functions
-- Check [SDK Integration Guide](sdk-integration.md) for TypeScript examples
-- See [CONTRIBUTING.md](../CONTRIBUTING.md) for testing standards
+### Notifications
 
----
+Run directly:
 
-## Support
+```bash
+cd notifications
+pnpm install
+PORT=3001 pnpm run dev
+curl -s http://localhost:3001/health
+```
 
-For issues:
-1. Check [Common Issues and Fixes](#common-issues-and-fixes) above
-2. Review logs: `docker compose logs stellar` or `cargo test -- --nocapture`
-3. Open an issue: https://github.com/directorfloo/ILN-Smart-Contract/issues
+Run with Docker Compose:
+
+```bash
+docker compose up -d notifications-db notifications
+curl -s http://localhost:3001/health
+```
+
+## Run Tests
+
+| Area | Command |
+|------|---------|
+| All Rust contracts | `cargo test` |
+| Contract WASM build | `make build` |
+| Fuzz/property crate | `cargo test -p iln_fuzz` |
+| SDK unit tests | `(cd sdk && pnpm test)` |
+| SDK integration tests | `(cd sdk && TEST_SUBMITTER_SECRET=S... TEST_LP_SECRET=S... pnpm run test:integration)` |
+| CLI tests | `(cd cli && pnpm test)` |
+| Indexer tests | `(cd indexer && pnpm test)` |
+| Notifications tests | `(cd notifications && pnpm test)` |
+| Notifications coverage | `(cd notifications && pnpm run test:coverage)` |
+
+## Common Errors
+
+### macOS
+
+| Error | Fix |
+|-------|-----|
+| `xcrun: error: invalid active developer path` | Run `xcode-select --install`, then retry `cargo build`. |
+| Docker containers start but ports are unavailable | Check Docker Desktop is running and no local process owns ports `8000`, `3001`, or `5433` with `lsof -i :8000`. |
+| `stellar: command not found` after install | Add `export PATH="$HOME/.cargo/bin:$PATH"` to `~/.zshrc` and open a new shell. |
+| Slow first Rust build | Expected on first run. Keep `target/` between runs and avoid `cargo clean` unless needed. |
+
+### Ubuntu
+
+| Error | Fix |
+|-------|-----|
+| `linker 'cc' not found` | Install build tools: `sudo apt-get update && sudo apt-get install -y build-essential pkg-config libssl-dev`. |
+| Docker permission denied | Add your user to the Docker group: `sudo usermod -aG docker "$USER"`, log out, and log back in. |
+| `error[E0463]: can't find crate for 'core'` when building WASM | Run `rustup target add wasm32v1-none`. |
+| `cargo install stellar-cli` fails while compiling OpenSSL crates | Install `pkg-config` and `libssl-dev`, then retry. |
+
+### Windows WSL
+
+| Error | Fix |
+|-------|-----|
+| `Cannot connect to the Docker daemon` | Open Docker Desktop, enable WSL integration for your Ubuntu distro, then restart the WSL shell. |
+| Filesystem is very slow | Keep the repository under the Linux filesystem, for example `~/src/ILN-Smart-Contract`, not `/mnt/c/...`. |
+| Port already in use from Windows | Stop the Windows process or change the service `PORT`. Check Windows with PowerShell `netstat -ano | findstr :3001`. |
+| CRLF script errors such as `/bin/bash^M` | Run `git config core.autocrlf input` and re-checkout the affected script, or run `dos2unix scripts/*.sh`. |
+
+### Cross-platform
+
+| Error | Fix |
+|-------|-----|
+| `wasm32v1-none` not installed | `rustup target add wasm32v1-none`. |
+| `stellar network add` says the network exists | Add `--override` or remove the old entry with `stellar network rm local`. |
+| Local ledger health check fails | Run `docker compose logs stellar`, then recreate with `docker compose down -v && docker compose up -d stellar`. |
+| SDK integration tests skip | Set both `TEST_SUBMITTER_SECRET` and `TEST_LP_SECRET`; the suite intentionally skips without them. |
+| Jest ESM errors in the indexer | Use Node.js 20 and the package script: `(cd indexer && pnpm test)`, which sets `NODE_OPTIONS`. |
+| Notifications container is unhealthy | Check `docker compose logs notifications`; confirm port `3001` is free and rebuild with `docker compose build notifications`. |
+
+## Fresh-machine Verification
+
+Before changing this guide, verify the happy path on at least two environments, preferably macOS and Ubuntu or Windows WSL:
+
+```bash
+git clone --recurse-submodules https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract.git
+cd ILN-Smart-Contract
+./scripts/setup-local-env.sh
+cargo test
+make build
+./scripts/deploy-local.sh local alice
+(cd sdk && pnpm install && pnpm test)
+(cd cli && pnpm install && pnpm test)
+(cd indexer && pnpm install && pnpm test)
+(cd notifications && pnpm install && pnpm test)
+docker compose up -d notifications-db notifications
+curl -s http://localhost:3001/health
+```
+
+Record any new failure and fix in the troubleshooting section before merging.

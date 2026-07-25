@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-nursca
 
     steps:
       - name: Checkout code
@@ -20,31 +20,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.0.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+          cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run SDK tests
-        run: npm run test:ci --workspace=sdk
+        run: pnpm --filter @iln/sdk test:ci
 
       - name: Run CLI tests
-        run: npm run test --workspace=cli
+        run: pnpm --filter @iln/cli test
 
       - name: Build packages
         run: |
-          npm run build --workspace=sdk
-          npm run build --workspace=cli
+          pnpm --filter @iln/sdk build
+          pnpm --filter @iln/cli build
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: npm run changeset:publish
+          publish: pnpm run changeset:publish
           commit: "chore(release): version packages"
           title: "chore(release): version packages"
         env:

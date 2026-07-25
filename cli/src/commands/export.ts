@@ -11,6 +11,7 @@
  */
 import fs from "fs";
 import { Command } from "commander";
+import { formatError, isJsonMode } from "../format.js";
 
 export interface InvoiceRow {
   id: string;
@@ -100,6 +101,9 @@ export function makeExportCommand(
         from?: string;
         to?: string;
       }) => {
+        const rootOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+        const json = isJsonMode(rootOpts);
+
         try {
           let rows = await fetchInvoices({
             submitter: opts.submitter,
@@ -118,8 +122,7 @@ export function makeExportCommand(
             process.stdout.write(content + "\n");
           }
         } catch (err) {
-          console.error(`Export failed: ${(err as Error).message}`);
-          process.exit(1);
+          formatError((err as Error).message, "EXPORT_ERROR", json);
         }
       }
     );

@@ -1,36 +1,23 @@
 # Security Policy
 
-## Supported Versions
+ILN is in experimental/testnet phase. Do not use current deployments as mainnet-secure infrastructure until the mainnet checklist, audits, and maintainer sign-off are complete.
 
-Currently, the Invoice Liquidity Network (ILN) is in experimental/testnet phase. There are no formally supported "secure" versions for mainnet use yet. 
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+For the complete policy, including component-specific vulnerability classes, severity definitions, response timelines, reporting instructions, and safe harbor, see [docs/security.md](docs/security.md).
 
 ## Responsible Disclosure
 
-If you discover a potential vulnerability in the ILN smart contracts, SDK, or indexer, please do not disclose it publicly.
+Please do not disclose suspected vulnerabilities publicly before maintainers have had time to investigate and remediate them.
 
-Please report any security issues to **security@invoice-liquidity-network.local** (or open a confidential GitHub Security Advisory in the repository). 
-We aim to acknowledge receipt of vulnerability reports within 48 hours and provide a timeline for resolution.
+Report issues by either:
 
-## Indexer Security Architecture
+- Emailing `security@invoice-liquidity-network.local`
+- Opening a private GitHub Security Advisory for this repository
 
-The ILN Indexer is designed to be **read-only from the network**. It strictly polls the Stellar/Soroban blockchain for state changes and persists them locally. 
+We aim to acknowledge security reports within 48 hours.
 
-By design, **the indexer does not expose any authenticated or unauthenticated write/state-change API routes** (`POST`, `PUT`, `DELETE`). All state changes must occur on-chain via the Soroban smart contract. Therefore, API keys or JWTs are not required for the indexer API.
+## Supported Versions
 
-The public read API is protected with request throttling by default. Clients that need higher throughput can send an `X-API-Key` header that matches one of the comma-separated values in `API_KEYS`; authenticated clients bypass the public rate limit.
-
-## CodeQL Security Scanning
-
-We use GitHub CodeQL to automatically scan our TypeScript/JavaScript packages for known vulnerabilities.
-CodeQL findings appear in the **Security** tab of the repository.
-
-To triage a finding:
-1. Review the alert details in the Security tab.
-2. Determine if it is a false positive or a legitimate issue.
-3. If valid, open a PR to patch the issue.
-4. If a false positive, dismiss the alert with a clear justification.
+| Version | Supported |
+|---------|-----------|
+| Experimental/testnet | Best-effort security fixes |
+| Mainnet | Not yet launched |

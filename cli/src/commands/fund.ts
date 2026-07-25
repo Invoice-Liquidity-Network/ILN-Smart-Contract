@@ -9,6 +9,7 @@
 import * as readline from "readline";
 import { Command } from "commander";
 import type { MarketplaceListing, FundResult } from "./marketplace-types.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export type InvoiceFetcher = (id: string) => Promise<MarketplaceListing>;
 export type FundExecutor = (id: string) => Promise<FundResult>;
@@ -42,6 +43,9 @@ export function makeFundCommand(
     .requiredOption("--id <invoice-id>", "Invoice ID to fund")
     .option("--yes", "Skip confirmation prompt")
     .action(async (opts: { id: string; yes?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         const invoice = await fetchInvoice(opts.id);
 
@@ -49,16 +53,19 @@ export function makeFundCommand(
           const msg = `Fund invoice #${invoice.id} (${invoice.amount} ${invoice.token}, ${invoice.yieldPct}% yield)? [y/N]`;
           const confirmed = await confirm(msg);
           if (!confirmed) {
-            console.log("Aborted — invoice not funded.");
+            formatOutput({ aborted: true, message: "invoice not funded" }, json, () => {
+              console.log("Aborted — invoice not funded.");
+            });
             return;
           }
         }
 
         const result = await executeFund(opts.id);
-        console.log(`Funded invoice #${result.invoiceId}. TX: ${result.txHash}`);
+        formatOutput(result, json, () => {
+          console.log(`Funded invoice #${result.invoiceId}. TX: ${result.txHash}`);
+        });
       } catch (err) {
-        console.error(`Fund error: ${(err as Error).message}`);
-        process.exit(1);
+        formatError((err as Error).message, "FUND_ERROR", json);
       }
     });
 

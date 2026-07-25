@@ -10,6 +10,7 @@ import {
 import { getInvoice } from "./queries.js";
 import { ILNError } from "../errors.js";
 import type { MarkPaidResult } from "../types/params.js";
+import { retry } from "../utils/retry.js";
 
 /**
  * Mark an invoice as paid (supports partial payments).
@@ -69,25 +70,25 @@ export async function markPaid(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
   }
 
   const assembledTx = SorobanRpc.assembleTransaction(tx, sim).build();
   const signedTx = await signTransaction(assembledTx);
-  const sendResult = await server.sendTransaction(signedTx);
+  const sendResult = await retry(() => server.sendTransaction(signedTx));
   
-  if (sendResult.errorResultXdr) {
-    throw new Error(`Transaction failed: ${sendResult.errorResultXdr}`);
+  if (sendResult.errorResult) {
+    throw new Error(`Transaction failed: ${sendResult.errorResult}`);
   }
 
   // Poll for completion
-  let status = await server.getTransaction(sendResult.hash);
+  let status = await retry(() => server.getTransaction(sendResult.hash));
   let retries = 0;
   while (status.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND && retries < 15) {
     await new Promise(r => setTimeout(r, 2000));
-    status = await server.getTransaction(sendResult.hash);
+    status = await retry(() => server.getTransaction(sendResult.hash));
     retries++;
   }
 

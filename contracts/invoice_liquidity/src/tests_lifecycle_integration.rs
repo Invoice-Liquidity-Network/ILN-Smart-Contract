@@ -94,19 +94,18 @@ fn expected_discount(amount: i128) -> i128 {
 #[test]
 fn test_lifecycle_usdc_full() {
     let env = setup();
-    
+
     // Get initial balances
     let freelancer_balance_before = env.token.client.balance(&env.freelancer);
     let lp_balance_before = env.token.client.balance(&env.lp);
     let payer_balance_before = env.token.client.balance(&env.payer);
-    
+
     // Get initial stats
     let stats_initial = env.contract.get_contract_stats();
-    
+
     // Step 1: Submit invoice
-    let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
-    
+    let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
+
     // Verify Pending state
     let invoice_pending = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_pending.status, InvoiceStatus::Pending);
@@ -115,17 +114,21 @@ fn test_lifecycle_usdc_full() {
     assert_eq!(invoice_pending.token, env.token.address);
     assert_eq!(invoice_pending.freelancer, env.freelancer);
     assert_eq!(invoice_pending.payer, env.payer);
-    
+
     // Verify stats after submission
     let stats_after_submit = env.contract.get_contract_stats();
-    assert_eq!(stats_after_submit.total_invoices, stats_initial.total_invoices + 1);
-    
+    assert_eq!(
+        stats_after_submit.total_invoices,
+        stats_initial.total_invoices + 1
+    );
+
     // Step 2: Fund invoice
-    env.contract.fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
-    
+    env.contract
+        .fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
+
     let discount = expected_discount(INVOICE_AMOUNT);
     let expected_payout = INVOICE_AMOUNT - discount;
-    
+
     // Verify freelancer received payout
     let freelancer_balance_after_fund = env.token.client.balance(&env.freelancer);
     assert_eq!(
@@ -133,7 +136,7 @@ fn test_lifecycle_usdc_full() {
         expected_payout,
         "Freelancer should receive amount minus discount"
     );
-    
+
     // Verify LP paid the payout amount
     let lp_balance_after_fund = env.token.client.balance(&env.lp);
     assert_eq!(
@@ -141,20 +144,23 @@ fn test_lifecycle_usdc_full() {
         expected_payout,
         "LP should pay the payout amount"
     );
-    
+
     // Verify Funded state
     let invoice_funded = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_funded.status, InvoiceStatus::Funded);
     assert_eq!(invoice_funded.amount_funded, INVOICE_AMOUNT);
     assert_eq!(invoice_funded.funder, Some(env.lp.clone()));
-    
+
     // Verify stats after funding
     let stats_after_fund = env.contract.get_contract_stats();
-    assert_eq!(stats_after_fund.total_funded, stats_initial.total_funded + 1);
-    
+    assert_eq!(
+        stats_after_fund.total_funded,
+        stats_initial.total_funded + 1
+    );
+
     // Step 3: Mark as paid
     env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
-    
+
     // Verify LP received yield (net gain is discount)
     let lp_balance_final = env.token.client.balance(&env.lp);
     assert_eq!(
@@ -162,7 +168,7 @@ fn test_lifecycle_usdc_full() {
         discount,
         "LP should earn yield (discount amount)"
     );
-    
+
     // Verify payer paid full amount
     let payer_balance_after_paid = env.token.client.balance(&env.payer);
     assert_eq!(
@@ -170,12 +176,12 @@ fn test_lifecycle_usdc_full() {
         INVOICE_AMOUNT,
         "Payer should pay full amount"
     );
-    
+
     // Verify Paid state
     let invoice_paid = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_paid.status, InvoiceStatus::Paid);
     assert_eq!(invoice_paid.amount_paid, INVOICE_AMOUNT);
-    
+
     // Verify stats after payment
     let stats_after_paid = env.contract.get_contract_stats();
     assert_eq!(stats_after_paid.total_paid, stats_initial.total_paid + 1);
@@ -184,36 +190,36 @@ fn test_lifecycle_usdc_full() {
 #[test]
 fn test_lifecycle_eurc_full() {
     let env = setup();
-    
+
     // Add EURC as an approved token
     let eurc = register_mock_token(&env.env);
     eurc.admin_client.mint(&env.payer, &(INVOICE_AMOUNT * 10));
     eurc.admin_client.mint(&env.lp, &(INVOICE_AMOUNT * 10));
     env.contract.add_token(&eurc.address);
-    
+
     // Get initial balances
     let freelancer_balance_before = eurc.client.balance(&env.freelancer);
     let lp_balance_before = eurc.client.balance(&env.lp);
     let payer_balance_before = eurc.client.balance(&env.payer);
-    
+
     // Get initial stats
     let stats_initial = env.contract.get_contract_stats();
-    
+
     // Step 1: Submit invoice with EURC
-    let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
-    
+    let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
+
     // Verify Pending state
     let invoice_pending = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_pending.status, InvoiceStatus::Pending);
     assert_eq!(invoice_pending.token, eurc.address);
-    
+
     // Step 2: Fund invoice
-    env.contract.fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
-    
+    env.contract
+        .fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
+
     let discount = expected_discount(INVOICE_AMOUNT);
     let expected_payout = INVOICE_AMOUNT - discount;
-    
+
     // Verify balances
     assert_eq!(
         eurc.client.balance(&env.freelancer) - freelancer_balance_before,
@@ -223,31 +229,28 @@ fn test_lifecycle_eurc_full() {
         lp_balance_before - eurc.client.balance(&env.lp),
         expected_payout
     );
-    
+
     // Verify Funded state
     let invoice_funded = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_funded.status, InvoiceStatus::Funded);
-    
+
     // Step 3: Mark as paid
     env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
-    
+
     // Verify LP received yield (net gain is discount)
     let lp_balance_final = eurc.client.balance(&env.lp);
-    assert_eq!(
-        lp_balance_final - lp_balance_before,
-        discount
-    );
-    
+    assert_eq!(lp_balance_final - lp_balance_before, discount);
+
     // Verify payer paid full amount
     assert_eq!(
         payer_balance_before - eurc.client.balance(&env.payer),
         INVOICE_AMOUNT
     );
-    
+
     // Verify Paid state
     let invoice_paid = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_paid.status, InvoiceStatus::Paid);
-    
+
     // Verify stats
     let stats_final = env.contract.get_contract_stats();
     assert_eq!(stats_final.total_invoices, stats_initial.total_invoices + 1);
@@ -258,30 +261,30 @@ fn test_lifecycle_eurc_full() {
 #[test]
 fn test_lifecycle_xlm_full() {
     let env = setup();
-    
+
     // Get initial balances
     let freelancer_balance_before = env.xlm.client.balance(&env.freelancer);
     let lp_balance_before = env.xlm.client.balance(&env.lp);
     let payer_balance_before = env.xlm.client.balance(&env.payer);
-    
+
     // Get initial stats
     let stats_initial = env.contract.get_contract_stats();
-    
+
     // Step 1: Submit invoice with XLM
-    let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
-    
+    let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
+
     // Verify Pending state
     let invoice_pending = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_pending.status, InvoiceStatus::Pending);
     assert_eq!(invoice_pending.token, env.xlm.address);
-    
+
     // Step 2: Fund invoice
-    env.contract.fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
-    
+    env.contract
+        .fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
+
     let discount = expected_discount(INVOICE_AMOUNT);
     let expected_payout = INVOICE_AMOUNT - discount;
-    
+
     // Verify balances
     assert_eq!(
         env.xlm.client.balance(&env.freelancer) - freelancer_balance_before,
@@ -291,31 +294,28 @@ fn test_lifecycle_xlm_full() {
         lp_balance_before - env.xlm.client.balance(&env.lp),
         expected_payout
     );
-    
+
     // Verify Funded state
     let invoice_funded = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_funded.status, InvoiceStatus::Funded);
-    
+
     // Step 3: Mark as paid
     env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
-    
+
     // Verify LP received yield (net gain is discount)
     let lp_balance_final = env.xlm.client.balance(&env.lp);
-    assert_eq!(
-        lp_balance_final - lp_balance_before,
-        discount
-    );
-    
+    assert_eq!(lp_balance_final - lp_balance_before, discount);
+
     // Verify payer paid full amount
     assert_eq!(
         payer_balance_before - env.xlm.client.balance(&env.payer),
         INVOICE_AMOUNT
     );
-    
+
     // Verify Paid state
     let invoice_paid = env.contract.get_invoice(&invoice_id);
     assert_eq!(invoice_paid.status, InvoiceStatus::Paid);
-    
+
     // Verify stats
     let stats_final = env.contract.get_contract_stats();
     assert_eq!(stats_final.total_invoices, stats_initial.total_invoices + 1);
@@ -326,32 +326,26 @@ fn test_lifecycle_xlm_full() {
 #[test]
 fn test_lifecycle_stat_counters_increment() {
     let env = setup();
-    
+
     // Get initial stats
     let stats_initial = env.contract.get_contract_stats();
-    
+
     // Submit invoice
-    let invoice_id = env.contract.submit_invoice(        &ReferralCode::None,
-    );
-    
+    let invoice_id = env.contract.submit_invoice(&ReferralCode::None);
+
     // Verify total_invoices incremented
     let stats_after_submit = env.contract.get_contract_stats();
     assert_eq!(
         stats_after_submit.total_invoices,
         stats_initial.total_invoices + 1
     );
-    assert_eq!(
-        stats_after_submit.total_funded,
-        stats_initial.total_funded
-    );
-    assert_eq!(
-        stats_after_submit.total_paid,
-        stats_initial.total_paid
-    );
-    
+    assert_eq!(stats_after_submit.total_funded, stats_initial.total_funded);
+    assert_eq!(stats_after_submit.total_paid, stats_initial.total_paid);
+
     // Fund invoice
-    env.contract.fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
-    
+    env.contract
+        .fund_invoice(&env.lp, &invoice_id, &INVOICE_AMOUNT, &false);
+
     // Verify total_funded incremented
     let stats_after_fund = env.contract.get_contract_stats();
     assert_eq!(
@@ -362,14 +356,11 @@ fn test_lifecycle_stat_counters_increment() {
         stats_after_fund.total_funded,
         stats_initial.total_funded + 1
     );
-    assert_eq!(
-        stats_after_fund.total_paid,
-        stats_initial.total_paid
-    );
-    
+    assert_eq!(stats_after_fund.total_paid, stats_initial.total_paid);
+
     // Mark as paid
     env.contract.mark_paid(&invoice_id, &INVOICE_AMOUNT);
-    
+
     // Verify total_paid incremented
     let stats_after_paid = env.contract.get_contract_stats();
     assert_eq!(
@@ -380,8 +371,5 @@ fn test_lifecycle_stat_counters_increment() {
         stats_after_paid.total_funded,
         stats_initial.total_funded + 1
     );
-    assert_eq!(
-        stats_after_paid.total_paid,
-        stats_initial.total_paid + 1
-    );
+    assert_eq!(stats_after_paid.total_paid, stats_initial.total_paid + 1);
 }

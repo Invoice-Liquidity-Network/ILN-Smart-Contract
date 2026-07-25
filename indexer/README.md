@@ -89,11 +89,18 @@ Returns `{ status: 'ok' }` when the service is ready.
 
 ## API Endpoints
 
-- `GET /invoices` - List all invoices
+- `GET /invoices` - List all invoices (filter, sort, paginate)
+- `GET /invoices/:id` - Single invoice with its event log
 - `GET /stats` - Global statistics
+- `GET /stats/history` - Daily stats time series
+- `GET /reputation/:address` - Reputation score and history
 - `GET /leaderboard` - Top contributors
-- `GET /reputation` - Reputation scores
+- `GET /events` - Account activity feed
 - `GET /health` - Health check
+
+See the **[REST API Reference](../docs/api-reference.md)** for the complete
+specification: query parameters, request/response schemas, error codes,
+authentication, and a curl example for every endpoint.
 
 ## Production Considerations
 

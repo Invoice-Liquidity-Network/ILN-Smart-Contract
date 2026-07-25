@@ -128,7 +128,10 @@ fn remove_payer_from_heap(heap: &mut Vec<TopPayerEntry>, payer: &Address) {
 
 fn insert_into_heap(heap: &mut Vec<TopPayerEntry>, payer: Address, score: u32) {
     if heap.len() < TOP_PAYERS_CAPACITY {
-        heap.push_back(TopPayerEntry { address: payer, score });
+        heap.push_back(TopPayerEntry {
+            address: payer,
+            score,
+        });
         sift_up(heap, heap.len() - 1);
         return;
     }

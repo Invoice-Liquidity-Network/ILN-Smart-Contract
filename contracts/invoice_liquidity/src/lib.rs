@@ -12,6 +12,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod invoice;
+pub mod nft;
 pub mod rate_logic;
 pub mod storage;
 pub mod top_payers;
@@ -20,22 +21,24 @@ pub mod constants;
 pub mod oracle_interface;
 #[cfg(test)]
 mod tests_discount_rate;
+#[cfg(test)]
+mod tests_lifecycle_integration;
+#[cfg(test)]
+mod tests_nft_query;
 mod tests_lp_pagination;
 mod tests_new_features;
 mod tests_pagination;
 mod tests_regression;
-mod tests_xlm_support;
 #[cfg(test)]
-
 #[cfg(test)]
 mod tests_stress;
-#[cfg(test)]
-mod tests_lifecycle_integration;
+mod tests_xlm_support;
 
 pub use crate::invoice::{
     AppealRecord, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode,
     ReputationProfile, ReputationScore, TopPayerEntry,
 };
+pub use crate::nft::InvoiceNftMetadata;
 pub use crate::storage::DataKey;
 pub use config::{Config, ConfigError};
 pub use errors::ContractError;
@@ -48,21 +51,21 @@ use crate::storage::get_admin;
 use events::{
     AdminChanged, AppealResolved, ContractPaused, ContractUnpaused, ContractUpgraded,
     DefaultAppealed, DisputeResolved, FundQueueResolved, FundRequested, InvoiceCancelled,
-    InvoiceDefaulted, InvoiceDisputed, InvoiceExpired, InvoiceFunded, InvoicePaid, InvoicePartiallyPaid,
-    InvoiceSubmitted, InvoiceTokenChanged, InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated, TokenAdded,
-    TokenRemoved,
+    InvoiceDefaulted, InvoiceDisputed, InvoiceExpired, InvoiceFunded, InvoicePaid,
+    InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged, InvoiceTransferred,
+    InvoiceUpdated, LPPositionTransferred, ParameterUpdated, TokenAdded, TokenRemoved,
 };
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
     get_dispute, get_fund_queue, get_invoice_funders, get_lp_invoices, get_lp_score,
     get_min_payer_reputation, get_payer_score, get_pre_default_payer_score, get_queue_resolution,
-    get_reputation, get_submitter_invoices, increment_total_funded, increment_total_invoices,
+    get_reputation, get_submitter_invoices, increment_invoices_defaulted, increment_invoices_paid,
+    increment_invoices_submitted, increment_total_funded, increment_total_invoices,
     increment_total_paid, invoice_exists, is_paused, load_invoice, next_invoice_id,
-    remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal, save_dispute, save_fund_queue, save_invoice,
-    save_invoice_funders, save_pre_default_payer_score, save_queue_resolution, set_lp_score,
-    set_min_payer_reputation, set_paused, set_payer_score, set_reputation, try_load_invoice,
-    ContractStats, DisputeRecord, StorageKey, increment_invoices_submitted, increment_invoices_paid,
-    increment_invoices_defaulted,
+    remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal, save_dispute,
+    save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
+    save_queue_resolution, set_lp_score, set_min_payer_reputation, set_paused, set_payer_score,
+    set_reputation, try_load_invoice, ContractStats, DisputeRecord, StorageKey,
 };
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -237,7 +240,11 @@ impl InvoiceLiquidityContract {
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let pn = Symbol::new(&env, "protocol_fee_rate_bps");
         env.events().publish(
-            (Symbol::new(&env, "parameter_updated"), pn, updated_by.clone()),
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
             ParameterUpdated {
                 param_name: pn,
                 old_value: old_rate as i128,
@@ -263,7 +270,11 @@ impl InvoiceLiquidityContract {
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let pn = Symbol::new(&env, "max_discount_rate_bps");
         env.events().publish(
-            (Symbol::new(&env, "parameter_updated"), pn, updated_by.clone()),
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
             ParameterUpdated {
                 param_name: pn,
                 old_value: old_rate as i128,
@@ -637,7 +648,12 @@ impl InvoiceLiquidityContract {
         increment_invoices_submitted(&env, &freelancer);
 
         env.events().publish(
-            (Symbol::new(&env, "submitted"), invoice.id, invoice.freelancer.clone(), invoice.payer.clone()),
+            (
+                Symbol::new(&env, "submitted"),
+                invoice.id,
+                invoice.freelancer.clone(),
+                invoice.payer.clone(),
+            ),
             InvoiceSubmitted {
                 invoice_id: invoice.id,
                 freelancer: invoice.freelancer.clone(),
@@ -655,11 +671,7 @@ impl InvoiceLiquidityContract {
         // Track referral count if provided
         if let ReferralCode::Present(code) = &referral_code {
             let key = crate::storage::DataKey::ReferralCount(code.clone());
-            let current: u64 = env
-                .storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or(0);
+            let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
             env.storage().persistent().set(&key, &(current + 1));
         }
 
@@ -719,7 +731,12 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
 
         env.events().publish(
-            (Symbol::new(&env, "updated"), invoice.id, invoice.freelancer.clone(), invoice.payer.clone()),
+            (
+                Symbol::new(&env, "updated"),
+                invoice.id,
+                invoice.freelancer.clone(),
+                invoice.payer.clone(),
+            ),
             InvoiceUpdated {
                 invoice_id: invoice.id,
                 freelancer: invoice.freelancer.clone(),
@@ -863,9 +880,15 @@ impl InvoiceLiquidityContract {
             add_invoice_to_submitter(&env, &params.freelancer, id);
 
             // Increment total invoices counter
-            increment_total_invoices(&env);                env.events().publish(
-                    (Symbol::new(&env, "submitted"), invoice.id, invoice.freelancer.clone(), invoice.payer.clone()),
-                    InvoiceSubmitted {
+            increment_total_invoices(&env);
+            env.events().publish(
+                (
+                    Symbol::new(&env, "submitted"),
+                    invoice.id,
+                    invoice.freelancer.clone(),
+                    invoice.payer.clone(),
+                ),
+                InvoiceSubmitted {
                     invoice_id: invoice.id,
                     freelancer: invoice.freelancer.clone(),
                     payer: invoice.payer.clone(),
@@ -882,11 +905,7 @@ impl InvoiceLiquidityContract {
             // Track referral count if provided
             if let ReferralCode::Present(code) = &params.referral_code {
                 let key = crate::storage::DataKey::ReferralCount(code.clone());
-                let current: u64 = env
-                    .storage()
-                    .persistent()
-                    .get(&key)
-                    .unwrap_or(0);
+                let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
                 env.storage().persistent().set(&key, &(current + 1));
             }
 
@@ -1007,7 +1026,11 @@ impl InvoiceLiquidityContract {
         save_queue_resolution(&env, invoice_id, &best_lp);
 
         env.events().publish(
-            (Symbol::new(&env, "fund_queue_resolved"), invoice_id, best_lp.clone()),
+            (
+                Symbol::new(&env, "fund_queue_resolved"),
+                invoice_id,
+                best_lp.clone(),
+            ),
             FundQueueResolved {
                 invoice_id,
                 approved_lp: best_lp.clone(),
@@ -1071,8 +1094,7 @@ impl InvoiceLiquidityContract {
         // When require_oracle_verification is true, the oracle stored in config is
         // called. If no oracle is configured the flag is a no-op.
         if require_oracle_verification {
-            if let Some(oracle_addr) =
-                crate::storage::get_config(&env).and_then(|c| c.price_oracle)
+            if let Some(oracle_addr) = crate::storage::get_config(&env).and_then(|c| c.price_oracle)
             {
                 let response: OracleVerificationResponse = env.invoke_contract(
                     &oracle_addr,
@@ -1332,10 +1354,7 @@ impl InvoiceLiquidityContract {
             InvoiceStatus::Cancelled => return Err(ContractError::AlreadyCancelled),
         }
 
-        let current_lp = invoice
-            .funder
-            .clone()
-            .ok_or(ContractError::Unauthorized)?;
+        let current_lp = invoice.funder.clone().ok_or(ContractError::Unauthorized)?;
 
         current_lp.require_auth();
 
@@ -1447,9 +1466,10 @@ impl InvoiceLiquidityContract {
         match invoice.status {
             InvoiceStatus::Pending => {
                 invoice.status = InvoiceStatus::Expired;
-                save_invoice(&env, &invoice);                    env.events().publish(
-                        (Symbol::new(&env, "expired"), invoice.id),
-                        InvoiceExpired {
+                save_invoice(&env, &invoice);
+                env.events().publish(
+                    (Symbol::new(&env, "expired"), invoice.id),
+                    InvoiceExpired {
                         invoice_id: invoice.id,
                         freelancer: invoice.freelancer.clone(),
                         status: invoice.status.clone(),
@@ -1532,7 +1552,11 @@ impl InvoiceLiquidityContract {
         if invoice.amount_paid < invoice.amount {
             save_invoice(&env, &invoice);
             env.events().publish(
-                (Symbol::new(&env, "partially_paid"), invoice.id, invoice.payer.clone()),
+                (
+                    Symbol::new(&env, "partially_paid"),
+                    invoice.id,
+                    invoice.payer.clone(),
+                ),
                 InvoicePartiallyPaid {
                     invoice_id: invoice.id,
                     payer: invoice.payer.clone(),
@@ -1609,7 +1633,12 @@ impl InvoiceLiquidityContract {
         increment_invoices_paid(&env, &invoice.freelancer);
 
         env.events().publish(
-            (Symbol::new(&env, "paid"), invoice.id, invoice.payer.clone(), primary_lp.clone()),
+            (
+                Symbol::new(&env, "paid"),
+                invoice.id,
+                invoice.payer.clone(),
+                primary_lp.clone(),
+            ),
             InvoicePaid {
                 invoice_id: invoice.id,
                 payer: invoice.payer.clone(),
@@ -1836,7 +1865,11 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
 
         env.events().publish(
-            (Symbol::new(&env, "default_appealed"), invoice_id, invoice.payer.clone()),
+            (
+                Symbol::new(&env, "default_appealed"),
+                invoice_id,
+                invoice.payer.clone(),
+            ),
             DefaultAppealed {
                 invoice_id,
                 payer: invoice.payer.clone(),
@@ -1890,7 +1923,11 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
 
         env.events().publish(
-            (Symbol::new(&env, "appeal_resolved"), invoice_id, invoice.payer.clone()),
+            (
+                Symbol::new(&env, "appeal_resolved"),
+                invoice_id,
+                invoice.payer.clone(),
+            ),
             AppealResolved {
                 invoice_id,
                 payer: invoice.payer.clone(),
@@ -1961,7 +1998,11 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
 
         env.events().publish(
-            (Symbol::new(&env, "disputed"), invoice_id, invoice.payer.clone()),
+            (
+                Symbol::new(&env, "disputed"),
+                invoice_id,
+                invoice.payer.clone(),
+            ),
             InvoiceDisputed {
                 invoice_id,
                 payer: invoice.payer.clone(),
@@ -2033,7 +2074,11 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
 
         env.events().publish(
-            (Symbol::new(&env, "dispute_resolved"), invoice_id, resolution_hash.clone()),
+            (
+                Symbol::new(&env, "dispute_resolved"),
+                invoice_id,
+                resolution_hash.clone(),
+            ),
             DisputeResolved {
                 invoice_id,
                 resolution_hash,
@@ -2082,7 +2127,11 @@ impl InvoiceLiquidityContract {
 
         let empty_hash = BytesN::from_array(&env, &[0u8; 32]);
         env.events().publish(
-            (Symbol::new(&env, "dispute_resolved"), invoice_id, empty_hash.clone()),
+            (
+                Symbol::new(&env, "dispute_resolved"),
+                invoice_id,
+                empty_hash.clone(),
+            ),
             DisputeResolved {
                 invoice_id,
                 resolution_hash: empty_hash,
@@ -2184,7 +2233,11 @@ impl InvoiceLiquidityContract {
         set_min_payer_reputation(&env, value);
         let pn = Symbol::new(&env, "min_payer_reputation");
         env.events().publish(
-            (Symbol::new(&env, "parameter_updated"), pn, updated_by.clone()),
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
             ParameterUpdated {
                 param_name: pn,
                 old_value: old_value as i128,
@@ -2230,6 +2283,47 @@ impl InvoiceLiquidityContract {
     pub fn get_invoice_count(env: Env) -> u64 {
         crate::invoice::read_next_invoice_id(&env) - 1
     }
+
+    // ----------------------------------------------------------------
+    // query_nft_metadata
+    // ----------------------------------------------------------------
+    /// Get NFT metadata for an invoice
+    ///
+    /// Returns complete NFT metadata including invoice ID, amount, due date,
+    /// discount rate, token address, current owner, and mint timestamp.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `invoice_id` - The invoice ID
+    ///
+    /// # Returns
+    /// Option containing the NFT metadata if the NFT exists, None otherwise
+    ///
+    /// # Access
+    /// Anyone
+    pub fn query_nft_metadata(env: Env, invoice_id: u64) -> Option<crate::nft::InvoiceNftMetadata> {
+        crate::nft::query_nft_metadata(env, invoice_id)
+    }
+
+    // ----------------------------------------------------------------
+    // query_nft_owner
+    // ----------------------------------------------------------------
+    /// Get the owner of an invoice NFT
+    ///
+    /// Returns the current owner address of the NFT representing the invoice.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `invoice_id` - The invoice ID
+    ///
+    /// # Returns
+    /// Option containing the owner address if the NFT exists, None otherwise
+    ///
+    /// # Access
+    /// Anyone
+    pub fn query_nft_owner(env: Env, invoice_id: u64) -> Option<Address> {
+        crate::nft::query_nft_owner(env, invoice_id)
+    }
 }
 
 // ----------------------------------------------------------------
@@ -2273,6 +2367,7 @@ fn normalize_xlm_amount(amount: i128) -> i128 {
 }
 
 /// Check if a token address is the USDC address
+#[allow(dead_code)]
 fn is_usdc_token(env: &Env, token: &Address) -> bool {
     if let Some(config) = crate::storage::get_config(env) {
         token == &config.usdc_sac_address
@@ -2383,16 +2478,21 @@ fn validate_invoice_terms_for_min(
 
 fn is_approved_token(env: &Env, token: &Address) -> bool {
     // First check the explicit allowlist in storage
-    if env.storage()
+    if env
+        .storage()
         .persistent()
         .get(&crate::storage::DataKey::ApprovedToken(token.clone()))
-        .unwrap_or(false) {
+        .unwrap_or(false)
+    {
         return true;
     }
 
     // Then check the wired tokens in Config
     if let Some(config) = crate::storage::get_config(env) {
-        if token == &config.usdc_sac_address || token == &config.eurc_sac_address || token == &config.xlm_sac_address {
+        if token == &config.usdc_sac_address
+            || token == &config.eurc_sac_address
+            || token == &config.xlm_sac_address
+        {
             return true;
         }
     }
@@ -2450,6 +2550,8 @@ mod tests_access_control;
 mod tests_appeal;
 mod tests_arithmetic;
 mod tests_auth;
+mod tests_benchmarks;
+mod tests_discount_invariants;
 mod tests_dispute;
 mod tests_distribution;
 #[cfg(test)]
@@ -2458,31 +2560,29 @@ mod tests_invariants;
 #[cfg(test)]
 mod tests_invoice_paid_event;
 #[cfg(test)]
+mod tests_lazy_storage;
+#[cfg(test)]
 mod tests_lp_funding_details_event;
 mod tests_lp_priority_queue;
 mod tests_mutation;
 #[cfg(test)]
+mod tests_oracle_freshness;
+#[cfg(test)]
+mod tests_oracle_verification;
+#[cfg(test)]
 mod tests_partial_payment;
 mod tests_protocol_fee;
+#[cfg(test)]
+mod tests_referral;
+#[cfg(test)]
+mod tests_reputation_events;
 mod tests_security;
 mod tests_state_machine;
 mod tests_storage;
 mod tests_storage_extra;
 #[cfg(test)]
 mod tests_token_decimals;
-mod tests_benchmarks;
-#[cfg(test)]
-mod tests_top_payers;
-#[cfg(test)]
-mod tests_lazy_storage;
-#[cfg(test)]
-mod tests_reputation_events;
-#[cfg(test)]
-mod tests_oracle_verification;
-#[cfg(test)]
-mod tests_oracle_freshness;
-#[cfg(test)]
-mod tests_referral;
-mod tests_discount_invariants;
 #[cfg(test)]
 mod tests_token_switch;
+#[cfg(test)]
+mod tests_top_payers;

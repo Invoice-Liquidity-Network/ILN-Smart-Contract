@@ -17,7 +17,9 @@ mod mock_token;
 
 use mock_token::{MockToken, MockTokenClient};
 
-use iln_governance::{GovContract, GovContractClient, GovernanceError, ProposalAction, ProposalStatus};
+use iln_governance::{
+    GovContract, GovContractClient, GovernanceError, ProposalAction, ProposalStatus,
+};
 use invoice_liquidity::{ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -131,9 +133,11 @@ fn pass_and_execute(t: &GovIntegrationEnv, proposal_id: u64) {
     t.env.ledger().set(ledger);
 
     // Active → Passed
-    t.governance.execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
+    t.governance
+        .execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
     // Passed → Executed  (zero-delay timelock: eta_ledger == current_sequence)
-    t.governance.execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
+    t.governance
+        .execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
 }
 
 // ── Test 1 ────────────────────────────────────────────────────────────────────
@@ -147,7 +151,14 @@ fn test_update_max_discount_via_governance_takes_effect() {
     // Before the proposal: discount_rate=2_000 (20 %) is below the default
     // maximum of 5_000 (50 %) so submission succeeds.
     let due_date = LEDGER_TIMESTAMP + DUE_DATE_OFFSET;
-    let result_before = t.iln.try_submit_invoice(try_        &ReferralCode::None,
+    let result_before = t.iln.try_submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.payment_token_addr,
+        &ReferralCode::None,
     );
     assert!(
         result_before.is_ok(),
@@ -169,7 +180,14 @@ fn test_update_max_discount_via_governance_takes_effect() {
 
     // After execution: discount_rate=2_000 now exceeds the new maximum of 1_000.
     let due_date_2 = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-    let result_after = t.iln.try_submit_invoice(try_        &ReferralCode::None,
+    let result_after = t.iln.try_submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date_2,
+        &DISCOUNT_RATE,
+        &t.payment_token_addr,
+        &ReferralCode::None,
     );
     assert_eq!(
         result_after,
@@ -178,7 +196,14 @@ fn test_update_max_discount_via_governance_takes_effect() {
     );
 
     // A submission at the new limit (1 000) still succeeds.
-    let result_at_limit = t.iln.try_submit_invoice(try_        &ReferralCode::None,
+    let result_at_limit = t.iln.try_submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date_2,
+        &1_000,
+        &t.payment_token_addr,
+        &ReferralCode::None,
     );
     assert!(
         result_at_limit.is_ok(),
@@ -210,8 +235,7 @@ fn test_update_fee_rate_via_governance_takes_effect() {
 
     // Run the invoice lifecycle: submit → fund → mark_paid.
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-    let invoice_id = t.iln.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.iln.submit_invoice(&ReferralCode::None);
 
     t.iln.fund_invoice(&t.lp, &invoice_id, &INVOICE_AMOUNT);
     t.iln.mark_paid(&invoice_id, &INVOICE_AMOUNT);
@@ -222,11 +246,9 @@ fn test_update_fee_rate_via_governance_takes_effect() {
     let admin_balance = t.payment_token.balance(&t.admin);
 
     assert_eq!(
-        admin_balance,
-        expected_fee,
+        admin_balance, expected_fee,
         "admin balance ({}) must equal the protocol fee ({})",
-        admin_balance,
-        expected_fee,
+        admin_balance, expected_fee,
     );
 }
 
@@ -249,7 +271,8 @@ fn test_veto_proposal_prevents_execution() {
     t.governance.cast_vote(&t.voter, &proposal_id, &true);
 
     // Admin vetoes the proposal.
-    t.governance.veto_proposal(&proposal_id, &dummy_hash(&t.env));
+    t.governance
+        .veto_proposal(&proposal_id, &dummy_hash(&t.env));
 
     let p = t.governance.get_proposal(&proposal_id);
     assert_eq!(p.status, ProposalStatus::Vetoed);
@@ -260,7 +283,9 @@ fn test_veto_proposal_prevents_execution() {
     t.env.ledger().set(ledger);
 
     // Attempting to execute a vetoed proposal must return AlreadyResolved.
-    let execute_result = t.governance.try_execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
+    let execute_result = t
+        .governance
+        .try_execute_proposal(&proposal_id, &GOV_TOTAL_SUPPLY);
     assert_eq!(
         execute_result,
         Err(Ok(GovernanceError::AlreadyResolved)),
@@ -270,8 +295,7 @@ fn test_veto_proposal_prevents_execution() {
     // The ILN fee rate was NOT changed — submitting and funding an invoice
     // with the default fee (0) means admin receives no fee.
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
-    let invoice_id = t.iln.submit_invoice(        &ReferralCode::None,
-    );
+    let invoice_id = t.iln.submit_invoice(&ReferralCode::None);
     t.iln.fund_invoice(&t.lp, &invoice_id, &INVOICE_AMOUNT);
     t.iln.mark_paid(&invoice_id, &INVOICE_AMOUNT);
 

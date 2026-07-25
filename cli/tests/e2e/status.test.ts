@@ -37,7 +37,7 @@ describe("iln status — rich output", () => {
     expect(output).toContain("FUNDED");
     expect(output).toContain("750 USDC");
     expect(output).toContain("2026-06-30");
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("prints timeline section", async () => {
@@ -50,7 +50,7 @@ describe("iln status — rich output", () => {
     await cmd.parseAsync(["--id", "INV-500"], { from: "user" });
 
     expect(logs.some((l) => l.includes("Timeline"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("shows LP field when invoice is Funded", async () => {
@@ -63,7 +63,7 @@ describe("iln status — rich output", () => {
     await cmd.parseAsync(["--id", "INV-500"], { from: "user" });
 
     expect(logs.some((l) => l.includes("LP"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error when fetcher throws", async () => {
@@ -75,6 +75,6 @@ describe("iln status — rich output", () => {
     await cmd.parseAsync(["--id", "MISSING"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

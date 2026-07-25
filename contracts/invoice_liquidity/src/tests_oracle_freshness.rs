@@ -17,7 +17,11 @@
 //! 7. Stale but require_oracle_verification=false           → succeeds (check skipped).
 
 use super::*;
-use crate::test::{setup, DISCOUNT_RATE, DUE_DATE_OFFSET, INVOICE_AMOUNT};
+use crate::test::setup;
+
+const INVOICE_AMOUNT: i128 = 1_000_000_000;
+const DISCOUNT_RATE: u32 = 300;
+const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger as _},
@@ -131,7 +135,7 @@ fn test_stale_oracle_fails() {
     t.contract.set_max_oracle_age(&max_age).unwrap();
 
     let current_seq = t.env.ledger().sequence(); // 100
-    // Oracle timestamp is older than max_age (age = 20 ≥ 10).
+                                                 // Oracle timestamp is older than max_age (age = 20 ≥ 10).
     register_oracle_with_timestamp(&t, current_seq - 20);
 
     let invoice_id = make_invoice(&t);
@@ -157,7 +161,7 @@ fn test_boundary_one_before_limit_passes() {
     t.contract.set_max_oracle_age(&max_age).unwrap();
 
     let current_seq = t.env.ledger().sequence(); // 100
-    // age = 9 < 10 → should pass.
+                                                 // age = 9 < 10 → should pass.
     register_oracle_with_timestamp(&t, current_seq - 9);
 
     let invoice_id = make_invoice(&t);
@@ -180,7 +184,7 @@ fn test_boundary_exactly_at_limit_fails() {
     t.contract.set_max_oracle_age(&max_age).unwrap();
 
     let current_seq = t.env.ledger().sequence(); // 100
-    // age = 10 = max_age → should fail.
+                                                 // age = 10 = max_age → should fail.
     register_oracle_with_timestamp(&t, current_seq - 10);
 
     let invoice_id = make_invoice(&t);
@@ -306,4 +310,116 @@ fn test_data_becomes_stale_as_ledger_advances() {
         Err(Ok(ContractError::OracleDataStale)),
         "oracle data should become stale once ledger advances past max_oracle_age"
     );
+}
+
+// ----------------------------------------------------------------
+// Test 9: no oracle configured → fail-open (require_oracle_verification=true)
+// ----------------------------------------------------------------
+#[test]
+fn test_no_oracle_configured_fails_open() {
+    let t = setup();
+    // Do NOT register any oracle — config.price_oracle is None.
+
+    let invoice_id = make_invoice(&t);
+
+    // When require_oracle_verification=true but no oracle is configured,
+    // the contract should skip the oracle check and succeed (fail-open).
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true)
+        .unwrap();
+
+    let invoice = t.contract.get_invoice(&invoice_id).unwrap();
+    assert_eq!(invoice.status, InvoiceStatus::Funded);
+}
+
+// ================================================================
+// Tests for set_max_oracle_age (Issue #484)
+// ================================================================
+
+// ----------------------------------------------------------------
+// Test 10: admin can set max oracle age
+// ----------------------------------------------------------------
+#[test]
+fn test_set_max_oracle_age_succeeds() {
+    let t = setup();
+
+    t.contract.set_max_oracle_age(&42).unwrap();
+
+    assert_eq!(t.contract.get_max_oracle_age(), 42);
+}
+
+// ----------------------------------------------------------------
+// Test 11: setting max_oracle_age affects fund_invoice oracle check
+// ----------------------------------------------------------------
+#[test]
+fn test_set_max_oracle_age_affects_fund_invoice_check() {
+    let t = setup();
+    let current_seq = t.env.ledger().sequence();
+
+    // Set a tight max age of 5 ledgers.
+    t.contract.set_max_oracle_age(&5).unwrap();
+
+    // Oracle timestamp is 4 ledgers old → age=4 < 5 → fresh.
+    register_oracle_with_timestamp(&t, current_seq - 4);
+
+    let invoice_id1 = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id1, &INVOICE_AMOUNT, &true)
+        .unwrap();
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id1).unwrap().status,
+        InvoiceStatus::Funded
+    );
+
+    // Tighten to 3 ledgers → same oracle data (age=4) now stale.
+    t.contract.set_max_oracle_age(&3).unwrap();
+
+    let invoice_id2 = make_invoice(&t);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id2, &INVOICE_AMOUNT, &true);
+
+    assert_eq!(result, Err(Ok(ContractError::OracleDataStale)));
+}
+
+// ----------------------------------------------------------------
+// Test 12: non-admin cannot call set_max_oracle_age
+// ----------------------------------------------------------------
+#[test]
+fn test_set_max_oracle_age_unauthorized() {
+    // Use a fresh env WITHOUT mock_all_auths to test real auth.
+    let env = Env::default();
+    // Don't call env.mock_all_auths() — we want real auth checks.
+
+    let usdc_admin = Address::generate(&env);
+    let usdc = env.register_stellar_asset_contract_v2(usdc_admin.clone());
+    let eurc_admin = Address::generate(&env);
+    let eurc = env.register_stellar_asset_contract_v2(eurc_admin.clone());
+    let xlm_admin = Address::generate(&env);
+    let xlm = env.register_stellar_asset_contract_v2(xlm_admin.clone());
+
+    let contract_id = env.register_contract(None, InvoiceLiquidityContract);
+    let contract = InvoiceLiquidityContractClient::new(&env, &contract_id);
+    contract.initialize(&usdc_admin, &usdc.address(), &eurc.address(), &xlm.address());
+
+    let mut ledger = env.ledger().get();
+    ledger.timestamp = 1_700_000_000;
+    env.ledger().set(ledger);
+
+    let unauthorized = Address::generate(&env);
+    // Only the unauthorized address signs — admin does not.
+    env.mock_auths(&[
+        soroban_sdk::testutils::MockAuth {
+            address: &unauthorized,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_max_oracle_age",
+                sub_invokes: &[],
+                args: (&100u64,).into_val(&env),
+            },
+        },
+    ]);
+
+    let result = contract.try_set_max_oracle_age(&100);
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 }

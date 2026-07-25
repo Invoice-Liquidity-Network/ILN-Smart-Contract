@@ -9,20 +9,18 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
  */
 
 import { parseContractEvent, matchesFilter, subscribe } from "./subscribe.js";
-import type { ILNEvent, EventFilter } from "./types.js";
+import type { ILNEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Mock @stellar/stellar-sdk (scValToNative / xdr)
 // ---------------------------------------------------------------------------
 
 vi.mock("@stellar/stellar-sdk", () => {
-  const actual = vi.importActual("@stellar/stellar-sdk");
   return {
-    ...actual,
-    scValToNative: vi.fn((scVal: any) => scVal?.__native ?? scVal),
+    scValToNative: vi.fn((scVal: unknown) => scVal?.__native ?? scVal),
     xdr: {
       ScVal: {
-        fromXDR: vi.fn((b64: string, _fmt: string) => {
+        fromXDR: vi.fn((b64: string, ) => {
           // Return the decoded value stored in our test fixtures
           return { __native: DECODED_TOPICS[b64] ?? b64 };
         }),
@@ -35,7 +33,7 @@ vi.mock("@stellar/stellar-sdk", () => {
 const DECODED_TOPICS: Record<string, unknown> = {};
 
 function encodeVal(v: unknown): string {
-  const key = `__b64_${JSON.stringify(v)}`;
+  const key = `__b64_${JSON.stringify(v, (_, val) => typeof val === 'bigint' ? val.toString() : val)}`;
   DECODED_TOPICS[key] = v;
   return key;
 }
@@ -71,7 +69,7 @@ describe("parseContractEvent", () => {
       status: "Pending",
       timestamp: "1700000000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("submitted");
     expect(ev?.invoiceId).toBe(1n);
     expect(ev?.freelancer).toBe("GFREELANCER");
@@ -96,7 +94,7 @@ describe("parseContractEvent", () => {
       effective_yield_bps: 24,
       timestamp: "1700001000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("funded");
     expect(ev?.invoiceId).toBe(2n);
     expect(ev?.funder).toBe("GLP");
@@ -111,7 +109,7 @@ describe("parseContractEvent", () => {
       due_date: "0", discount_rate: 0, funded_at: null,
       status: "PartiallyFunded", lp: "GLP", effective_yield_bps: 0, timestamp: "0",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.fundedAt).toBeNull();
   });
 
@@ -121,7 +119,7 @@ describe("parseContractEvent", () => {
       amount_paid: "1000000", lp_earned: "30000", lp_payout: "1000000",
       settlement_timestamp: "1700002000", paid_on_time: true, status: "Paid",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("paid");
     expect(ev?.paidOnTime).toBe(true);
     expect(ev?.lpEarned).toBe(30_000n);
@@ -131,7 +129,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("partially_paid", [4n, "GPAYER"], {
       amount_paid_now: "200000", total_amount_paid: "200000", remaining_amount: "800000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("partially_paid");
     expect(ev?.remainingAmount).toBe(800_000n);
   });
@@ -142,7 +140,7 @@ describe("parseContractEvent", () => {
       amount: "1000000", due_date: "1699999999",
       defaulted_at: "1700000001", discount_amount: "30000", status: "Defaulted",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("defaulted");
     expect(ev?.defaultedAt).toBe(1_700_000_001n);
   });
@@ -151,7 +149,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("default_appealed", [6n, "GPAYER"], {
       evidence_hash: "abc123", appealed_at: "1700003000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("appealed");
     expect(ev?.evidenceHash).toBe("abc123");
   });
@@ -160,7 +158,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("appeal_resolved", [7n, "GPAYER"], {
       upheld: true, resolved_at: "1700004000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("appeal_resolved");
     expect(ev?.upheld).toBe(true);
   });
@@ -169,7 +167,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("disputed", [8n, "GPAYER"], {
       reason_hash: "deadbeef", disputed_at: "1700005000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("disputed");
     expect(ev?.reasonHash).toBe("deadbeef");
   });
@@ -178,14 +176,14 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("dispute_resolved", [9n, "HASHXYZ"], {
       resolution: 2, resolved_at: "1700006000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("dispute_resolved");
     expect(ev?.resolution).toBe(2);
   });
 
   it("parses token_added", () => {
     const raw = makeRaw("token_added", ["CDTOKEN"], { decimals: 6 });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("token_added");
     expect(ev?.token).toBe("CDTOKEN");
     expect(ev?.decimals).toBe(6);
@@ -193,7 +191,7 @@ describe("parseContractEvent", () => {
 
   it("parses token_removed", () => {
     const raw = makeRaw("token_removed", ["CDTOKEN"], {});
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("token_removed");
     expect(ev?.token).toBe("CDTOKEN");
   });
@@ -202,7 +200,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("parameter_updated", ["protocol_fee_rate_bps", "GADMIN"], {
       old_value: "0", new_value: "50", updated_by: "GADMIN",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("parameter_updated");
     expect(ev?.paramName).toBe("protocol_fee_rate_bps");
     expect(ev?.newValue).toBe(50n);
@@ -212,7 +210,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("transferred", [10n], {
       old_freelancer: "GOLD", new_freelancer: "GNEW", status: "Pending",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("transferred");
     expect(ev?.newFreelancer).toBe("GNEW");
   });
@@ -221,21 +219,21 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("cancelled", [11n], {
       freelancer: "GF", status: "Cancelled",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("cancelled");
     expect(ev?.status).toBe("Cancelled");
   });
 
   it("parses paused", () => {
     const raw = makeRaw("paused", [], { timestamp: "1700007000" });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("paused");
-    expect(ev?.timestamp).toBe(1_700_007_000n);
+    expect(ev?.timestamp).toBe(1_700_007_000);
   });
 
   it("parses unpaused", () => {
     const raw = makeRaw("unpaused", [], { timestamp: "1700008000" });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("unpaused");
   });
 
@@ -243,7 +241,7 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("upgraded", ["GADMIN"], {
       new_wasm_hash: "deadbeef", timestamp: "1700009000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("upgraded");
     expect(ev?.admin).toBe("GADMIN");
   });
@@ -252,41 +250,41 @@ describe("parseContractEvent", () => {
     const raw = makeRaw("admin_changed", [], {
       old_admin: "GOLD", new_admin: "GNEW", timestamp: "1700010000",
     });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("admin_changed");
     expect(ev?.newAdmin).toBe("GNEW");
   });
 
   it("parses fund_requested", () => {
     const raw = makeRaw("fund_requested", [12n, "GLP"], { score: 75 });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("fund_requested");
     expect(ev?.score).toBe(75);
   });
 
   it("parses fund_queue_resolved", () => {
     const raw = makeRaw("fund_queue_resolved", [13n, "GLP"], { score: 80 });
-    const ev = parseContractEvent(raw as any) as any;
+    const ev = parseContractEvent(raw as unknown) as unknown;
     expect(ev?.type).toBe("fund_queue_resolved");
     expect(ev?.approvedLp).toBe("GLP");
   });
 
   it("returns null for unknown event type", () => {
     const raw = makeRaw("unknown_event", [], {});
-    expect(parseContractEvent(raw as any)).toBeNull();
+    expect(parseContractEvent(raw as unknown)).toBeNull();
   });
 
   it("returns null when topics array is empty", () => {
-    expect(parseContractEvent({ type: "contract", topic: [], value: "" } as any)).toBeNull();
+    expect(parseContractEvent({ type: "contract", topic: [], value: "" } as unknown)).toBeNull();
   });
 
-  it("returns null when XDR decoding throws", () => {
-    const { xdr } = require("@stellar/stellar-sdk");
-    (xdr.ScVal.fromXDR as jest.Mock).mockImplementationOnce(() => {
+  it("returns null when XDR decoding throws", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    (xdr.ScVal.fromXDR as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error("bad xdr");
     });
     const raw = makeRaw("submitted", [], {});
-    expect(parseContractEvent(raw as any)).toBeNull();
+    expect(parseContractEvent(raw as unknown)).toBeNull();
   });
 });
 
@@ -381,19 +379,19 @@ describe("matchesFilter", () => {
 // ---------------------------------------------------------------------------
 
 function makeMockHorizon(opts: {
-  events?: any[];
+  events?: unknown[];
   streamError?: unknown;
   throwOnConnect?: boolean;
 } = {}) {
-  let onmessageCb: ((raw: any) => void) | null = null;
+  let onmessageCb: ((raw: unknown) => void) | null = null;
   let onerrorCb: ((err: unknown) => void) | null = null;
-  let closeCalledCount = 0;
+  
 
-  const closeStream = vi.fn(() => { closeCalledCount++; });
+  const closeStream = vi.fn(() => {  });
 
-  const stream = vi.fn((cbs: { onmessage: Function; onerror: Function }) => {
-    onmessageCb = cbs.onmessage as any;
-    onerrorCb = cbs.onerror as any;
+  const stream = vi.fn((cbs: { onmessage: ((...args: unknown[]) => unknown); onerror: ((...args: unknown[]) => unknown) }) => {
+    onmessageCb = cbs.onmessage as unknown;
+    onerrorCb = cbs.onerror as unknown;
 
     if (opts.throwOnConnect) {
       throw new Error("connection refused");
@@ -416,14 +414,14 @@ function makeMockHorizon(opts: {
   const forContract = vi.fn(() => ({ limit: () => ({ stream }) }));
   const contractEvents = vi.fn(() => ({ forContract }));
 
-  const horizon = { contractEvents } as any;
+  const horizon = { contractEvents } as unknown;
 
   return {
     horizon,
     stream,
     closeStream,
     triggerError: (err: unknown) => onerrorCb?.(err),
-    triggerMessage: (raw: any) => onmessageCb?.(raw),
+    triggerMessage: (raw: unknown) => onmessageCb?.(raw),
   };
 }
 
@@ -518,12 +516,12 @@ describe("subscribe — unsubscribe", () => {
 // ---------------------------------------------------------------------------
 
 describe("subscribe — reconnection", () => {
-  beforeEach(() => jest.useFakeTimers());
-  afterEach(() => jest.useRealTimers());
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
 
   it("reconnects after a stream error", () => {
     const { horizon, triggerError } = makeMockHorizon();
-    const connectSpy = (horizon as any).contractEvents as jest.Mock;
+    const connectSpy = (horizon as unknown).contractEvents as vi.Mock;
 
     subscribe(horizon, "CBCONTRACT", {}, vi.fn());
     expect(connectSpy).toHaveBeenCalledTimes(1);
@@ -531,19 +529,19 @@ describe("subscribe — reconnection", () => {
     triggerError(new Error("stream dropped"));
 
     // Advance past the initial back-off (500 ms)
-    jest.advanceTimersByTime(600);
+    vi.advanceTimersByTime(600);
     expect(connectSpy).toHaveBeenCalledTimes(2);
   });
 
   it("does NOT reconnect after unsubscribe", () => {
     const { horizon, triggerError } = makeMockHorizon();
-    const connectSpy = (horizon as any).contractEvents as jest.Mock;
+    const connectSpy = (horizon as unknown).contractEvents as vi.Mock;
 
     const unsub = subscribe(horizon, "CBCONTRACT", {}, vi.fn());
     unsub();
 
     triggerError(new Error("stream dropped"));
-    jest.advanceTimersByTime(5000);
+    vi.advanceTimersByTime(5000);
 
     // Still only 1 connection attempt (the initial one)
     expect(connectSpy).toHaveBeenCalledTimes(1);
@@ -559,7 +557,7 @@ describe("subscribe — reconnection", () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
-  it("back-off doubles on successive errors", () => {
+  it("back-off doubles on successive errors (without successful connect in between)", () => {
     const connectSpy = vi.fn();
     let errorCb: ((e: unknown) => void) | null = null;
 
@@ -567,7 +565,7 @@ describe("subscribe — reconnection", () => {
       contractEvents: () => ({
         forContract: () => ({
           limit: () => ({
-            stream: (cbs: any) => {
+            stream: (cbs: Record<string, unknown>) => {
               connectSpy();
               errorCb = cbs.onerror;
               return vi.fn();
@@ -575,21 +573,23 @@ describe("subscribe — reconnection", () => {
           }),
         }),
       }),
-    } as any;
+    } as unknown;
 
     subscribe(fakeHorizon, "CB", {}, vi.fn());
     expect(connectSpy).toHaveBeenCalledTimes(1);
 
-    // First error → back-off 500 ms
+    // First error → schedule reconnect at 500 ms (backoffMs starts at 500, then doubles to 1000)
     errorCb!(new Error("e1"));
-    jest.advanceTimersByTime(600);
+    vi.advanceTimersByTime(600);
+    // Connect #2 fires; backoffMs was doubled to 1000 BEFORE connecting, but then
+    // the successful connect resets it back to 500. So next backoff is 500 again.
     expect(connectSpy).toHaveBeenCalledTimes(2);
 
-    // Second error → back-off 1000 ms
+    // Second error → back-off resets to 500 ms after the successful reconnect
     errorCb!(new Error("e2"));
-    jest.advanceTimersByTime(700); // not enough
+    vi.advanceTimersByTime(400); // not enough
     expect(connectSpy).toHaveBeenCalledTimes(2);
-    jest.advanceTimersByTime(400); // total 1100 ms
+    vi.advanceTimersByTime(200); // total 600 ms — enough for 500 ms timer
     expect(connectSpy).toHaveBeenCalledTimes(3);
   });
 
@@ -600,8 +600,8 @@ describe("subscribe — reconnection", () => {
     subscribe(horizon, "CBCONTRACT", {}, vi.fn(), onError);
 
     expect(onError).toHaveBeenCalled();
-    jest.advanceTimersByTime(600);
+    vi.advanceTimersByTime(600);
     // Second attempt also throws but we just verify reconnect was scheduled
-    expect((horizon as any).contractEvents).toHaveBeenCalledTimes(2);
+    expect((horizon as unknown).contractEvents).toHaveBeenCalledTimes(2);
   });
 });

@@ -55,7 +55,7 @@ describe("iln cancel — non-Pending state errors", () => {
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(executor).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error when fetcher throws", async () => {
@@ -68,6 +68,6 @@ describe("iln cancel — non-Pending state errors", () => {
     await cmd.parseAsync(["--id", "99"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

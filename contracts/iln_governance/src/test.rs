@@ -373,10 +373,7 @@ fn test_cast_vote_emits_vote_cast_event() {
     let id = create_fee_proposal(&t);
     t.contract.cast_vote(&t.voter_a, &id, &true);
     let events = t.env.events().all();
-    assert!(
-        !events.events().is_empty(),
-        "VoteCast event should be emitted"
-    );
+    assert!(!events.is_empty(), "VoteCast event should be emitted");
 }
 
 #[test]
@@ -616,10 +613,7 @@ fn test_delegate_votes_emits_votes_delegated_event() {
     let t = setup();
     t.contract.delegate_votes(&t.voter_a, &t.voter_b);
     let events = t.env.events().all();
-    assert!(
-        !events.events().is_empty(),
-        "VotesDelegated event should be emitted"
-    );
+    assert!(!events.is_empty(), "VotesDelegated event should be emitted");
 }
 
 #[test]
@@ -629,7 +623,7 @@ fn test_undelegate_votes_emits_votes_undelegated_event() {
     t.contract.undelegate_votes(&t.voter_a);
     let events = t.env.events().all();
     assert!(
-        !events.events().is_empty(),
+        !events.is_empty(),
         "VotesUndelegated event should be emitted"
     );
 }
@@ -883,7 +877,7 @@ fn test_veto_emits_proposal_vetoed_event() {
     t.contract.veto_proposal(&id, &reason_hash(&t.env));
 
     let events = t.env.events().all();
-    assert!(!events.events().is_empty(), "ProposalVetoed event should be emitted");
+    assert!(!events.is_empty(), "ProposalVetoed event should be emitted");
 }
 
 /// Veto power is enabled after initialisation.
@@ -1049,7 +1043,7 @@ fn test_create_proposal_emits_proposal_created_event() {
     );
     let events = t.env.events().all();
     assert!(
-        !events.events().is_empty(),
+        !events.is_empty(),
         "ProposalCreated event should be emitted"
     );
 }
@@ -1126,12 +1120,9 @@ fn test_create_proposal_all_action_variants_accepted() {
     ];
 
     for (action, value) in actions {
-        let id = t.contract.create_proposal(
-            &t.voter_a,
-            action,
-            &dummy_hash(&t.env),
-            value,
-        );
+        let id = t
+            .contract
+            .create_proposal(&t.voter_a, action, &dummy_hash(&t.env), value);
         let p = t.contract.get_proposal(&id);
         assert_eq!(p.action_type, *action);
         assert_eq!(p.proposed_value, *value);
@@ -1145,7 +1136,8 @@ fn test_list_proposals_pagination_and_ordering() {
 
     // Create 25 proposals.
     for _ in 0..25 {
-        t.contract.create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+        t.contract
+            .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
     }
 
     // Test page 0, size 10 (should return ids 25 down to 16)
@@ -1187,9 +1179,15 @@ fn test_list_proposals_status_filtering() {
     let action = ProposalAction::UpdateFeeRate(100);
 
     // Create 3 proposals. All start Active.
-    let id1 = t.contract.create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
-    let id2 = t.contract.create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
-    let id3 = t.contract.create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+    let id1 = t
+        .contract
+        .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+    let id2 = t
+        .contract
+        .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+    let id3 = t
+        .contract
+        .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
 
     // Veto proposal 2.
     // Ensure caller is admin
@@ -1199,7 +1197,9 @@ fn test_list_proposals_status_filtering() {
     // Advance time to end voting for proposal 3, then execute but reject it (votes against).
     t.gov_token_admin.mint(&t.voter_a, &10_000);
     t.contract.cast_vote(&t.voter_a, &id3, &false);
-    t.env.ledger().set_timestamp(t.env.ledger().timestamp() + VOTING_PERIOD_SECS + 1);
+    t.env
+        .ledger()
+        .set_timestamp(t.env.ledger().timestamp() + VOTING_PERIOD_SECS + 1);
     let total_supply = 10_000;
     let _ = t.env.as_contract(&t.contract.address, || {
         GovContract::execute_proposal(t.env.clone(), id3, total_supply)
@@ -1208,25 +1208,36 @@ fn test_list_proposals_status_filtering() {
     // Let's verify statuses: 1 is Active, 2 is Vetoed, 3 is Rejected.
     assert_eq!(t.contract.get_proposal(&id1).status, ProposalStatus::Active);
     assert_eq!(t.contract.get_proposal(&id2).status, ProposalStatus::Vetoed);
-    assert_eq!(t.contract.get_proposal(&id3).status, ProposalStatus::Rejected);
+    assert_eq!(
+        t.contract.get_proposal(&id3).status,
+        ProposalStatus::Rejected
+    );
 
     // List active
-    let active_list = t.contract.list_proposals(&Some(ProposalStatus::Active), &0, &10);
+    let active_list = t
+        .contract
+        .list_proposals(&Some(ProposalStatus::Active), &0, &10);
     assert_eq!(active_list.len(), 1);
     assert_eq!(active_list.get(0).unwrap().id, id1);
 
     // List vetoed
-    let vetoed_list = t.contract.list_proposals(&Some(ProposalStatus::Vetoed), &0, &10);
+    let vetoed_list = t
+        .contract
+        .list_proposals(&Some(ProposalStatus::Vetoed), &0, &10);
     assert_eq!(vetoed_list.len(), 1);
     assert_eq!(vetoed_list.get(0).unwrap().id, id2);
 
     // List rejected
-    let rejected_list = t.contract.list_proposals(&Some(ProposalStatus::Rejected), &0, &10);
+    let rejected_list = t
+        .contract
+        .list_proposals(&Some(ProposalStatus::Rejected), &0, &10);
     assert_eq!(rejected_list.len(), 1);
     assert_eq!(rejected_list.get(0).unwrap().id, id3);
 
     // List passed (none)
-    let passed_list = t.contract.list_proposals(&Some(ProposalStatus::Passed), &0, &10);
+    let passed_list = t
+        .contract
+        .list_proposals(&Some(ProposalStatus::Passed), &0, &10);
     assert_eq!(passed_list.len(), 0);
 
     // List all

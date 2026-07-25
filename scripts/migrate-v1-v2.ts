@@ -191,7 +191,7 @@ async function runTestnet() {
   const server = new rpc.Server(RPC_URL, { allowHttp: RPC_URL.startsWith("http://") });
   const admin = Keypair.fromSecret(ADMIN_SECRET as string);
   console.log(`• RPC: ${RPC_URL}`);
-  console.log(`• Network: ${NETWORK}`);
+  console.log(`• Network: [configured]`);
   console.log(`• Admin: ${admin.publicKey()}`);
 
   // The on-chain steps below mirror the verified simulate logic. They are

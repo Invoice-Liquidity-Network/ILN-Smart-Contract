@@ -50,7 +50,7 @@ function warnIfHardcodedSecret(secret: string): void {
 
   // Well-known example keys used in docs / tutorials
   const knownExamples = new Set([
-    "SCZANGBA5RLAZ7IQVXSRQD5KXJLJPNWZPWHSB4TWJNSC2DL5CGFJ6Y2",
+    "SBQM45DNQRUNKDBPTXCAT7CRQLJHOD2NVEP2EKUND7HM7GFCBFTAY2EZ",
     "SDASDASDASDASDASDASDASDASDASDASDASDASDASDASDASDASDA",
   ]);
 
@@ -139,9 +139,9 @@ export class KeypairSigner implements ISigner {
     // Step 1: simulate → get footprint
     const preparedTx = await server.prepareTransaction(tx);
 
-    if (SorobanRpc.Api.isSimulationError(preparedTx as any)) {
+    if (SorobanRpc.Api.isSimulationError(preparedTx as unknown as SorobanRpc.Api.SimulateTransactionResponse)) {
       throw new Error(
-        `Soroban simulation failed: ${(preparedTx as any).error}`
+        `Soroban simulation failed: ${(preparedTx as unknown as { error: string }).error}`
       );
     }
 

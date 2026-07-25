@@ -9,8 +9,8 @@
 
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype,
-    token::Client as TokenClient, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token::Client as TokenClient, vec,
+    Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 /// Vote receipts only need to outlive the active voting window.
@@ -225,9 +225,7 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::GovToken, &gov_token);
-        env.storage()
-            .instance()
-            .set(&StorageKey::Admin, &admin);
+        env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&StorageKey::VetoPowerEnabled, &true);
@@ -357,10 +355,7 @@ impl GovContract {
     /// Updates the minimum proposer balance.
     ///
     /// Authorization: the configured ILN contract address must authorize.
-    pub fn set_min_proposal_balance(
-        env: Env,
-        min_balance: i128,
-    ) -> Result<(), GovernanceError> {
+    pub fn set_min_proposal_balance(env: Env, min_balance: i128) -> Result<(), GovernanceError> {
         let iln_contract: Address = env
             .storage()
             .instance()
@@ -431,7 +426,11 @@ impl GovContract {
         Self::adjust_delegated_to_me(&env, &terminal, delegator_balance);
 
         env.events().publish(
-            (Symbol::new(&env, "votes_delegated"), delegator.clone(), delegate.clone()),
+            (
+                Symbol::new(&env, "votes_delegated"),
+                delegator.clone(),
+                delegate.clone(),
+            ),
             VotesDelegated {
                 delegator,
                 delegate,
@@ -624,9 +623,7 @@ impl GovContract {
             let quorum = if total_supply <= 0 {
                 0_i128
             } else {
-                total_supply
-                    .saturating_mul(min_quorum_bps as i128)
-                    / 10_000_i128
+                total_supply.saturating_mul(min_quorum_bps as i128) / 10_000_i128
             };
 
             if total_votes < quorum {
@@ -660,17 +657,17 @@ impl GovContract {
             return Ok(());
         }
 
-            if proposal.status == ProposalStatus::Passed {
-                let current_ledger = env.ledger().sequence();
-                if current_ledger < proposal.eta_ledger {
-                    return Err(GovernanceError::TimelockNotExpired);
-                }
+        if proposal.status == ProposalStatus::Passed {
+            let current_ledger = env.ledger().sequence();
+            if current_ledger < proposal.eta_ledger {
+                return Err(GovernanceError::TimelockNotExpired);
+            }
 
-                let iln_contract: Address = env
-                    .storage()
-                    .instance()
-                    .get(&StorageKey::IlnContract)
-                    .unwrap();
+            let iln_contract: Address = env
+                .storage()
+                .instance()
+                .get(&StorageKey::IlnContract)
+                .unwrap();
 
             match proposal.action_type.clone() {
                 ProposalAction::UpdateFeeRate(rate) => {
@@ -742,11 +739,7 @@ impl GovContract {
         reason_hash: BytesN<32>,
     ) -> Result<(), GovernanceError> {
         // ── Auth: only admin ──────────────────────────────────────
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::Admin)
-            .unwrap();
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
 
         // ── Guard: veto power must still be enabled ───────────────
@@ -778,7 +771,11 @@ impl GovContract {
             .set(&StorageKey::Proposal(proposal_id), &proposal);
 
         env.events().publish(
-            (Symbol::new(&env, "proposal_vetoed"), proposal_id, admin.clone()),
+            (
+                Symbol::new(&env, "proposal_vetoed"),
+                proposal_id,
+                admin.clone(),
+            ),
             ProposalVetoed {
                 proposal_id,
                 admin,

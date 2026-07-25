@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { listProfiles, saveProfile, loadProfile, resolveProfile } from "../config.js";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
 import readline from "readline/promises";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 /**
  * Helper to read input from the terminal (e.g., for PINs or secrets).
@@ -46,20 +47,23 @@ export function makeWalletCommand(): Command {
     .command("generate")
     .description("Generate a new Stellar keypair and store it as a named profile")
     .option("--profile <name>", "Profile name to store the keypair under", "default")
-    .option("--json", "Output result as JSON")
+    .option("--json", "Output result as JSON (also available as global flag)")
     .action(async (opts: { profile: string; json?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = opts.json || isJsonMode(parentOpts);
+
       const kp = generateKeypair();
-      
-      if (!opts.json) {
+
+      if (!json) {
         console.log(`\x1b[33mWarning: Keep your secret key secure. Anyone with access to it can control your funds.\x1b[0m`);
         const pin = await ask("Set a PIN to encrypt your secret key: ", true);
         saveProfile({ name: opts.profile, publicKey: kp.publicKey, secretKey: kp.secretKey }, undefined, pin);
-        
+
         console.log(`✓ Keypair generated and saved as profile "${opts.profile}"`);
         console.log(`  Public key : ${kp.publicKey}`);
       } else {
         saveProfile({ name: opts.profile, publicKey: kp.publicKey, secretKey: kp.secretKey });
-        console.log(JSON.stringify({ profile: opts.profile, publicKey: kp.publicKey }));
+        formatOutput({ profile: opts.profile, publicKey: kp.publicKey }, true);
       }
     });
 
@@ -70,15 +74,19 @@ export function makeWalletCommand(): Command {
     .requiredOption("--secret <secret>", "The Stellar secret key to import")
     .option("--profile <name>", "Profile name to store the keypair under", "default")
     .action(async (opts: { secret: string; profile: string }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       try {
         const kp = Keypair.fromSecret(opts.secret);
         const pin = await ask("Set a PIN to encrypt your secret key: ", true);
         saveProfile({ name: opts.profile, publicKey: kp.publicKey(), secretKey: opts.secret }, undefined, pin);
-        console.log(`✓ Secret key imported and saved as profile "${opts.profile}"`);
-        console.log(`  Public key : ${kp.publicKey()}`);
+        formatOutput({ profile: opts.profile, publicKey: kp.publicKey() }, json, () => {
+          console.log(`✓ Secret key imported and saved as profile "${opts.profile}"`);
+          console.log(`  Public key : ${kp.publicKey()}`);
+        });
       } catch (err: any) {
-        console.error(`Error: Invalid secret key. ${err.message}`);
-        process.exit(1);
+        formatError(`Invalid secret key. ${err.message}`, "INVALID_SECRET", json);
       }
     });
 
@@ -87,33 +95,41 @@ export function makeWalletCommand(): Command {
     .command("show")
     .description("Display the current public key and balances")
     .action(async () => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       const profile = resolveProfile();
       if (!profile) {
-        console.error("Error: No active wallet profile found.");
-        process.exit(1);
+        formatError("No active wallet profile found.", "NO_WALLET", json);
       }
-
-      console.log(`\x1b[1mActive Wallet Profile: ${profile.name}\x1b[0m`);
-      console.log(`Public Key: ${profile.publicKey}`);
 
       try {
         const server = new Horizon.Server("https://horizon-testnet.stellar.org");
-        const account = await server.loadAccount(profile.publicKey);
-        
-        console.log(`\n\x1b[1mBalances:\x1b[0m`);
-        const balances = account.balances;
+        const account = await server.loadAccount(profile!.publicKey);
+
         const targets = ["XLM", "USDC", "EURC"];
-        
-        targets.forEach(asset => {
-          const bal = balances.find((b: any) => b.asset_type === "native" ? "XLM" === asset : b.asset_code === asset);
-          if (bal) {
-            console.log(`${asset.padEnd(5)}: ${bal.balance}`);
-          } else {
-            console.log(`${asset.padEnd(5)}: 0`);
+        const balances: Record<string, string> = {};
+        for (const asset of targets) {
+          const bal = account.balances.find((b: any) =>
+            b.asset_type === "native" ? asset === "XLM" : b.asset_code === asset
+          );
+          balances[asset] = bal ? bal.balance : "0";
+        }
+
+        formatOutput(
+          { name: profile!.name, publicKey: profile!.publicKey, balances },
+          json,
+          () => {
+            console.log(`\x1b[1mActive Wallet Profile: ${profile!.name}\x1b[0m`);
+            console.log(`Public Key: ${profile!.publicKey}`);
+            console.log(`\n\x1b[1mBalances:\x1b[0m`);
+            for (const [asset, amount] of Object.entries(balances)) {
+              console.log(`${asset.padEnd(5)}: ${amount}`);
+            }
           }
-        });
+        );
       } catch (err: any) {
-        console.log(`\nCould not fetch balances: ${err.message}`);
+        formatError(`Could not fetch balances: ${err.message}`, "BALANCE_ERROR", json);
       }
     });
 
@@ -122,26 +138,29 @@ export function makeWalletCommand(): Command {
     .command("fund")
     .description("Request testnet XLM via Friendbot")
     .action(async () => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = isJsonMode(parentOpts);
+
       const profile = resolveProfile();
       if (!profile) {
-        console.error("Error: No active wallet profile found.");
-        process.exit(1);
+        formatError("No active wallet profile found.", "NO_WALLET", json);
       }
 
-      console.log(`Requesting testnet XLM for ${profile.publicKey}...`);
       try {
         const res = await fetch("https://friendbot.stellar.org", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address: profile.publicKey }),
+          body: JSON.stringify({ address: profile!.publicKey }),
         });
         if (res.ok) {
-          console.log(`✓ Successfully requested XLM from Friendbot.`);
+          formatOutput({ success: true, publicKey: profile!.publicKey }, json, () => {
+            console.log(`✓ Successfully requested XLM from Friendbot.`);
+          });
         } else {
-          console.error(`Error: Friendbot request failed with status ${res.status}`);
+          formatError(`Friendbot request failed with status ${res.status}`, "FRIENDBOT_ERROR", json);
         }
       } catch (err: any) {
-        console.error(`Error: ${err.message}`);
+        formatError(err.message, "FRIENDBOT_ERROR", json);
       }
     });
 
@@ -149,24 +168,22 @@ export function makeWalletCommand(): Command {
   cmd
     .command("list")
     .description("List all saved profiles with their public keys")
-    .option("--json", "Output as JSON")
+    .option("--json", "Output as JSON (also available as global flag)")
     .action((opts: { json?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = opts.json || isJsonMode(parentOpts);
+
       const profiles = listProfiles();
-      if (opts.json) {
-        console.log(
-          JSON.stringify(
-            profiles.map((p) => ({ name: p.name, publicKey: p.publicKey })),
-            null,
-            2
-          )
-        );
-      } else if (profiles.length === 0) {
-        console.log("No profiles found. Run: iln wallet generate");
-      } else {
-        for (const p of profiles) {
-          console.log(`${p.name.padEnd(20)} ${p.publicKey}`);
+      const data = profiles.map((p) => ({ name: p.name, publicKey: p.publicKey }));
+      formatOutput(data, json, () => {
+        if (profiles.length === 0) {
+          console.log("No profiles found. Run: iln wallet generate");
+        } else {
+          for (const p of profiles) {
+            console.log(`${p.name.padEnd(20)} ${p.publicKey}`);
+          }
         }
-      }
+      });
     });
 
   return cmd;

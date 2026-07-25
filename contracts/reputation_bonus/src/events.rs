@@ -25,7 +25,7 @@ pub fn emit_parameter_updated(
     let event_name = Symbol::new(env, "parameter_updated");
     let pn = Symbol::new(env, param_name);
     env.events().publish(
-        (event_name, pn, updated_by.clone()),
+        (event_name, pn.clone(), updated_by.clone()),
         ParameterUpdated {
             param_name: pn,
             old_value,

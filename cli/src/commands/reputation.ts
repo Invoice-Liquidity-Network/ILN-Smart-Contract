@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { ILNClient } from "@iln/sdk";
 import { resolveProfile, loadConfig } from "../config.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 /** Basic ANSI colors for terminal output. */
 const colors = {
@@ -24,8 +25,11 @@ export function makeReputationCommand(): Command {
 
   cmd
     .option("-a, --address <address>", "Stellar address to check")
-    .option("--json", "Output result as JSON")
+    .option("--json", "Output result as JSON (also available as global flag)")
     .action(async (opts: { address?: string; json?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = opts.json || isJsonMode(parentOpts);
+
       try {
         const config = loadConfig();
         const client = ILNClient.testnet(); // Default to testnet for CLI
@@ -34,17 +38,14 @@ export function makeReputationCommand(): Command {
         if (!address) {
           const profile = resolveProfile();
           if (!profile) {
-            console.error("Error: No connected wallet found. Run: iln wallet generate");
-            process.exit(1);
+            formatError("No connected wallet found. Run: iln wallet generate", "NO_WALLET", json);
           }
-          address = profile.publicKey;
+          address = profile!.publicKey;
         }
 
         const rep = await client.getReputation(address);
 
-        if (opts.json) {
-          console.log(JSON.stringify(rep, null, 2));
-        } else {
+        formatOutput(rep, json, () => {
           const scoreColor = getColorForScore(rep.score);
           console.log(`${colors.bold}Reputation Profile for ${address}${colors.reset}`);
           console.log(`--------------------------------------------------`);
@@ -55,10 +56,9 @@ export function makeReputationCommand(): Command {
           // Decay status not available in SDK, omitting or marking as N/A
           console.log(`Decay:       N/A`);
           console.log(`--------------------------------------------------`);
-        }
+        });
       } catch (err: any) {
-        console.error(`Error: ${err.message}`);
-        process.exit(1);
+        formatError(err.message, "REPUTATION_ERROR", json);
       }
     });
 

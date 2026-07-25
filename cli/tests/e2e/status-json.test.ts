@@ -32,7 +32,7 @@ describe("iln status --json", () => {
 
     const output = logs.join("\n");
     expect(() => JSON.parse(output)).not.toThrow();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("JSON output contains all invoice fields", async () => {
@@ -50,7 +50,7 @@ describe("iln status --json", () => {
     expect(parsed.state).toBe("Paid");
     expect(parsed.amount).toBe("300");
     expect(parsed.token).toBe("USDC");
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("does not print the rich-format table in --json mode", async () => {
@@ -63,6 +63,6 @@ describe("iln status --json", () => {
     await cmd.parseAsync(["--id", "INV-600", "--json"], { from: "user" });
 
     expect(logs.some((l) => l.includes("Timeline"))).toBe(false);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

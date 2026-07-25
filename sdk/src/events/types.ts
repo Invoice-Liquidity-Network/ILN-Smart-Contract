@@ -9,27 +9,8 @@
 // Event type literals
 // ---------------------------------------------------------------------------
 
-export type ILNEventType =
-  | "submitted"
-  | "funded"
-  | "paid"
-  | "partially_paid"
-  | "defaulted"
-  | "appealed"
-  | "appeal_resolved"
-  | "disputed"
-  | "dispute_resolved"
-  | "token_added"
-  | "token_removed"
-  | "parameter_updated"
-  | "transferred"
-  | "cancelled"
-  | "paused"
-  | "unpaused"
-  | "upgraded"
-  | "admin_changed"
-  | "fund_requested"
-  | "fund_queue_resolved";
+
+import type { ILNEventType, ILNEvent } from "@invoice-liquidity/types";
 
 // ---------------------------------------------------------------------------
 // Per-event payload types  (mirror the Rust #[contractevent] structs)
@@ -213,27 +194,6 @@ export interface FundQueueResolvedEvent {
 // Discriminated union
 // ---------------------------------------------------------------------------
 
-export type ILNEvent =
-  | InvoiceSubmittedEvent
-  | InvoiceFundedEvent
-  | InvoicePaidEvent
-  | InvoicePartiallyPaidEvent
-  | InvoiceDefaultedEvent
-  | DefaultAppealedEvent
-  | AppealResolvedEvent
-  | InvoiceDisputedEvent
-  | DisputeResolvedEvent
-  | TokenAddedEvent
-  | TokenRemovedEvent
-  | ParameterUpdatedEvent
-  | InvoiceTransferredEvent
-  | InvoiceCancelledEvent
-  | ContractPausedEvent
-  | ContractUnpausedEvent
-  | ContractUpgradedEvent
-  | AdminChangedEvent
-  | FundRequestedEvent
-  | FundQueueResolvedEvent;
 
 // ---------------------------------------------------------------------------
 // Filter
@@ -257,3 +217,5 @@ export interface EventFilter {
 
 /** Call to stop the subscription and close the underlying stream. */
 export type Unsubscribe = () => void;
+
+export type { ILNEventType, ILNEvent };

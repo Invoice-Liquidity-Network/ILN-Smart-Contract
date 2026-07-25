@@ -24,6 +24,9 @@ import {
   testnetServer,
 } from "./setup.js";
 
+// Testnet USDC SAC address
+const USDC_SAC = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+
 // Skip the entire suite locally when secrets are absent; CI provides them.
 const describeOrSkip = hasIntegrationSecrets() ? describe : describe.skip;
 
@@ -31,8 +34,12 @@ describeOrSkip("invoice lifecycle (testnet)", () => {
   const server = testnetServer();
   const contractId = ILNClient.testnet().contractId;
 
-  const submitter = Keypair.fromSecret(requireSecret("TEST_SUBMITTER_SECRET"));
-  const lp = Keypair.fromSecret(requireSecret("TEST_LP_SECRET"));
+  const submitter = hasIntegrationSecrets()
+    ? Keypair.fromSecret(requireSecret("TEST_SUBMITTER_SECRET"))
+    : (null as unknown as Keypair);
+  const lp = hasIntegrationSecrets()
+    ? Keypair.fromSecret(requireSecret("TEST_LP_SECRET"))
+    : (null as unknown as Keypair);
 
   const signAsSubmitter = keypairSignTx(submitter, server);
   const signAsLp = keypairSignTx(lp, server);
@@ -72,7 +79,7 @@ describeOrSkip("invoice lifecycle (testnet)", () => {
       {
         payer: lp.publicKey(),
         amount: 1_000_000n,
-        token: "USDC",
+        token: USDC_SAC,
         discountRate: 300,
         dueDate,
       },

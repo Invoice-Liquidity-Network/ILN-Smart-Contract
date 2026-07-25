@@ -2,7 +2,7 @@
  * `iln status --id X` — display a rich, human-readable invoice summary.
  *
  * Flags:
- *   --json    Output raw JSON for piping
+ *   --json    Output raw JSON for piping (local or global)
  *   --watch   Refresh every 10 seconds until a terminal state is reached
  *
  * Issue: #231
@@ -12,6 +12,7 @@ import type { InvoiceDetail } from "./status-types.js";
 import { TERMINAL_STATES } from "./status-types.js";
 import { formatDetail } from "./status-formatter.js";
 import { buildTimeline } from "./status-timeline.js";
+import { formatOutput, formatError, isJsonMode } from "../format.js";
 
 export type InvoiceFetcher = (id: string) => Promise<InvoiceDetail>;
 
@@ -41,22 +42,22 @@ export function makeStatusCommand(
 
   cmd
     .requiredOption("--id <invoice-id>", "Invoice ID")
-    .option("--json", "Output raw JSON")
+    .option("--json", "Output raw JSON (also available as global flag)")
     .option("--watch", "Refresh every 10 seconds until terminal state")
     .action(async (opts: { id: string; json?: boolean; watch?: boolean }) => {
+      const parentOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
+      const json = opts.json || isJsonMode(parentOpts);
+
       async function printStatus(): Promise<boolean> {
         try {
           const inv = await fetchInvoice(opts.id);
-          if (opts.json) {
-            console.log(JSON.stringify(inv, null, 2));
-          } else {
+          formatOutput(inv, json, () => {
             console.log(formatDetail(inv));
             console.log(buildTimeline(inv.state));
-          }
+          });
           return TERMINAL_STATES.includes(inv.state);
         } catch (err) {
-          console.error(`Status error: ${(err as Error).message}`);
-          process.exit(1);
+          formatError((err as Error).message, "STATUS_ERROR", json);
           return true;
         }
       }

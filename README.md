@@ -1,46 +1,52 @@
-# ILN Smart Contract
+# ILN Event Indexer
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-Soroban smart contracts for the **Invoice Liquidity Network (ILN)** — a two-sided protocol on [Stellar](https://stellar.org) that connects invoice holders (freelancers, SMEs) with liquidity providers (LPs). Contracts act as trustless escrow: funds are held on-chain, payment terms are enforced by code, and settlement follows a strict state machine.
-
-> **New here?** Start with the [Developer Quickstart](docs/developer-quickstart.md), then read [Architecture](docs/Architecture.md) for the full money flow.
+The Invoice Liquidity Network (ILN) Event Indexer is a lightweight, high-performance service that tracks on-chain Soroban events emitted by the ILN smart contracts. It parses these events, stores state transitions in a relational database, and exposes a clean REST API for frontends, SDKs, and analytics dashboards.
 
 ---
 
 ## Table of Contents
-
-- [How it works](#how-it-works)
-- [Contracts](#contracts)
-- [Architecture](#architecture)
-- [Repository layout](#repository-layout)
-- [Quick start](#quick-start)
-- [Testnet deployment](#testnet-deployment)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
+1. [Architecture Overview](#architecture-overview)
+2. [Environment Variables](#environment-variables)
+3. [Docker Deployment](#docker-deployment)
+4. [REST API Reference](#rest-api-reference)
+5. [Troubleshooting](#troubleshooting)
+> **New here?** Start with the [Developer Quickstart](docs/developer-quickstart.md), then read [Architecture](docs/Architecture.md) for the full money flow.
+For the full documentation map, see [Documentation Index](docs/index.md) and [Glossary](docs/glossary.md).
 
 ---
 
-## How it works
+## Architecture Overview
 
-| Actor | Role |
-|-------|------|
-| **Freelancer** | Submits unpaid invoices and receives early liquidity |
-| **Payer** | The client who owes the invoice; settles on-chain |
-| **Liquidity provider (LP)** | Funds invoices at a discount; earns yield when the payer pays |
-| **ILN contracts** | Hold escrow, enforce rules, emit events, and route token transfers |
+The indexer operates as an off-chain daemon utilizing Stellar Horizon's Server-Sent Events (SSE) streaming model to maintain a real-time replica of the protocol state. 
 
-Typical lifecycle:
+### Data Flow Diagram
 
-1. Freelancer calls `submit_invoice` → invoice is **Pending**.
-2. LP calls `fund_invoice` → freelancer receives `(amount − discount)`; invoice is **Funded**.
-3. Payer calls `mark_paid` → LP receives principal + yield; invoice is **Paid** (terminal).
+```mermaid
+flowchart TD
+    subgraph Stellar Network
+        SC[ILN Smart Contract] -->|Emits Events| HZ[Stellar Horizon / RPC]
+    end
 
-Alternative paths include partial funding, defaults, disputes, appeals, and governance-controlled parameter updates. See [Architecture](docs/Architecture.md) for diagrams and edge cases.
+    subgraph ILN Indexer Stack
+        Stream[SSE Event Streamer] -->|Subscribe / Stream| HZ
+        Parser[XDR Decoder & Parser] -->|Decodes ScVal| Stream
+        DB[(PostgreSQL Database)] -->|Persist State| Parser
+        API[Express REST API] -->|Query State| DB
+    end
+
+    Frontend[Frontend / SDK Clients] -->|REST Requests| API
+```
+
+### Components
+
+1. **Event Streamer**: Maintains a persistent connection to the Horizon `/effects` or `/contract-events` streaming endpoints.
+2. **XDR Parser**: Decodes raw Base64 XDR `ScVal` structures from topics and data payloads into native JavaScript types (integers, strings, booleans, bigints) mapping to the schemas defined in [docs/events.md](file:///c:/Users/Blessing%20Chidinma/ILN-Smart-Contract/docs/events.md).
+3. **Database (PostgreSQL)**: Serves as the query-optimized relational storage layer for invoices, status histories, users, reputation records, and cursor tracking.
+4. **REST API**: A RESTful HTTP service providing low-latency queries, statistics, and filtering.
 
 ---
 
+## Environment Variables
 ## Contracts
 
 | Crate | Path | Responsibility |
@@ -59,6 +65,8 @@ All contracts compile to Soroban WASM (`wasm32v1-none`) and are tested natively 
 | [First Invoice Tutorial](docs/tutorials/first-invoice.md) | Hands-on walkthrough: submit, fund, settle, and query an invoice on testnet |
 | [Local Development Guide](docs/local-development.md) | Docker setup, local Stellar node, deploying contracts locally, running tests |
 | [Developer Quickstart](docs/developer-quickstart.md) | Rust toolchain setup, building, testing, and deploying to testnet |
+| [Documentation Index](docs/index.md) | Complete map of protocol, integration, operations, and contributor docs |
+| [Glossary](docs/glossary.md) | Definitions for protocol, DeFi, invoice factoring, and Stellar terms |
 | [SDK Integration Guide](docs/sdk-integration.md) | TypeScript examples for every contract interaction |
 | [Architecture](docs/Architecture.md) | System design, money flow, and security model |
 | [Contract ABI](docs/contract-abi.md) | Function signatures and error codes |
@@ -68,152 +76,233 @@ All contracts compile to Soroban WASM (`wasm32v1-none`) and are tested natively 
 | [Threat Model](docs/threat-model.md) | Security assumptions and known risks |
 ---
 
-## Architecture
+Configure the indexer via environment variables. Create a `.env` file at the indexer directory root or inject them directly into your container.
 
-High-level component view (one deployment per network; `invoice_liquidity` is the primary integration surface):
-
-```
-                         ┌─────────────────────────────────────────┐
-                         │           Stellar / Soroban             │
-                         └─────────────────────────────────────────┘
-    Freelancer                    Payer                      LP
-        │                          │                          │
-        │ submit_invoice           │ mark_paid                │ fund_invoice
-        ▼                          ▼                          ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                     invoice_liquidity (escrow)                        │
-│  Pending → PartiallyFunded → Funded → Paid / Defaulted / Disputed   │
-│  + reputation scores · multi-token · optional price oracle            │
-└───────────────┬───────────────────────────────┬───────────────────────┘
-                │                               │
-        ┌───────▼────────┐              ┌───────▼────────┐
-        │ iln_governance │              │reputation_bonus│
-        │ proposals/votes│              │ discount rules │
-        └───────┬────────┘              └────────────────┘
-                │
-        ┌───────▼────────┐
-        │iln_distribution│
-        │ yield / claims │
-        └────────────────┘
-                │
-        ┌───────▼────────┐
-        │  USDC / XLM    │  Stellar Asset Contracts (SAC)
-        │  (test tokens) │
-        └────────────────┘
-```
-
-**Design notes**
-
-- No backend server; state transitions are driven by signed on-chain invocations.
-- Persistent storage uses Soroban `StorageKey` patterns (see [Storage Layout](docs/storage-layout.md)).
-- Major design decisions are recorded as [ADRs](docs/adr/README.md).
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `DATABASE_URL` | PostgreSQL connection string containing credentials, host, port, and database name. | *Required* | `postgresql://postgres:password@db:5432/iln_indexer?sslmode=disable` |
+| `HORIZON_URL` | URL of the Stellar Horizon server instance to stream events from. | `https://horizon-testnet.stellar.org` | `http://localhost:8000` (for local development) |
+| `CONTRACT_ID` | The deployed address of the `invoice_liquidity` contract instance to monitor. | *Required* | `CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC` |
+| `PORT` | The port on which the Express REST API server will listen. | `3000` | `8080` |
+| `START_LEDGER` | The ledger sequence to begin event crawling from if no previous cursor is saved in the DB. | `1` | `1024350` |
+| `NODE_ENV` | Running environment mode. | `development` | `production` |
 
 ---
 
-## Repository layout
+## Docker Deployment
 
+Deploying the indexer alongside its PostgreSQL database is streamlined using Docker Compose.
+
+### Dockerfile (Indexer Service)
+
+Create the following `Dockerfile` inside the `indexer` folder:
+
+```dockerfile
+# indexer/Dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json tsconfig.json ./
+RUN npm ci
+COPY src/ ./src
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY --from=builder /app/dist ./dist
+EXPOSE 3000
+CMD ["node", "dist/index.js"]
 ```
-ILN-Smart-Contract/
-├── contracts/
-│   ├── invoice_liquidity/   # Core escrow contract + unit/integration tests
-│   ├── iln_governance/       # Governance contract
-│   ├── iln_distribution/   # Distribution / rewards contract
-│   ├── reputation_bonus/   # Reputation bonus contract
-│   ├── fuzz/                 # Fuzz / property tests (iln_fuzz)
-│   └── tests/                # Workspace-level integration tests & mocks
-├── docs/                     # Technical documentation (see below)
-├── scripts/
-│   ├── deploy-local.sh       # Deploy all contracts (local or testnet)
-│   ├── setup-local-env.sh    # Docker + Stellar CLI local setup
-│   ├── local-test.sh         # Local integration test runner
-│   └── gen-abi.ts            # ABI generation helper
-├── .github/workflows/        # CI (build, test, benchmarks)
-├── Cargo.toml                # Rust workspace manifest
-├── Makefile                  # build · test · fuzz · changelog
-├── docker-compose.yml        # Local Stellar node for development
-├── CONTRIBUTING.md           # Contribution guide
-└── README.md                 # This file
+
+### Docker Compose Configuration
+
+Use a `docker-compose.yml` to orchestrate the multi-container stack:
+
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: iln-indexer-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: iln_indexer
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  indexer:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    container_name: iln-indexer-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/iln_indexer?sslmode=disable
+      - HORIZON_URL=https://horizon-testnet.stellar.org
+      - CONTRACT_ID=CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC
+      - PORT=3000
+      - START_LEDGER=1
+
+volumes:
+  pgdata:
 ```
+
+### Command Reference
+
+* **Start the stack in detached mode:**
+  ```bash
+  docker compose up -d
+  ```
+
+* **Inspect real-time logs:**
+  ```bash
+  docker compose logs -f indexer
+  ```
+
+* **Stop and tear down the containers (preserving data):**
+  ```bash
+  docker compose down
+  ```
+
+* **Wipe all volumes (resetting database state):**
+  ```bash
+  docker compose down -v
+  ```
 
 ---
+A `Makefile` at the repo root provides all common developer commands:
 
-## Quick start
-
-### Prerequisites
-
-| Tool | Version |
-|------|---------|
-| [Rust](https://rustup.rs/) | ≥ 1.74 |
-| `wasm32v1-none` target | `rustup target add wasm32v1-none` |
-| [Stellar CLI](https://developers.stellar.org/docs/tools/cli) | For deploy / invoke (optional for tests) |
-
-### Clone, build, and test
+| Command | Description |
+|---------|-------------|
+| `make build` | Compile all contracts to optimised WASM |
+| `make test` | Run the full test suite |
+| `make fmt` | Format all Rust source files |
+| `make lint` | Run Clippy with denied warnings |
+| `make deploy-testnet` | Deploy all contracts to Stellar testnet |
+| `make coverage` | Generate a tarpaulin HTML coverage report |
+| `make clean` | Remove build artefacts |
+| `make help` | List all available targets |
 
 ```bash
 git clone https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract.git
 cd ILN-Smart-Contract
 
-# Install WASM target (first time only)
-rustup target add wasm32v1-none
+## REST API Reference
 
-# Build optimized WASM for all contracts
-make build
-# or: cargo build --target wasm32v1-none --release
+The indexer serves JSON payloads over HTTP. All currency amounts are represented in **stroops** (Stellar's base unit, e.g., `1 USDC = 10,000,000 stroops`).
 
-# Run the full test suite
-make test
-# or: cargo test
+### 1. List Invoices
+`GET /invoices`
 
-# Run property-based fuzz tests
-make fuzz
-# or: cargo test -p iln_fuzz
+Returns a list of all indexed invoices, supporting pagination and state filters.
+
+#### Query Parameters
+- `freelancer` (string, optional): Filter by freelancer public key.
+- `payer` (string, optional): Filter by payer public key.
+- `lp` (string, optional): Filter by LP (funder) public key.
+- `status` (string, optional): Filter by status (`Pending`, `Funded`, `Paid`, `Defaulted`).
+- `limit` (number, optional): Max records to return. Default `20`.
+- `cursor` (number, optional): Offset or invoice ID for pagination.
+
+#### Example Request
+```http
+GET /invoices?status=Funded&limit=1
 ```
 
-### Local network (optional)
-
-For integration testing against a local Stellar node:
-
-```bash
-./scripts/setup-local-env.sh   # Docker + CLI config
-./scripts/deploy-local.sh      # Build & deploy all contracts
-./scripts/local-test.sh        # Smoke tests against local node
-```
-
-See [Local Development Guide](docs/local-development.md) for troubleshooting and CI notes.
-
-### Deploy to testnet
-
-Full step-by-step instructions (fund accounts, upload WASM, deploy, initialize) are in [Developer Quickstart §7](docs/developer-quickstart.md#7-deploying-to-testnet). Quick deploy of all workspace contracts:
-
-```bash
-cargo build --target wasm32v1-none --release
-./scripts/deploy-local.sh testnet alice
+#### Example Response
+```json
+[
+  {
+    "id": 42,
+    "freelancer": "GBRPYHIL2C2O...",
+    "payer": "GCFXQW472...",
+    "funder": "GBLPXY275...",
+    "token": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    "amount": "1000000000",
+    "dueDate": 1735603200,
+    "discountRate": 500,
+    "status": "Funded",
+    "fundedAt": 1700050000,
+    "submittedAt": 1700000000,
+    "updatedAt": 1700050000
+  }
+]
 ```
 
 ---
 
-## Testnet deployment
+### 2. Fetch Single Invoice
+`GET /invoices/:id`
 
-<!-- TESTNET_CONTRACT_IDS_START -->
-| Resource | Contract ID | Notes |
-|----------|-------------|-------|
-| **`invoice_liquidity`** | `CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC` | Primary integration contract; used in [SDK examples](docs/sdk-integration.md) |
-| **`iln_governance`** | `C2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` | Governance proposals and voting |
-| **`iln_distribution`** | `C2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB` | Rewards distribution |
-| **`reputation_bonus`** | `C2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC` | Reputation-based bonus rules |
-| **Testnet USDC (SAC)** | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | Referenced in SDK integration guide |
-<!-- TESTNET_CONTRACT_IDS_END -->
+Retrieves deep trace data for a specific invoice ID.
 
-| Network | RPC | Passphrase |
-|---------|-----|------------|
-| Testnet | `https://soroban-testnet.stellar.org` | `Test SDF Network ; September 2015` |
+#### Example Request
+```http
+GET /invoices/42
+```
 
-`iln_governance`, `iln_distribution`, and `reputation_bonus` are deployed per environment via `scripts/deploy-local.sh`. Save the printed contract IDs after deploy for your integration config.
-
-**Explorer:** [Stellar Expert](https://stellar.expert/explorer/testnet) — search by contract ID.
+#### Example Response
+```json
+{
+  "id": 42,
+  "freelancer": "GBRPYHIL2C2O...",
+  "payer": "GCFXQW472...",
+  "funder": "GBLPXY275...",
+  "token": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+  "amount": "1000000000",
+  "dueDate": 1735603200,
+  "discountRate": 500,
+  "status": "Paid",
+  "fundedAt": 1700050000,
+  "submittedAt": 1700000000,
+  "updatedAt": 1700100000,
+  "history": [
+    { "status": "Pending", "txHash": "a1b2...", "timestamp": 1700000000 },
+    { "status": "Funded", "txHash": "c3d4...", "timestamp": 1700050000 },
+    { "status": "Paid", "txHash": "e5f6...", "timestamp": 1700100000 }
+  ]
+}
+```
 
 ---
 
+### 3. Protocol Statistics
+`GET /stats`
+
+Aggregates global network statistics.
+
+#### Example Request
+```http
+GET /stats
+```
+
+#### Example Response
+```json
+{
+  "totalVolumeFundedStroops": "450000000000",
+  "totalInvoicesSubmitted": 1250,
+  "totalInvoicesPaid": 940,
+  "totalInvoicesDefaulted": 12,
+  "defaultRatePercent": 1.26,
+  "activeLpsCount": 47
+}
+```
 ## Documentation
 
 ### Getting started
@@ -222,8 +311,11 @@ cargo build --target wasm32v1-none --release
 |----------|-------------|
 | [Developer Quickstart](docs/developer-quickstart.md) | Toolchain, build, test, and testnet deploy |
 | [Local Development Guide](docs/local-development.md) | Docker Stellar node, scripts, and workflow |
+| [Documentation Index](docs/index.md) | Full documentation map |
+| [Glossary](docs/glossary.md) | Protocol and Stellar terminology |
 | [SDK Integration Guide](docs/sdk-integration.md) | TypeScript / Stellar SDK examples (testnet) |
 | [SDK Usage Guide](sdk/README.md) | Complete NPM package usage guide for @iln/sdk |
+| [FAQ](docs/faq.md) | Frequently asked questions for users and developers |
 
 ### Architecture & security
 
@@ -231,9 +323,11 @@ cargo build --target wasm32v1-none --release
 |----------|-------------|
 | [Architecture](docs/Architecture.md) | Actors, money flow, state machine, deployment |
 | [Threat Model](docs/threat-model.md) | Security assumptions, risks, and mitigations |
+| [Security Policy](docs/security.md) | Reporting process, severity, safe harbor, and component-specific vulnerability classes |
 | [Access Control](docs/access-control.md) | Roles, auth requirements, and admin functions |
 | [Storage Layout](docs/storage-layout.md) | On-chain keys and data structures |
 | [Upgrade Guide](docs/upgrade-guide.md) | Contract upgrade process and safeguards |
+| [Mainnet Launch Checklist](docs/mainnet-launch-checklist.md) | Launch readiness owners, statuses, and sign-off |
 | [Architecture Decision Records](docs/adr/README.md) | ADR index (Soroban choice, governance timelock, etc.) |
 
 ### Contract reference
@@ -251,26 +345,72 @@ cargo build --target wasm32v1-none --release
 | [Oracle Integration](docs/oracle-integration.md) | Deploy and register a compatible oracle |
 | [Benchmarks](docs/benchmarks.md) | Gas / resource usage benchmarks |
 
+### Services & testing
+
+| Document | Description |
+|----------|-------------|
+| [Indexer REST API Reference](docs/api-reference.md) | Every indexer endpoint: methods, params, schemas, errors, and curl examples |
+| [Notifications Service](notifications/README.md) | Webhook + email notification service: setup, webhook registration, event types, and HMAC verification |
+| [E2E Testing Guide](tests/e2e/README.md) | Running the end-to-end suite, the Docker node setup, helpers, and writing new tests |
+
 ---
 
-## Contributing
+### 4. Participant Reputation
+`GET /reputation/:address`
 
-We welcome contributions — bug fixes, tests, documentation, and new features.
+Retrieves the current reputation score and history for any address.
 
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) for environment setup, testing expectations, and PR requirements.
-2. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `test:`, etc.).
-3. Open a PR against `main` with a clear description and linked issue (e.g. `Fixes #107`).
+#### Example Request
+```http
+GET /reputation/GBLPXY275...
+```
 
-For documentation-only changes:
-
-```bash
-git checkout -b docs/readme
-# edit README.md
-git commit -m "docs: write comprehensive README for ILN-Smart-Contract repo"
+#### Example Response
+```json
+{
+  "address": "GBLPXY275...",
+  "score": 880,
+  "tier": "Gold",
+  "history": [
+    { "change": 15, "reason": "Invoice Paid #31", "timestamp": 1700100000 },
+    { "change": -50, "reason": "Default Claim #12", "timestamp": 1698000000 }
+  ]
+}
 ```
 
 ---
 
-## License
+## Troubleshooting
 
-This project is licensed under the [MIT License](LICENSE).
+### Stream Disconnections
+
+Server-Sent Events (SSE) connections are susceptible to network drops, server restarts, or timeouts.
+
+* **Symptom**: Indexer logs show `Stream disconnected. Retrying...` repeatedly, or the indexer falls behind the live ledger state.
+* **Mitigation**:
+  1. The indexer utilizes **exponential back-off reconnection** logic (reconnecting after 500ms, doubling up to a maximum of 30 seconds).
+  2. The system tracks the latest successfully processed ledger event sequence ID (the `paging_token` or `cursor`) inside the `cursor_store` table in the database.
+  3. Upon a reconnect, the streamer requests events starting from `?cursor={last_processed_paging_token}`. This prevents gaps and ensures **exactly-once processing** guarantees.
+  4. Ensure your Horizon nodes are configured with appropriate TCP keep-alive settings to prevent load balancers from pruning idle event connections.
+
+### Database Migration Failures
+
+Database migration issues typically occur during deployments involving schema changes or when multiple instances of the service attempt to boot concurrently.
+
+* **Symptom**: Container crashes with errors such as `relation "invoices" already exists` or `table "knex_migrations_lock" is locked`.
+* **Mitigation**:
+  1. **Locking Issues**: If a migration crashed midway, the lock table might remain active. Manually clear the migration lock in PostgreSQL:
+     ```sql
+     UPDATE knex_migrations_lock SET is_locked = 0;
+     -- or equivalent for your migration library (e.g. Prisma, TypeORM)
+     ```
+  2. **Schema Drift**: If the schema is corrupted during local test cycles, perform a database migration rollback and re-apply:
+     ```bash
+     docker compose exec indexer npm run migrate:rollback
+     docker compose exec indexer npm run migrate:latest
+     ```
+  3. **Wipe and Resync**: If schemas are incompatible and cannot be rolled back, clear the PostgreSQL volumes and let the indexer re-crawl events from the ledger height specified in `START_LEDGER`:
+     ```bash
+     docker compose down -v
+     docker compose up -d
+     ```

@@ -389,5 +389,39 @@ mod tests {
         let result = t.contract.execute_proposal(&t.admin2, &proposal_id);
         assert!(result.is_ok());
     }
+
+    // ────────────────────────────────────────────────────────────
+    // Test 15: Proposal expires after window (Issue #483)
+    // ────────────────────────────────────────────────────────────
+    #[test]
+    fn test_proposal_expires_after_window() {
+        let t = setup_multisig();
+
+        let mut signers = Vec::new(&t.env);
+        signers.push_back(t.admin1.clone());
+        signers.push_back(t.admin2.clone());
+        signers.push_back(t.admin3.clone());
+        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+
+        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+
+        // First signer signs
+        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+
+        // Advance ledger past the multisig window (17_280 ledgers)
+        let mut ledger = t.env.ledger().get();
+        ledger.sequence_number += 17_281;
+        t.env.ledger().set(ledger);
+
+        // Second signer tries to sign after expiration
+        let result = t.contract.sign_proposal(&t.admin2, &proposal_id);
+
+        // Should fail because proposal has expired
+        assert!(result.is_err());
+
+        // Execution should also fail
+        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
+        assert!(result.is_err());
+    }
 }
 
