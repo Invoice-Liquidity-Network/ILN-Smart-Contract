@@ -313,7 +313,7 @@ cargo test -p insurance_pool
 
 # Useful flags
 cargo test -p invoice_liquidity -- --nocapture   # show stdout
-cargo test -p invoice_liquidity test_name        # filter by name
+cargo test -p insurance_pool test_name             # filter by name
 ```
 
 Tests run on your native architecture via `soroban-sdk` test utilities — no WASM build needed.

@@ -46,6 +46,36 @@ Used for short-lived data that is cheap but can be cleared out automatically by 
 | `TotalVolumeEurc` | Persistent | `i128` | Global protocol stat |
 | `TotalVolumeXlm` | Persistent | `i128` | Global protocol stat |
 
+## 3b. InsurancePool Storage Layout
+
+The `InsurancePool` contract (separate deployment) uses its own `DataKey`
+subset. Storage-type semantics follow the same rules as above: `Instance`
+keys live for the contract's lifetime and are cheaper; `Persistent` keys
+survive upgrades but cost more to read/write.
+
+| Variant | Storage Type | Stored Value | Purpose |
+| ------- | ------------ | ------------ | ------- |
+| `Admin` | Instance | `Address` | The liquidity contract (admin) |
+| `Balance` | Instance | `i128` | Total pool balance (sum of premiums minus payouts) |
+| `Coverage` | Instance | `u32` | Flat per-claim coverage cap |
+| `Enrolled(Address)` | Persistent | `bool` | Enrollment flag per LP |
+| `Premiums(Address)` | Persistent | `i128` | Cumulative premium paid per LP |
+| `Claimed(u64)` | Persistent | `bool` | Whether a claim has been processed for an invoice |
+
+### TTL settings for persistent keys
+
+Persistent keys in Soroban require a TTL extension to avoid archival. The
+ILN contracts set TTL bounds as follows:
+
+- **Minimum TTL:** `1,000,000` ledgers
+- **Maximum TTL:** `2,000,000` ledgers
+
+These bounds apply to all `Persistent` `DataKey` variants above (including the
+`InsurancePool` entries). Instance keys (`Admin`, `Balance`, `Coverage`) have
+no separate TTL — they live for the contract instance's lifetime.
+
+Source: `contracts/insurance_pool/src/lib.rs:49-64`.
+
 ## 4. Collision Prevention Strategy
 The unification into the `DataKey` enum inherently prevents key collision:
 - In Soroban SDK, custom enum variants serialize into `ScVal::Vec` where the first element is the string literal (Symbol) of the variant name.
