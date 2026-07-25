@@ -30,7 +30,6 @@ mod tests_new_features;
 mod tests_pagination;
 mod tests_regression;
 #[cfg(test)]
-#[cfg(test)]
 mod tests_stress;
 mod tests_xlm_support;
 
