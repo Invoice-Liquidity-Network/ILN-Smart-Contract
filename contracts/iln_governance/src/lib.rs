@@ -67,6 +67,9 @@ pub enum GovernanceError {
     /// Issue #531: the cross-contract execution call failed. The proposal
     /// remains in `Passed` status so `execute_proposal` can be retried.
     ExecutionFailed = 20,
+    /// Issue #603: set_execution_delay called before initialize -- admin
+    /// is not yet set, so there is no legitimate caller to authorize against.
+    NotInitialized = 21,
 }
 
 // ================================================================
@@ -806,16 +809,14 @@ impl GovContract {
     ) -> Result<(), GovernanceError> {
         admin.require_auth();
 
-        if let Some(stored_admin) = env
+        let stored_admin: Address = env
             .storage()
             .instance()
             .get::<StorageKey, Address>(&StorageKey::Admin)
-        {
-            if admin != stored_admin {
-                return Err(GovernanceError::Unauthorized);
-            }
-        } else {
-            env.storage().instance().set(&StorageKey::Admin, &admin);
+            .ok_or(GovernanceError::NotInitialized)?;
+
+        if admin != stored_admin {
+            return Err(GovernanceError::Unauthorized);
         }
 
         let old_value: u32 = env

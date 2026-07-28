@@ -1999,3 +1999,38 @@ fn test_execute_proposal_success_still_marks_executed() {
         ProposalStatus::Executed
     );
 }
+
+// ── Issue #603: set_execution_delay privilege escalation ──────────────────
+
+#[test]
+#[should_panic]
+fn test_set_execution_delay_before_initialize_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, GovContract);
+    let contract = GovContractClient::new(&env, &contract_id);
+    let attacker = Address::generate(&env);
+
+    // No initialize() call was made -- StorageKey::Admin was never set.
+    // The old vulnerable code would silently make `attacker` the admin here.
+    // The fixed code must reject this with NotInitialized instead.
+    contract.set_execution_delay(&attacker, &100_u32);
+}
+
+#[test]
+#[should_panic]
+fn test_set_execution_delay_wrong_admin_rejected() {
+    let t = setup();
+    let attacker = Address::generate(&t.env);
+
+    // Contract IS initialized (via setup()), but `attacker` is not the
+    // configured admin -- must be rejected with Unauthorized.
+    t.contract.set_execution_delay(&attacker, &100_u32);
+}
+
+#[test]
+fn test_set_execution_delay_correct_admin_succeeds() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &100_u32);
+    assert_eq!(t.contract.get_execution_delay(), 100_u32);
+}
