@@ -1344,3 +1344,272 @@ fn test_get_version() {
     let version = t.contract.get_version();
     assert_eq!(version, soroban_sdk::String::from_str(&t.env, "1.0.0"));
 }
+
+// ----------------------------------------------------------------
+// Issue #604: update_config parameter bounds validation
+// ----------------------------------------------------------------
+
+/// Builds a minimal admin-owned config directly in storage (bypassing the
+/// public client) so each bounds test only needs to exercise
+/// `crate::config::update_config` in isolation.
+fn setup_config_for_bounds_test(env: &Env) -> (soroban_sdk::Address, soroban_sdk::Address) {
+    let admin = Address::generate(env);
+    let contract_id = env.register_contract(None, InvoiceLiquidityContract);
+    env.as_contract(&contract_id, || {
+        crate::storage::set_admin(env, &admin);
+        let config = crate::config::Config {
+            high_rep_threshold: 70,
+            bonus_bps: 100,
+            min_discount_rate_bps: 100,
+            decay_rate_bps: 50,
+            decay_period_ledgers: 10_000,
+            dispute_timeout_ledgers: 10_000,
+            xlm_sac_address: Address::generate(env),
+            usdc_sac_address: Address::generate(env),
+            eurc_sac_address: Address::generate(env),
+            price_oracle: None,
+            max_oracle_age_ledgers: 17_280,
+        };
+        crate::storage::set_config(env, &config);
+    });
+    (admin, contract_id)
+}
+
+#[test]
+fn test_update_config_valid_values_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            50,
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_config_rejects_decay_rate_bps_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            0, // decay_rate_bps = 0
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(result, Err(crate::config::ConfigError::InvalidDecayRateBps));
+}
+
+#[test]
+fn test_update_config_rejects_decay_rate_bps_at_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            10_000, // 100% — would instantly zero all reputation scores
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(result, Err(crate::config::ConfigError::InvalidDecayRateBps));
+}
+
+#[test]
+fn test_update_config_accepts_decay_rate_bps_at_max_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            5_000, // exactly at the max boundary — should be accepted
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_config_rejects_decay_period_ledgers_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            50,
+            0, // decay_period_ledgers = 0 — would cause division-by-zero risk
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(
+        result,
+        Err(crate::config::ConfigError::InvalidDecayPeriodLedgers)
+    );
+}
+
+#[test]
+fn test_update_config_accepts_decay_period_ledgers_at_min_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            50,
+            100, // exactly at the min boundary — should be accepted
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_config_rejects_dispute_timeout_ledgers_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            50,
+            10_000,
+            0, // dispute_timeout_ledgers = 0 — allows instant auto-resolution
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(
+        result,
+        Err(crate::config::ConfigError::InvalidDisputeTimeoutLedgers)
+    );
+}
+
+#[test]
+fn test_update_config_accepts_dispute_timeout_ledgers_at_min_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            70,
+            100,
+            100,
+            50,
+            10_000,
+            1_440, // exactly at the min boundary (~1 day) — should be accepted
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_update_config_rejects_high_rep_threshold_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            0, // high_rep_threshold = 0 — would make every LP "high reputation"
+            100,
+            100,
+            50,
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(
+        result,
+        Err(crate::config::ConfigError::InvalidHighRepThreshold)
+    );
+}
+
+#[test]
+fn test_update_config_accepts_high_rep_threshold_at_min_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, contract_id) = setup_config_for_bounds_test(&env);
+    let result = env.as_contract(&contract_id, || {
+        crate::config::update_config(
+            &env,
+            &admin,
+            1, // exactly at the min boundary (just above 0) — should be accepted
+            100,
+            100,
+            50,
+            10_000,
+            10_000,
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        )
+    });
+    assert!(result.is_ok());
+}

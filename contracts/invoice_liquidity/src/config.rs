@@ -25,9 +25,36 @@ pub enum ConfigError {
     Unauthorized,
     InvalidBonusBps,
     InvalidMinDiscountRate,
+    /// decay_rate_bps exceeds the maximum allowed (Issue #604) — an
+    /// unbounded value (e.g. 10000 = 100%) would instantly zero all
+    /// reputation scores on the next decay application.
+    InvalidDecayRateBps,
+    /// decay_period_ledgers is below the minimum allowed (Issue #604) — a
+    /// value of 0 would disable decay entirely (guarded reads skip decay
+    /// when period is 0), silently breaking the reputation decay mechanism.
+    InvalidDecayPeriodLedgers,
+    /// dispute_timeout_ledgers is below the minimum allowed (Issue #604) —
+    /// a value of 0 would allow disputes to auto-resolve instantly, before
+    /// the payer has any opportunity to respond.
+    InvalidDisputeTimeoutLedgers,
+    /// high_rep_threshold is 0 (Issue #604) — this would make every LP
+    /// register as "high reputation" regardless of actual score.
+    InvalidHighRepThreshold,
 }
 
 const MAX_BONUS_BPS: u32 = 500;
+/// Maximum decay_rate_bps (Issue #604): 5000 bps = 50% decay per period.
+/// Bounding well below 10000 (100%) prevents a single governance call from
+/// instantly zeroing every LP's reputation score.
+const MAX_DECAY_RATE_BPS: u32 = 5000;
+/// Minimum decay_period_ledgers (Issue #604): a period of 0 would disable
+/// decay outright (see the `> 0` guards in invoice.rs / storage.rs), so a
+/// floor prevents governance from silently neutering the decay mechanism.
+const MIN_DECAY_PERIOD_LEDGERS: u64 = 100;
+/// Minimum dispute_timeout_ledgers (Issue #604): ~1440 ledgers is roughly
+/// one day at 5s/ledger — enough time for a payer to respond before a
+/// dispute can be auto-resolved.
+const MIN_DISPUTE_TIMEOUT_LEDGERS: u64 = 1440;
 
 #[allow(clippy::too_many_arguments)]
 pub fn update_config(
@@ -55,6 +82,18 @@ pub fn update_config(
     }
     if min_discount_rate_bps == 0 {
         return Err(ConfigError::InvalidMinDiscountRate);
+    }
+    if decay_rate_bps == 0 || decay_rate_bps > MAX_DECAY_RATE_BPS {
+        return Err(ConfigError::InvalidDecayRateBps);
+    }
+    if decay_period_ledgers < MIN_DECAY_PERIOD_LEDGERS {
+        return Err(ConfigError::InvalidDecayPeriodLedgers);
+    }
+    if dispute_timeout_ledgers < MIN_DISPUTE_TIMEOUT_LEDGERS {
+        return Err(ConfigError::InvalidDisputeTimeoutLedgers);
+    }
+    if high_rep_threshold == 0 {
+        return Err(ConfigError::InvalidHighRepThreshold);
     }
 
     let new_config = Config {

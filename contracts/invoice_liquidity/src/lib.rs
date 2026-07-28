@@ -2599,7 +2599,7 @@ impl InvoiceLiquidityContract {
             usdc_sac_address,
             eurc_sac_address,
         )
-        .map_err(|_| ContractError::Unauthorized)
+        .map_err(ContractError::from)
     }
 
     pub fn get_config(env: Env) -> Result<Config, ContractError> {
