@@ -59,4 +59,38 @@ pub enum ContractError {
     Reentrancy = 37,
     /// Rate-limited function called before the cooldown period elapsed (Issue #541).
     RateLimited = 38,
+    /// Issue #604: bonus_bps exceeds the configured maximum.
+    InvalidBonusBps = 39,
+    /// Issue #604: min_discount_rate_bps is 0.
+    InvalidMinDiscountRate = 40,
+    /// Issue #604: decay_rate_bps is 0 or exceeds the configured maximum.
+    InvalidDecayRateBps = 41,
+    /// Issue #604: decay_period_ledgers is below the configured minimum.
+    InvalidDecayPeriodLedgers = 42,
+    /// Issue #604: dispute_timeout_ledgers is below the configured minimum.
+    InvalidDisputeTimeoutLedgers = 43,
+    /// Issue #604: high_rep_threshold is 0.
+    InvalidHighRepThreshold = 44,
+}
+
+impl From<crate::config::ConfigError> for ContractError {
+    fn from(err: crate::config::ConfigError) -> Self {
+        match err {
+            crate::config::ConfigError::Unauthorized => ContractError::Unauthorized,
+            crate::config::ConfigError::InvalidBonusBps => ContractError::InvalidBonusBps,
+            crate::config::ConfigError::InvalidMinDiscountRate => {
+                ContractError::InvalidMinDiscountRate
+            }
+            crate::config::ConfigError::InvalidDecayRateBps => ContractError::InvalidDecayRateBps,
+            crate::config::ConfigError::InvalidDecayPeriodLedgers => {
+                ContractError::InvalidDecayPeriodLedgers
+            }
+            crate::config::ConfigError::InvalidDisputeTimeoutLedgers => {
+                ContractError::InvalidDisputeTimeoutLedgers
+            }
+            crate::config::ConfigError::InvalidHighRepThreshold => {
+                ContractError::InvalidHighRepThreshold
+            }
+        }
+    }
 }
