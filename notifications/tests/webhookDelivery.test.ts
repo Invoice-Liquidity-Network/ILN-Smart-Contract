@@ -7,7 +7,7 @@ function makeService(http: HttpClient, now?: () => number) {
 }
 
 describe('WebhookDeliveryService', () => {
-  const endpoint = { id: 'e1', url: 'https://hook.example/abc', secret: 's' };
+  const endpoint = { id: 'e1', url: 'http://8.8.8.8/abc', secret: 's' };
 
   it('signs and delivers on success', async () => {
     const http = vi.fn(async () => ({ status: 200 }));
@@ -147,5 +147,18 @@ describe('WebhookDeliveryService', () => {
     }, 'invoice.paid');
 
     expect(addSpy).toHaveBeenCalled();
+  });
+
+  it('rejects delivery to private IP addresses (SSRF hardening)', async () => {
+    const http = vi.fn(async () => ({ status: 200 }));
+    const svc = makeService(http);
+    
+    const resLocalhost = await svc.deliver({ id: 'e2', url: 'http://localhost/test', secret: 's' }, {});
+    expect(resLocalhost.ok).toBe(false);
+    
+    const resPrivate = await svc.deliver({ id: 'e3', url: 'http://10.0.0.1/test', secret: 's' }, {});
+    expect(resPrivate.ok).toBe(false);
+    
+    expect(http).not.toHaveBeenCalled();
   });
 });
