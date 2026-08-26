@@ -35,7 +35,7 @@ fn setup() -> Setup {
     let token_client = TokenClient::new(&env, &token_address);
     let token_admin = StellarAssetClient::new(&env, &token_address);
 
-    client.initialize(&admin, &COVERAGE, &token_address);
+    client.init_pool(&admin, &COVERAGE, &token_address);
 
     Setup {
         env,
@@ -185,7 +185,7 @@ fn initialize_is_single_shot() {
     let other = Address::generate(&s.env);
     let res = s
         .client
-        .try_initialize(&other, &COVERAGE, &s.token_client.address);
+        .try_init_pool(&other, &COVERAGE, &s.token_client.address);
     assert_eq!(res, Err(Ok(InsuranceError::AlreadyInitialized)));
 }
 

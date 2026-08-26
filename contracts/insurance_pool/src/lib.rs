@@ -110,7 +110,7 @@ impl InsurancePool {
     ///   contract address acting on a confirmed default).
     /// * `coverage` — flat per-claim compensation cap (in token stroops).
     /// * `token` — address of the token contract for real transfers (Issue #527).
-    pub fn initialize(
+    pub fn init_pool(
         env: Env,
         admin: Address,
         coverage: i128,

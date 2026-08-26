@@ -47,7 +47,7 @@ fn deploy_pool(t: &crate::test::TestEnv, coverage: i128) -> InsurancePoolClient<
     // claim_default()'s cross-contract claim() call self-authorizes, the
     // same pattern iln_governance uses to call invoice_liquidity's
     // admin-gated setters.
-    pool_client.initialize(&t.contract.address, &coverage, &t.token.address);
+    pool_client.init_pool(&t.contract.address, &coverage, &t.token.address);
     advance_past_rate_limit_cooldown(&t.env);
     t.contract.set_insurance_pool(&pool_id);
     pool_client
