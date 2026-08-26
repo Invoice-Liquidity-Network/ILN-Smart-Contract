@@ -633,14 +633,19 @@ impl GovContract {
         let mut lo: i128 = 0;
         let mut hi: i128 = n;
         while lo < hi {
-            let mid = lo + (hi - lo + 1) / 2;
+            let mid = lo.saturating_add(
+                hi.saturating_sub(lo)
+                    .saturating_add(1)
+                    .saturating_div(2)
+            );
             match mid.checked_mul(mid) {
                 Some(sq) if sq <= n => lo = mid,
-                _ => hi = mid - 1,
+                _ => hi = mid.saturating_sub(1),
             }
         }
         lo
     }
+
 
     /// Returns the configured minimum proposer balance.
     pub fn get_min_proposal_balance(env: Env) -> i128 {

@@ -910,6 +910,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 name = "iln_distribution"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
@@ -1360,6 +1361,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "reputation_bonus"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 

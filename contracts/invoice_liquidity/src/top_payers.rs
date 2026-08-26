@@ -26,16 +26,17 @@ fn save_top_payers_heap(env: &Env, heap: &Vec<TopPayerEntry>) {
 }
 
 fn parent_index(index: u32) -> u32 {
-    (index.saturating_sub(1)) / 2
+    (index.saturating_sub(1)).saturating_div(2)
 }
 
 fn left_child(index: u32) -> u32 {
-    index * 2 + 1
+    index.saturating_mul(2).saturating_add(1)
 }
 
 fn right_child(index: u32) -> u32 {
-    index * 2 + 2
+    index.saturating_mul(2).saturating_add(2)
 }
+
 
 fn entry_score(entry: &TopPayerEntry) -> u32 {
     entry.score
@@ -105,7 +106,7 @@ fn remove_payer_from_heap(heap: &mut Vec<TopPayerEntry>, payer: &Address) {
         return;
     };
 
-    let last_index = len - 1;
+    let last_index = len.saturating_sub(1);
     if index != last_index {
         let last = heap.get(last_index).unwrap();
         heap.set(index, last);
@@ -132,7 +133,7 @@ fn insert_into_heap(heap: &mut Vec<TopPayerEntry>, payer: Address, score: u32) {
             address: payer,
             score,
         });
-        sift_up(heap, heap.len() - 1);
+        sift_up(heap, heap.len().saturating_sub(1));
         return;
     }
 
