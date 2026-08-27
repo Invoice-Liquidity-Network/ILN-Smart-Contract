@@ -101,7 +101,7 @@ fn advance_ledgers(env: &Env, delta: u32) {
 // ── Maturity delay: reject before delay elapses ───────────────────────────────
 
 #[test]
-fn test_resolve_queue_fails_immediately_after_join() {
+pub(crate) fn test_resolve_queue_fails_immediately_after_join() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -113,7 +113,7 @@ fn test_resolve_queue_fails_immediately_after_join() {
 }
 
 #[test]
-fn test_resolve_queue_fails_one_ledger_before_delay() {
+pub(crate) fn test_resolve_queue_fails_one_ledger_before_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -129,7 +129,7 @@ fn test_resolve_queue_fails_one_ledger_before_delay() {
 // ── Maturity delay: succeed after delay elapses ───────────────────────────────
 
 #[test]
-fn test_resolve_queue_succeeds_after_delay() {
+pub(crate) fn test_resolve_queue_succeeds_after_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -143,7 +143,7 @@ fn test_resolve_queue_succeeds_after_delay() {
 }
 
 #[test]
-fn test_resolve_queue_succeeds_well_after_delay() {
+pub(crate) fn test_resolve_queue_succeeds_well_after_delay() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -159,7 +159,7 @@ fn test_resolve_queue_succeeds_well_after_delay() {
 // ── Timer is anchored to the FIRST join, not subsequent ones ──────────────────
 
 #[test]
-fn test_second_lp_join_does_not_reset_maturity_timer() {
+pub(crate) fn test_second_lp_join_does_not_reset_maturity_timer() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -184,7 +184,7 @@ fn test_second_lp_join_does_not_reset_maturity_timer() {
 // ── Idempotency: already-resolved queue returns cached winner immediately ─────
 
 #[test]
-fn test_resolve_already_resolved_queue_returns_same_winner() {
+pub(crate) fn test_resolve_already_resolved_queue_returns_same_winner() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -201,7 +201,7 @@ fn test_resolve_already_resolved_queue_returns_same_winner() {
 // ── Event emission ────────────────────────────────────────────────────────────
 
 #[test]
-fn test_rejected_resolution_emits_attempt_event_with_success_false() {
+pub(crate) fn test_rejected_resolution_emits_attempt_event_with_success_false() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -227,7 +227,7 @@ fn test_rejected_resolution_emits_attempt_event_with_success_false() {
 }
 
 #[test]
-fn test_successful_resolution_emits_attempt_event_with_success_true() {
+pub(crate) fn test_successful_resolution_emits_attempt_event_with_success_true() {
     let t = setup_mev();
     let id = submit_invoice_mev(&t);
 
@@ -243,5 +243,119 @@ fn test_successful_resolution_emits_attempt_event_with_success_true() {
         events.events().len() >= 2,
         "Expected events from join + resolve, got {}",
         events.events().len()
+    );
+}
+
+// ── Issue #708: randomized tie-breaking fairness ────────────────────────────
+//
+// Prior to this fix, resolve_fund_queue always selected the first entry
+// inserted among LPs tied on score (join_fund_queue's `score < new_score`
+// insertion, strictly less-than, puts a tying LP after existing equal-score
+// entries). That made the outcome for a tie fully predictable and gameable
+// by whoever submits first. This test creates many independent ties between
+// the same two LPs (both default to score 0, so joining the same invoice
+// queue in the same order is a tie every time) and asserts the winner isn't
+// always the same address across all of them — proof the PRNG path is
+// actually exercised, not dead code that happens to always pick index 0.
+
+#[test]
+pub(crate) fn test_tie_resolution_is_not_always_the_first_joiner() {
+    let t = setup_mev();
+
+    let mut lp_a_wins = 0;
+    let mut lp_b_wins = 0;
+
+    for _ in 0..20 {
+        let id = submit_invoice_mev(&t);
+        // Both default to score 0 — a genuine tie every time.
+        t.contract.join_fund_queue(&t.lp_a, &id);
+        t.contract.join_fund_queue(&t.lp_b, &id);
+        advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+        let winner = t.contract.resolve_fund_queue(&id);
+        if winner == t.lp_a {
+            lp_a_wins += 1;
+        } else if winner == t.lp_b {
+            lp_b_wins += 1;
+        } else {
+            panic!("resolve_fund_queue returned neither tied LP");
+        }
+    }
+
+    assert_eq!(lp_a_wins + lp_b_wins, 20);
+    // Both LPs are equally eligible on every tie — if tie-breaking were
+    // still deterministic (always the first joiner), one side would be 20
+    // and the other 0. Either side winning at least once is enough to prove
+    // randomness is actually influencing the outcome.
+    assert!(
+        lp_a_wins > 0 && lp_b_wins > 0,
+        "expected both tied LPs to win at least once across 20 ties, got lp_a={lp_a_wins} lp_b={lp_b_wins}"
+    );
+}
+
+#[test]
+pub(crate) fn test_resolve_queue_still_resolves_deterministically_for_a_single_lp() {
+    // No tie at all (only one LP in the queue) — the PRNG-gated tied_count
+    // check must not change the existing single-candidate behavior.
+    let t = setup_mev();
+    let id = submit_invoice_mev(&t);
+
+    t.contract.join_fund_queue(&t.lp_a, &id);
+    advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+    let winner = t.contract.resolve_fund_queue(&id);
+    assert_eq!(winner, t.lp_a);
+}
+
+// ── Issue #712: queue winner transferring to the queue loser is expected ────
+//
+// transfer_lp_position() lets an LP hand off their funded position to any
+// other address, with no restriction tied to funding-queue history. This
+// test confirms that a queue winner immediately transferring their position
+// to the address that *lost* the same queue resolution works exactly like
+// any other transfer_lp_position() call — this is intentional, documented
+// secondary-market behavior (see docs/threat-model.md), not a queue-fairness
+// bug. The queue's fairness guarantee is about *who gets first crack at
+// funding the invoice* (reputation-weighted, now randomized on ties per
+// Issue #708) — what either party does with their position afterward,
+// including a private arrangement to hand it off, is a separate concern
+// this contract deliberately doesn't restrict.
+
+#[test]
+pub(crate) fn test_queue_winner_can_transfer_position_to_queue_loser() {
+    let t = setup_mev();
+    let id = submit_invoice_mev(&t);
+
+    // Both lp_a and lp_b join the queue (tied at score 0 — see Issue #708's
+    // randomized tie-break, exercised incidentally here); whichever wins,
+    // the other is the "loser" for this test's purpose.
+    t.contract.join_fund_queue(&t.lp_a, &id);
+    t.contract.join_fund_queue(&t.lp_b, &id);
+    advance_ledgers(&t.env, QUEUE_DELAY_LEDGERS);
+
+    let winner = t.contract.resolve_fund_queue(&id);
+    let loser = if winner == t.lp_a {
+        t.lp_b.clone()
+    } else {
+        t.lp_a.clone()
+    };
+
+    // Winner funds the invoice, then transfers the resulting position
+    // straight to the losing queue participant.
+    t.contract
+        .fund_invoice(&winner, &id, &INVOICE_AMOUNT, &false);
+    let result = t.contract.try_transfer_lp_position(&id, &loser);
+
+    assert!(
+        result.is_ok(),
+        "transfer_lp_position must succeed for a queue winner transferring to the queue loser — \
+         this is expected secondary-market behavior, not something the queue mechanism restricts"
+    );
+
+    let invoice = t.contract.get_invoice(&id);
+    assert_eq!(
+        invoice.funder,
+        Some(loser),
+        "the transferred-to address must now be the recorded funder"
     );
 }

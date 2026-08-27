@@ -19,7 +19,12 @@ const db = createNotificationsDatabase(config.dbPath);
 const port = config.port;
 const store = new SubscriptionStore(db);
 const emailStore = new EmailSubscriptionStore(db);
-const historyStore = new DeliveryHistoryStore();
+// Retention policy (Issue #733): bodies are purged before full records so
+// recipient PII is not retained indefinitely.
+const historyStore = new DeliveryHistoryStore({
+  bodyRetentionMs: config.deliveryBodyRetentionMs,
+  recordRetentionMs: config.deliveryRecordRetentionMs,
+});
 const delivery = new WebhookDeliveryService({
   http: async (url, init) => {
     const res = await fetch(url, init);

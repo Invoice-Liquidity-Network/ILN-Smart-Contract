@@ -43,6 +43,31 @@ describe('WebhookDeliveryService', () => {
     expect(blocked.status).toBe(429);
   });
 
+  it('scopes rate limits per endpoint: one exhausted recipient does not affect another', async () => {
+    const http = vi.fn(async () => ({ status: 200 }));
+    let t = 0;
+    const svc = new WebhookDeliveryService({
+      http,
+      now: () => t,
+      limiterOptions: { maxRequests: 2, windowMs: 1000 },
+    });
+    const noisy = { id: 'noisy', url: 'https://hook.example/noisy', secret: 's' };
+    const quiet = { id: 'quiet', url: 'https://hook.example/quiet', secret: 's' };
+
+    // The noisy endpoint exhausts its own budget...
+    expect((await svc.deliver(noisy, {})).ok).toBe(true);
+    expect((await svc.deliver(noisy, {})).ok).toBe(true);
+    expect((await svc.deliver(noisy, {})).skippedReason).toBe('rate_limited');
+
+    // ...while a different endpoint is unaffected.
+    expect((await svc.deliver(quiet, {})).ok).toBe(true);
+    expect((await svc.deliver(quiet, {})).ok).toBe(true);
+    expect((await svc.deliver(quiet, {})).skippedReason).toBe('rate_limited');
+
+    // Both endpoints delivered only within their own budgets.
+    expect(http).toHaveBeenCalledTimes(4);
+  });
+
   it('treats http errors as failures', async () => {
     const http = vi.fn(async () => {
       throw new Error('network');
