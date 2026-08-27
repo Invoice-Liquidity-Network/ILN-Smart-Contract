@@ -79,4 +79,9 @@ pub enum ContractError {
     /// deviated beyond the configured threshold from every other — no
     /// source survived to produce a validated price.
     AllPriceSourcesRejected = 43,
+    /// Issue #oracle-registry-cooldown: a mutation to this oracle registry
+    /// resolution channel (the feed-type default, or a specific per-token
+    /// override) was attempted before the governance-configured minimum
+    /// spacing since its last mutation has elapsed.
+    OracleRegistryCooldownActive = 44,
 }

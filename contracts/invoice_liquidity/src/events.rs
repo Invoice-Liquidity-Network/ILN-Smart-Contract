@@ -87,6 +87,20 @@ pub struct PriceOutlierRejected {
     pub deviation_bps: u32,
 }
 
+/// Emitted whenever oracle resolution falls back to the legacy
+/// `Config.price_oracle` field (Identity feed only) because neither a
+/// per-token override nor a feed-type default is registered in the
+/// oracle_registry (Issue #legacy-oracle-fallback). Surfaces in
+/// monitoring/indexer data so an operator doesn't silently miss that the
+/// new registry was never explicitly configured for this token.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LegacyOracleFallbackUsed {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub oracle: Address,
+}
+
 /// Emitted after `claim_default` attempts to compensate the claiming LP from
 /// the configured insurance pool. `compensated` is `false` when the LP
 /// wasn't enrolled, no pool is configured, or the pool call failed/was

@@ -13,7 +13,7 @@ use crate::oracle_registry::OracleFeedType;
 use crate::test::setup;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal,
 };
 
@@ -71,6 +71,22 @@ fn advance_past_rate_limit_cooldown(env: &Env) {
     let mut info = env.ledger().get();
     info.sequence_number += 150;
     info.timestamp += 150 * 5;
+    env.ledger().set(info);
+}
+
+/// register_oracle/remove_oracle/register_token_oracle/remove_token_oracle
+/// are now cooldown-gated per resolution channel
+/// (`DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS` = 720 ledgers — see Issue
+/// #oracle-registry-cooldown). A test that mutates the *same* channel
+/// (same feed type for register_oracle/remove_oracle; same feed type +
+/// token for register_token_oracle/remove_token_oracle) more than once
+/// must advance the ledger past this cooldown in between, or the second
+/// mutation is rejected with `OracleRegistryCooldownActive`. 800 ledgers
+/// clears the 720-ledger default with margin.
+fn advance_past_oracle_registry_cooldown(env: &Env) {
+    let mut info = env.ledger().get();
+    info.sequence_number += 800;
+    info.timestamp += 800 * 5;
     env.ledger().set(info);
 }
 
@@ -158,6 +174,7 @@ fn test_remove_oracle_clears_feed_type_default() {
     let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
     t.contract
         .register_oracle(&OracleFeedType::Identity, &oracle);
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract.remove_oracle(&OracleFeedType::Identity);
 
     assert_eq!(
@@ -195,6 +212,7 @@ fn test_remove_token_oracle_falls_back_to_feed_type_default() {
         .register_oracle(&OracleFeedType::Identity, &default_oracle);
     t.contract
         .register_token_oracle(&OracleFeedType::Identity, &t.token.address, &token_oracle);
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract
         .remove_token_oracle(&OracleFeedType::Identity, &t.token.address);
 
@@ -217,6 +235,190 @@ fn test_legacy_price_oracle_used_as_fallback_for_identity_feed() {
         t.contract
             .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
         Some(legacy_oracle)
+    );
+}
+
+// ── Legacy oracle fallback: visibility + disable flag (Issue
+// #legacy-oracle-fallback) ─────────────────────────────────────────────────
+//
+// Falling back to the legacy Config.price_oracle field is convenient for
+// migration, but silently masks the fact that the new registry was never
+// properly configured for a given token/feed — an operator relying on
+// oracle_registry monitoring could easily miss it. These tests cover the
+// LegacyOracleFallbackUsed event and the governance-settable flag that lets
+// the fallback be disabled entirely once migration is confirmed complete.
+
+#[test]
+fn test_legacy_fallback_emits_event() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    let resolved = t
+        .contract
+        .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address);
+    assert_eq!(resolved, Some(legacy_oracle));
+
+    let events = t.env.events().all();
+    let saw_fallback_event = events.events().iter().any(|e| {
+        let s = std::format!("{:?}", e);
+        s.contains("legacy_oracle_fallback_used") || s.contains("LegacyOracleFallbackUsed")
+    });
+    assert!(
+        saw_fallback_event,
+        "resolving through the legacy price_oracle field must emit LegacyOracleFallbackUsed \
+         so it's visible in monitoring/indexer data, not silently invisible"
+    );
+}
+
+#[test]
+fn test_registry_default_does_not_emit_legacy_fallback_event() {
+    // Precision check: the event must fire only when the fallback path is
+    // actually taken, not on every oracle resolution regardless of source.
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    let resolved = t
+        .contract
+        .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address);
+    assert_eq!(resolved, Some(oracle));
+
+    let events = t.env.events().all();
+    let saw_fallback_event = events.events().iter().any(|e| {
+        let s = std::format!("{:?}", e);
+        s.contains("legacy_oracle_fallback_used") || s.contains("LegacyOracleFallbackUsed")
+    });
+    assert!(
+        !saw_fallback_event,
+        "resolving through an explicitly registered oracle must not emit \
+         LegacyOracleFallbackUsed — that event is specifically for the legacy path"
+    );
+}
+
+#[test]
+fn test_legacy_fallback_enabled_by_default() {
+    let t = setup();
+    assert!(t.contract.is_legacy_oracle_fallback_enabled());
+}
+
+#[test]
+fn test_disabling_legacy_fallback_forces_none_when_unconfigured() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(legacy_oracle),
+        "sanity check: the fallback resolves normally before being disabled"
+    );
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+    assert!(!t.contract.is_legacy_oracle_fallback_enabled());
+
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "with the fallback disabled and no explicit registry entry, resolution must \
+         return None (forcing explicit configuration) rather than silently falling \
+         back to Config.price_oracle"
+    );
+}
+
+#[test]
+fn test_disabling_legacy_fallback_does_not_affect_explicit_registry_entries() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    let registry_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &registry_oracle);
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+
+    // Resolution never reaches the legacy-fallback step at all here — an
+    // explicit feed-type default is registered — so disabling the fallback
+    // must have no effect on this outcome.
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(registry_oracle)
+    );
+}
+
+#[test]
+fn test_legacy_fallback_can_be_re_enabled() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None
+    );
+
+    // Not a one-way switch: governance can restore the previous behavior.
+    t.contract.set_legacy_oracle_fallback_enabled(&true);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(legacy_oracle)
+    );
+}
+
+#[test]
+fn test_fund_invoice_oracle_verification_is_no_op_when_legacy_fallback_disabled_and_unconfigured() {
+    // With the fallback disabled and no explicit registry entry, an invoice
+    // requesting oracle verification must degrade to the same fail-open
+    // behavior as "no oracle configured at all" — not silently fall back,
+    // and not reject funding just because there's nothing left to consult.
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, false, t.env.ledger().sequence()); // unverified
+    t.contract.set_price_oracle(&legacy_oracle);
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert!(
+        result.is_ok(),
+        "with the legacy fallback disabled and no registry entry, oracle verification \
+         must be a no-op (fail-open) rather than resolving to the disabled legacy \
+         oracle or rejecting funding outright"
+    );
+}
+
+#[test]
+fn test_set_legacy_oracle_fallback_enabled_requires_admin() {
+    let (env, _admin, _, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_legacy_oracle_fallback_enabled",
+            args: (false,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_set_legacy_oracle_fallback_enabled(&false);
+    assert!(
+        res.is_err(),
+        "set_legacy_oracle_fallback_enabled should fail for non-admin caller"
     );
 }
 
@@ -677,6 +879,11 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
         Some(token_oracle)
     );
 
+    // Advance past the per-channel mutation cooldown before the next
+    // mutation to each of these same two channels below — unrelated to,
+    // and unaffected by, the contract's own pause state (pause and this
+    // cooldown are independent mechanisms).
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract
         .remove_token_oracle(&OracleFeedType::Identity, &t.token.address);
     assert_eq!(
@@ -686,6 +893,7 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
         "removing the per-token override must succeed while paused, falling back to the default"
     );
 
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract.remove_oracle(&OracleFeedType::Identity);
     assert_eq!(
         t.contract
@@ -985,5 +1193,352 @@ fn test_circuit_retrips_immediately_if_still_stale_right_after_reset() {
             .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address),
         "a still-stale oracle must re-trip immediately after a reset, not require \
          a fresh multi-query streak on top of the pre-existing one"
+    );
+}
+
+// ── Oracle swap mid-lifecycle (Issue #oracle-swap) ────────────────────────────
+//
+// If a registered oracle needs to be replaced (e.g. a provider upgrades its
+// own contract), does the swap apply to invoices that already exist, or only
+// to ones submitted afterward? See ADR-010's "Oracle Swap Semantics for
+// In-Flight Invoices" for the documented answer: the swap applies
+// immediately and retroactively to every invoice, because
+// require_oracle_verification is a per-fund_invoice-call argument (never
+// stored on the invoice) and resolve_oracle always reads the registry's
+// current state — there is nothing invoice-scoped to be broken. These tests
+// verify that behavior end-to-end rather than leaving it an accident of
+// implementation.
+
+#[test]
+fn test_oracle_swap_mid_lifecycle_before_first_funding() {
+    let t = setup();
+
+    // Old oracle: healthy, verifies the payer.
+    let old_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &old_oracle);
+
+    let invoice_id = make_invoice(&t);
+
+    // Governance swaps in a new oracle before any funding has happened —
+    // register_oracle documents itself as "register (or update)", so this
+    // is an in-place replacement, not a separate add. Advance past the
+    // per-channel mutation cooldown first (Issue #oracle-registry-cooldown)
+    // — well under the default staleness window, so it doesn't affect the
+    // freshness of either oracle's timestamp below.
+    advance_past_oracle_registry_cooldown(&t.env);
+    let new_oracle = deploy_mock_oracle(&t, false, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &new_oracle);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(new_oracle)
+    );
+
+    // The new oracle currently reports the payer as unverified — if
+    // fund_invoice were somehow still consulting the old (untouched,
+    // still-verified) oracle, this funding attempt would succeed instead.
+    // Failing proves the swap took effect for an invoice submitted before it.
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::PayerUnverified)),
+        "fund_invoice must resolve against the newly-registered oracle, not a stale \
+         reference to the one that was current when the invoice was submitted"
+    );
+
+    // Once the new oracle reports the payer as verified, funding proceeds
+    // normally — the swap didn't leave the invoice permanently broken.
+    let new_oracle_client = MockRegistryOracleClient::new(&t.env, &new_oracle);
+    new_oracle_client.set_response(&true, &t.env.ledger().sequence());
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert!(result.is_ok());
+    assert_eq!(t.contract.get_invoice(&invoice_id).status, InvoiceStatus::Funded);
+}
+
+#[test]
+fn test_oracle_swap_mid_lifecycle_after_partial_funding() {
+    let t = setup();
+
+    // Old oracle: healthy.
+    let old_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &old_oracle);
+
+    let invoice_id = make_invoice(&t);
+    let half = INVOICE_AMOUNT / 2;
+
+    // First tranche funds against the old oracle and succeeds — the invoice
+    // is now genuinely "in flight" (PartiallyFunded), not just submitted.
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &half, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::PartiallyFunded
+    );
+
+    // Governance swaps the oracle mid-lifecycle, while this invoice already
+    // has funding history against the old one. Advance past the
+    // per-channel mutation cooldown first (Issue #oracle-registry-cooldown).
+    advance_past_oracle_registry_cooldown(&t.env);
+    let new_oracle = deploy_mock_oracle(&t, false, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &new_oracle);
+
+    // The second tranche (completing the invoice) must resolve against the
+    // new oracle, not the old one it started funding under — the old
+    // oracle is untouched and still reports verified=true, so a failure
+    // here proves the second call is genuinely re-resolving live rather
+    // than reusing whatever the first call saw.
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &half, &true);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::PayerUnverified)),
+        "a partially-funded invoice's remaining tranche must resolve against the \
+         oracle registered *now*, not the one that funded the first tranche"
+    );
+    // The failed attempt must not have altered funding progress.
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::PartiallyFunded
+    );
+
+    // Once the new oracle is healthy, the same remaining tranche completes
+    // the invoice normally.
+    let new_oracle_client = MockRegistryOracleClient::new(&t.env, &new_oracle);
+    new_oracle_client.set_response(&true, &t.env.ledger().sequence());
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &half, &true);
+    assert_eq!(t.contract.get_invoice(&invoice_id).status, InvoiceStatus::Funded);
+}
+
+// ── Oracle registry mutation cooldown (Issue #oracle-registry-cooldown) ───────
+//
+// register_oracle/register_token_oracle/remove_oracle/remove_token_oracle
+// were previously gated by authorization alone, with no cooldown — a
+// compromised or malicious admin/governance-authorized caller could rapidly
+// flip oracle configuration. These tests cover: rapid mutation attempts
+// being rejected, the cooldown expiring correctly, the cooldown being
+// scoped per resolution channel (not a single global lock), and reads
+// remaining fully available regardless of an active cooldown.
+
+#[test]
+fn test_oracle_registry_cooldown_rejects_rapid_mutation() {
+    let t = setup();
+    let oracle_a = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let oracle_b = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle_a);
+
+    // Immediately attempting another mutation to the *same* channel (the
+    // Identity feed-type default), with no ledger advance, must be
+    // rejected — same channel, whether it's another register_oracle call
+    // or a remove_oracle call.
+    let result = t
+        .contract
+        .try_register_oracle(&OracleFeedType::Identity, &oracle_b);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::OracleRegistryCooldownActive))
+    );
+
+    let result = t.contract.try_remove_oracle(&OracleFeedType::Identity);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::OracleRegistryCooldownActive))
+    );
+
+    // The rejected attempts must not have changed anything.
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle_a)
+    );
+}
+
+#[test]
+fn test_oracle_registry_cooldown_expires_after_configured_ledgers() {
+    let t = setup();
+    let oracle_a = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let oracle_b = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle_a);
+
+    // Too soon: rejected.
+    assert_eq!(
+        t.contract
+            .try_register_oracle(&OracleFeedType::Identity, &oracle_b),
+        Err(Ok(ContractError::OracleRegistryCooldownActive))
+    );
+
+    // Advance past the default cooldown (720 ledgers) — now it succeeds.
+    advance_past_oracle_registry_cooldown(&t.env);
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle_b);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle_b)
+    );
+}
+
+#[test]
+fn test_oracle_registry_cooldown_is_scoped_per_channel() {
+    let t = setup();
+    let default_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let token_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &default_oracle);
+
+    // A mutation to a *different* channel (the per-token override for this
+    // same feed type, a distinct resolution channel from the feed-type
+    // default) must succeed immediately — the cooldown must not act as a
+    // single global lock across every oracle registry mutation.
+    let result = t.contract.try_register_token_oracle(
+        &OracleFeedType::Identity,
+        &t.token.address,
+        &token_oracle,
+    );
+    assert!(
+        result.is_ok(),
+        "a mutation to an unrelated resolution channel must not be blocked by another \
+         channel's cooldown"
+    );
+
+    // But a second mutation to that *same* per-token channel, immediately
+    // after, is correctly rejected.
+    let another_token_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let result = t.contract.try_register_token_oracle(
+        &OracleFeedType::Identity,
+        &t.token.address,
+        &another_token_oracle,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::OracleRegistryCooldownActive))
+    );
+}
+
+#[test]
+fn test_oracle_registry_cooldown_does_not_block_reads() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    // The channel is now on cooldown for further mutations — but every
+    // read-only oracle registry operation must remain fully available,
+    // completely unaffected.
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle)
+    );
+    assert_eq!(
+        t.contract.get_oracle_health(&OracleFeedType::Identity, &t.token.address),
+        None // never queried yet — still a valid, non-erroring read
+    );
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .unwrap();
+    assert!(!health.is_stale);
+    assert_eq!(
+        t.contract.get_oracle_registry_cooldown_ledgers(),
+        crate::oracle_registry::DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS
+    );
+}
+
+#[test]
+fn test_set_oracle_registry_cooldown_ledgers_governs_the_wait() {
+    let t = setup();
+    // set_oracle_registry_cooldown_ledgers is itself rate-limited
+    // (DEFAULT_RATE_LIMIT_LEDGERS); its last-call ledger defaults to 0
+    // when never called, and setup() starts the ledger well below that
+    // cooldown, so calling it immediately after setup() would incorrectly
+    // trip the cooldown on its very first-ever call — same pre-existing
+    // quirk `advance_past_rate_limit_cooldown` already works around
+    // elsewhere in this file for set_price_oracle/set_max_oracle_age.
+    advance_past_rate_limit_cooldown(&t.env);
+    let oracle_a = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let oracle_b = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+
+    // Shorten the cooldown to 5 ledgers.
+    t.contract.set_oracle_registry_cooldown_ledgers(&5);
+    assert_eq!(t.contract.get_oracle_registry_cooldown_ledgers(), 5);
+
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle_a);
+
+    // Still too soon (0 ledgers elapsed).
+    assert_eq!(
+        t.contract
+            .try_register_oracle(&OracleFeedType::Identity, &oracle_b),
+        Err(Ok(ContractError::OracleRegistryCooldownActive))
+    );
+
+    // Advance just 5 ledgers — the shortened cooldown, not the 720-ledger
+    // default — and the mutation now succeeds.
+    let mut info = t.env.ledger().get();
+    info.sequence_number += 5;
+    info.timestamp += 5 * 5;
+    t.env.ledger().set(info);
+
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle_b);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle_b)
+    );
+}
+
+#[test]
+fn test_set_oracle_registry_cooldown_ledgers_rejects_zero() {
+    let t = setup();
+    // See test_set_oracle_registry_cooldown_ledgers_governs_the_wait: avoid
+    // the pre-existing rate-limit quirk confounding this test with a
+    // RateLimited error instead of genuinely exercising the zero-rejection
+    // check (both are Err, so the bare .is_err() assertion below would
+    // pass either way — advancing first makes sure it's testing the right
+    // thing).
+    advance_past_rate_limit_cooldown(&t.env);
+    assert!(t.contract.try_set_oracle_registry_cooldown_ledgers(&0).is_err());
+    assert_eq!(
+        t.contract.get_oracle_registry_cooldown_ledgers(),
+        crate::oracle_registry::DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS,
+        "a rejected update must leave the previously configured value in place"
+    );
+}
+
+#[test]
+fn test_set_oracle_registry_cooldown_ledgers_requires_admin() {
+    let (env, _admin, _, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_oracle_registry_cooldown_ledgers",
+            args: (5_u64,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_set_oracle_registry_cooldown_ledgers(&5);
+    assert!(
+        res.is_err(),
+        "set_oracle_registry_cooldown_ledgers should fail for non-admin caller"
     );
 }

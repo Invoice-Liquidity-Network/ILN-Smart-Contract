@@ -100,6 +100,23 @@ pub enum DataKey {
     /// deviation (basis points) between a price source's reported price
     /// and the cross-source median before it's rejected as an outlier.
     MaxPriceDeviationBps,
+    /// Issue #oracle-registry-cooldown: ledger sequence of the last
+    /// register_oracle/remove_oracle mutation to a feed type's
+    /// feed-type-wide default channel.
+    OracleRegistryDefaultCooldown(crate::oracle_registry::OracleFeedType),
+    /// Issue #oracle-registry-cooldown: ledger sequence of the last
+    /// register_token_oracle/remove_token_oracle mutation to a specific
+    /// (feed type, token) per-token override channel.
+    OracleRegistryTokenCooldown(crate::oracle_registry::OracleFeedType, Address),
+    /// Issue #oracle-registry-cooldown: governance-configurable minimum
+    /// spacing (ledgers) enforced between mutations to the same oracle
+    /// registry resolution channel.
+    OracleRegistryCooldownLedgers,
+    /// Issue #legacy-oracle-fallback: governance-settable flag. Defaults
+    /// to `true` (enabled, preserving existing behavior) until governance
+    /// disables it once migration off the legacy `Config.price_oracle`
+    /// fallback is confirmed complete.
+    LegacyOracleFallbackEnabled,
 }
 
 // ----------------------------------------------------------------

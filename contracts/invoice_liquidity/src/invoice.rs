@@ -222,6 +222,45 @@ pub struct DisputeRecord {
     pub reason_hash: BytesN<32>,
     /// Ledger sequence when the dispute was filed.
     pub disputed_at: u32,
+    /// Issue #dispute-oracle-snapshot: oracle-sourced state frozen at the
+    /// moment this dispute was filed. Never updated afterward, even if the
+    /// live oracle value later moves — governance resolving the dispute
+    /// reviews this snapshot, not whatever the oracle currently reports.
+    pub oracle_snapshot: DisputeOracleSnapshot,
+}
+
+/// Oracle-sourced state snapshotted at dispute-filing time, so a dispute's
+/// on-chain evidence can't drift out from under governance between filing
+/// and resolution (see `oracle_registry::snapshot_oracle_state_for_dispute`,
+/// called from `dispute_invoice`).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisputeOracleSnapshot {
+    /// Whether an `Identity`-feed oracle resolved for this invoice's token
+    /// at dispute time at all. `false` means every `identity_*`/`payer_*`
+    /// field below is trivially absent because funding was never
+    /// oracle-gated for this token — not that "the oracle said no."
+    pub identity_oracle_gated: bool,
+    /// The `Identity`-feed oracle address resolved for this invoice's token
+    /// at dispute time, if any.
+    pub identity_oracle: Option<Address>,
+    /// That oracle's `is_verified` answer for this invoice's payer, queried
+    /// live at the moment of filing — `None` if there was no oracle to
+    /// query, or the query failed/panicked (recorded as "unknown", not
+    /// fabricated as `false`).
+    pub payer_verified: Option<bool>,
+    /// The oracle's reported timestamp (ledger sequence, not Unix time)
+    /// for that answer.
+    pub identity_data_timestamp: Option<u32>,
+    /// Whether that data was already stale (per the protocol's configured
+    /// `max_oracle_age_ledgers`) as of the dispute.
+    pub identity_data_stale: Option<bool>,
+    /// A cross-validated `Price`-feed reading for this invoice's token at
+    /// dispute time (see `oracle_registry::get_verified_price`), if any
+    /// `Price`-feed sources are registered. `None` means no sources were
+    /// registered or every query failed/disagreed beyond the deviation
+    /// threshold — not "the price is zero."
+    pub price: Option<i128>,
 }
 
 #[contracttype]

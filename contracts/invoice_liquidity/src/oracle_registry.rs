@@ -13,7 +13,16 @@
 //!   2. Feed-type-wide default, if registered.
 //!   3. The legacy `Config.price_oracle` field (kept for backwards
 //!      compatibility with contracts/tests that only ever called
-//!      `set_price_oracle`).
+//!      `set_price_oracle`) — Identity feed only, and only while
+//!      `is_legacy_oracle_fallback_enabled` (Issue
+//!      #legacy-oracle-fallback). Falling back this way emits
+//!      `LegacyOracleFallbackUsed` so it's visible in monitoring/indexer
+//!      data rather than silently masking an unconfigured registry.
+//!      Governance can disable this fallback entirely via
+//!      `set_legacy_oracle_fallback_enabled(false)` once migration off it
+//!      is confirmed complete, forcing every token/feed relying on it to
+//!      have explicit registry configuration instead — after that,
+//!      resolution returns `None` at this step rather than falling back.
 //!
 //! Registration is governance-controlled the same way `update_fee_rate` /
 //! `add_token` are: gated by `require_admin`, with governance driving it via
@@ -22,12 +31,14 @@
 
 use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 
-use crate::access::require_admin;
+use crate::access::{check_rate_limit, require_admin};
 use crate::errors::ContractError;
 use crate::events::{
-    OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded, OracleRegistered,
-    OracleUnregistered, PriceOutlierRejected, PriceSourceAdded, PriceSourceRemoved,
+    LegacyOracleFallbackUsed, OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded,
+    OracleRegistered, OracleUnregistered, PriceOutlierRejected, PriceSourceAdded,
+    PriceSourceRemoved,
 };
+use crate::invoice::DisputeOracleSnapshot;
 use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
 use crate::storage::DataKey;
 use crate::OracleVerificationResponse;
@@ -38,6 +49,103 @@ use crate::OracleVerificationResponse;
 /// chain (or is rejected if nothing else resolves) until governance calls
 /// `reset_oracle_circuit`.
 pub const MAX_CONSECUTIVE_STALE_QUERIES: u32 = 3;
+
+// ── Registry mutation cooldown (Issue #oracle-registry-cooldown) ──────────
+//
+// register_oracle/register_token_oracle/remove_oracle/remove_token_oracle
+// were previously gated by authorization alone, with no cooldown — a
+// compromised or malicious admin/governance-authorized caller could rapidly
+// flip oracle configuration (register, remove, register a different
+// address, ...) to create confusion or exploit timing windows around other
+// operations (e.g. funding calls resolving inconsistently mid-attack, or
+// obscuring which oracle was actually live when something went wrong).
+//
+// The cooldown is scoped per *resolution channel* — the feed-type-wide
+// default (register_oracle/remove_oracle) and each specific per-token
+// override (register_token_oracle/remove_token_oracle) each track their
+// own last-mutation ledger independently, mirroring how `OracleRegistry`/
+// `TokenOracle` are already two distinct storage shapes. This directly
+// targets the actual threat (rapidly flipping the *same* channel back and
+// forth) without blocking unrelated, legitimate administration of a
+// different feed type or token.
+
+/// Default minimum spacing (in ledgers) enforced between mutations to the
+/// same oracle registry resolution channel, until governance configures a
+/// different value via `set_oracle_registry_cooldown_ledgers`. 720 ledgers
+/// (~1 hour at 5s/ledger) — deliberately conservative, matching the
+/// magnitude already used for `set_admin`'s cooldown
+/// (`ADMIN_CHANGE_COOLDOWN_LEDGERS`) as a similarly sensitive control
+/// surface, rather than the much shorter `DEFAULT_RATE_LIMIT_LEDGERS` (120)
+/// used for lower-stakes setters like `add_token`.
+pub const DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS: u64 = 720;
+
+/// Check and, if not currently on cooldown, record a mutation to the
+/// resolution channel identified by `cooldown_key` (must be either
+/// `DataKey::OracleRegistryDefaultCooldown` or
+/// `DataKey::OracleRegistryTokenCooldown`). Returns
+/// `ContractError::OracleRegistryCooldownActive` if the channel's last
+/// mutation was less than `get_oracle_registry_cooldown_ledgers()` ledgers
+/// ago.
+///
+/// Deliberately checks `Option<u32>` (via a plain `get`, not
+/// `unwrap_or(0)`) rather than defaulting a never-mutated channel's "last
+/// mutation ledger" to `0` — with a several-hundred-ledger default
+/// cooldown, defaulting to `0` would make a channel's very first-ever
+/// mutation look like it happened at ledger 0 and incorrectly reject it if
+/// the current ledger sequence is below the cooldown (routinely true: test
+/// environments and even early mainnet ledger sequences can start well
+/// under a few hundred). A channel with no recorded mutation has no
+/// cooldown to violate, full stop.
+fn check_oracle_registry_cooldown(env: &Env, cooldown_key: DataKey) -> Result<(), ContractError> {
+    let last_ledger: Option<u32> = env.storage().instance().get(&cooldown_key);
+    let current_ledger = env.ledger().sequence();
+
+    if let Some(last_ledger) = last_ledger {
+        let cooldown = get_oracle_registry_cooldown_ledgers(env.clone());
+        if current_ledger < last_ledger.saturating_add(cooldown as u32) {
+            return Err(ContractError::OracleRegistryCooldownActive);
+        }
+    }
+
+    env.storage().instance().set(&cooldown_key, &current_ledger);
+    Ok(())
+}
+
+/// Update the governance-configurable cooldown (in ledgers) enforced
+/// between mutations to the same oracle registry resolution channel.
+/// Rejects `0` (would disable the protection entirely — use a very small
+/// positive value instead if a near-zero cooldown is genuinely intended,
+/// so the intent is visible rather than silently indistinguishable from
+/// "never configured").
+///
+/// This setter is itself rate-limited (`DEFAULT_RATE_LIMIT_LEDGERS`,
+/// ~10 min) via the standard per-function limiter — separate from, and in
+/// addition to, the per-channel cooldown this parameter controls.
+///
+/// Access: Admin only.
+pub fn set_oracle_registry_cooldown_ledgers(env: &Env, ledgers: u64) -> Result<(), ContractError> {
+    require_admin(env)?;
+    check_rate_limit(
+        env,
+        "set_oracle_registry_cooldown_ledgers",
+        crate::constants::DEFAULT_RATE_LIMIT_LEDGERS,
+    )?;
+    if ledgers == 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::OracleRegistryCooldownLedgers, &ledgers);
+    Ok(())
+}
+
+/// The currently configured oracle registry mutation cooldown, in ledgers.
+pub fn get_oracle_registry_cooldown_ledgers(env: Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleRegistryCooldownLedgers)
+        .unwrap_or(DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS)
+}
 
 /// The kind of off-chain data an oracle provides.
 #[contracttype]
@@ -88,6 +196,7 @@ pub fn register_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_oracle_registry_cooldown(env, DataKey::OracleRegistryDefaultCooldown(feed_type))?;
     let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .instance()
@@ -113,6 +222,7 @@ pub fn register_oracle(
 /// Access: Admin only.
 pub fn remove_oracle(env: &Env, feed_type: OracleFeedType) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_oracle_registry_cooldown(env, DataKey::OracleRegistryDefaultCooldown(feed_type))?;
     env.storage()
         .instance()
         .remove(&DataKey::OracleRegistry(feed_type));
@@ -140,6 +250,10 @@ pub fn register_token_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_oracle_registry_cooldown(
+        env,
+        DataKey::OracleRegistryTokenCooldown(feed_type, token.clone()),
+    )?;
     let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .persistent()
@@ -169,6 +283,10 @@ pub fn remove_token_oracle(
     token: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_oracle_registry_cooldown(
+        env,
+        DataKey::OracleRegistryTokenCooldown(feed_type, token.clone()),
+    )?;
     env.storage()
         .persistent()
         .remove(&DataKey::TokenOracle(feed_type, token.clone()));
@@ -184,7 +302,15 @@ pub fn remove_token_oracle(
 
 /// Resolve the oracle address to query for `feed_type` + `token`, in
 /// priority order: per-token override, then feed-type default, then (for
-/// `Identity` only) the legacy `Config.price_oracle` field.
+/// `Identity` only, and only while `is_legacy_oracle_fallback_enabled`) the
+/// legacy `Config.price_oracle` field.
+///
+/// Taking the legacy fallback path emits `LegacyOracleFallbackUsed` — every
+/// call site that resolves through it (funding verification, health
+/// checks, dispute snapshots, and plain `get_oracle_for_token` inspection
+/// alike) represents a real observation that the registry was never
+/// explicitly configured for this token/feed, which is exactly the signal
+/// this event exists to surface rather than leave invisible.
 pub fn resolve_oracle(env: &Env, feed_type: OracleFeedType, token: &Address) -> Option<Address> {
     if let Some(addr) = env
         .storage()
@@ -200,10 +326,67 @@ pub fn resolve_oracle(env: &Env, feed_type: OracleFeedType, token: &Address) -> 
     {
         return Some(addr);
     }
-    if feed_type == OracleFeedType::Identity {
-        return crate::storage::get_config(env).and_then(|c| c.price_oracle);
+    if feed_type == OracleFeedType::Identity && is_legacy_oracle_fallback_enabled(env) {
+        if let Some(addr) = crate::storage::get_config(env).and_then(|c| c.price_oracle) {
+            env.events().publish(
+                (
+                    soroban_sdk::Symbol::new(env, "legacy_oracle_fallback_used"),
+                    feed_type,
+                ),
+                LegacyOracleFallbackUsed {
+                    feed_type,
+                    token: token.clone(),
+                    oracle: addr.clone(),
+                },
+            );
+            return Some(addr);
+        }
     }
     None
+}
+
+/// Whether the legacy `Config.price_oracle` fallback (Identity feed only)
+/// is currently enabled. Defaults to `true` — preserving existing
+/// behavior — until governance explicitly disables it via
+/// `set_legacy_oracle_fallback_enabled`, the intended end state once every
+/// token relying on it has migrated to explicit `oracle_registry`
+/// configuration.
+pub fn is_legacy_oracle_fallback_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::LegacyOracleFallbackEnabled)
+        .unwrap_or(true)
+}
+
+/// Enable or disable the legacy `Config.price_oracle` fallback for the
+/// Identity feed. Disabling forces every token relying on it to have an
+/// explicit `oracle_registry` entry (`register_oracle` /
+/// `register_token_oracle`) — once disabled, `resolve_oracle` returns
+/// `None` at the legacy-fallback step instead of consulting
+/// `Config.price_oracle`, the same as if no oracle were configured there
+/// at all. Re-enabling restores the previous fallback behavior; this is a
+/// reversible toggle, not a one-way switch, so a premature disable can be
+/// corrected without redeploying.
+///
+/// Access: Admin only.
+pub fn set_legacy_oracle_fallback_enabled(env: &Env, enabled: bool) -> Result<(), ContractError> {
+    require_admin(env)?;
+    check_rate_limit(
+        env,
+        "set_legacy_oracle_fallback_enabled",
+        crate::constants::DEFAULT_RATE_LIMIT_LEDGERS,
+    )?;
+    env.storage()
+        .instance()
+        .set(&DataKey::LegacyOracleFallbackEnabled, &enabled);
+    env.events().publish(
+        (soroban_sdk::Symbol::new(
+            env,
+            "legacy_oracle_fallback_toggled",
+        ),),
+        enabled,
+    );
+    Ok(())
 }
 
 /// Public getter mirroring `resolve_oracle`, for external callers / SDK.
@@ -485,6 +668,70 @@ pub fn check_oracle_health(
     env.storage()
         .persistent()
         .get(&DataKey::OracleHealth(feed_type, token))
+}
+
+/// Query `oracle.get_payer_data(payer)` via `try_invoke_contract`, returning
+/// `None` (rather than propagating a panic) on any failure. Deliberately
+/// safer here than `check_oracle_health`/`fund_invoice`'s own raw
+/// `env.invoke_contract` calls (which do propagate a callee panic) — a
+/// dispute must always be filable and its evidence always captured, even
+/// against a currently-broken oracle; the alternative would let a
+/// misbehaving oracle block dispute filing entirely, which is backwards.
+fn query_payer_data(env: &Env, oracle: &Address, payer: &Address) -> Option<OracleVerificationResponse> {
+    let result = env.try_invoke_contract::<OracleVerificationResponse, soroban_sdk::Error>(
+        oracle,
+        &Symbol::new(env, "get_payer_data"),
+        vec![env, payer.into_val(env)],
+    );
+    match result {
+        Ok(Ok(response)) => Some(response),
+        _ => None,
+    }
+}
+
+/// Snapshot the `Identity`-feed oracle's current verification state for
+/// `token`/`payer`, plus any cross-validated `Price`-feed reading for
+/// `token`, for embedding in a dispute record at the moment it's filed
+/// (see `dispute_invoice`). The result is frozen into `DisputeRecord` and
+/// never recomputed — a later call to `get_dispute_details` always returns
+/// what was true here, regardless of how the oracle has since moved.
+///
+/// Never panics: an oracle that's unreachable, incompatible, or actively
+/// misbehaving degrades to `None` fields rather than blocking the dispute
+/// or fabricating a value.
+pub fn snapshot_oracle_state_for_dispute(
+    env: &Env,
+    token: &Address,
+    payer: &Address,
+) -> DisputeOracleSnapshot {
+    let identity_oracle = resolve_oracle(env, OracleFeedType::Identity, token);
+
+    let (payer_verified, identity_data_timestamp, identity_data_stale) = match &identity_oracle {
+        Some(oracle_addr) => match query_payer_data(env, oracle_addr, payer) {
+            Some(response) => {
+                let max_age = crate::storage::get_config(env)
+                    .map(|c| c.max_oracle_age_ledgers)
+                    .unwrap_or(crate::DEFAULT_MAX_ORACLE_AGE_LEDGERS);
+                let current_ledger = env.ledger().sequence() as u64;
+                let age = current_ledger.saturating_sub(response.timestamp as u64);
+                let is_stale = max_age > 0 && age >= max_age;
+                (Some(response.is_verified), Some(response.timestamp), Some(is_stale))
+            }
+            None => (None, None, None),
+        },
+        None => (None, None, None),
+    };
+
+    let price = get_verified_price(env.clone(), OracleFeedType::Price, token.clone()).ok();
+
+    DisputeOracleSnapshot {
+        identity_oracle_gated: identity_oracle.is_some(),
+        identity_oracle,
+        payer_verified,
+        identity_data_timestamp,
+        identity_data_stale,
+        price,
+    }
 }
 
 /// Query `oracle.interface_version()` and reject incompatible / missing

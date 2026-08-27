@@ -158,6 +158,44 @@ Certain admin operations are sensitive to high-frequency invocation — an attac
 | `set_max_oracle_age` | 120 ledgers (~10min) | Infrastructure change |
 | `add_token` | 120 ledgers (~10min) | Token allowlist change |
 | `remove_token` | 120 ledgers (~10min) | Token allowlist change |
+| `set_oracle_registry_cooldown_ledgers` | 120 ledgers (~10min) | Governs the separate, per-channel oracle registry mutation cooldown below — itself infrastructure-change-tier |
+
+### Oracle Registry Mutation Cooldown (Issue #oracle-registry-cooldown)
+
+`register_oracle`, `register_token_oracle`, `remove_oracle`, and
+`remove_token_oracle` were previously gated by `require_admin` alone, with
+**no** cooldown — a compromised or malicious admin/governance-authorized
+caller could rapidly flip oracle configuration (register, remove, register a
+different address, ...) to create confusion or exploit timing windows around
+other operations, e.g. funding calls resolving inconsistently mid-attack, or
+obscuring which oracle was actually live when something went wrong.
+
+This is a **separate mechanism from `check_rate_limit` above**, not another
+row in that table, because it needs different scoping:
+
+| Property | `check_rate_limit` (table above) | Oracle registry cooldown |
+|---|---|---|
+| Scoped by | Function name (`RateLimit(Symbol)`) | Resolution **channel** — feed-type default (`OracleRegistryDefaultCooldown(feed_type)`) or per-token override (`OracleRegistryTokenCooldown(feed_type, token)`) |
+| Why | One cooldown per sensitive setter is sufficient — each setter changes one global parameter | A single global or per-function cooldown would either be too permissive (alternating `register_oracle`/`remove_oracle` calls would each reset a *different* function's timer and neither would ever trip) or too strict (would block unrelated, legitimate administration of a different feed type/token) |
+| Default | Varies per function, 120–1440 ledgers | `DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS` = 720 ledgers (~1h) — same conservative magnitude as `set_admin`, reflecting that oracle configuration is a similarly sensitive control surface |
+| Governable | No (compiled-in per function) | Yes — `set_oracle_registry_cooldown_ledgers` (admin-gated, itself rate-limited per the table above) |
+| Error on violation | `ContractError::RateLimited` | `ContractError::OracleRegistryCooldownActive` |
+| Blocks reads? | N/A (never applied to read functions) | No — `get_oracle_for_token`, `get_oracle_health`, `check_oracle_health`, and every other read-only oracle registry view remain fully available regardless of an active cooldown; only the four mutation functions above are gated |
+
+Implemented in `contracts/invoice_liquidity/src/oracle_registry.rs`'s
+`check_oracle_registry_cooldown`. Unlike `check_rate_limit`, it treats a
+resolution channel's absent cooldown record as `None` (no cooldown to
+violate) rather than defaulting to "last mutated at ledger 0" — with a
+720-ledger default, the latter would incorrectly reject every channel's
+very first-ever mutation whenever the current ledger sequence is below 720
+(routinely true early in a deployment's or test's lifetime), a sharper
+version of a known, pre-existing quirk in `check_rate_limit` itself (see
+`tests_oracle_registry.rs`'s `advance_past_rate_limit_cooldown` comment).
+
+See `contracts/invoice_liquidity/src/tests_oracle_registry.rs`'s
+`test_oracle_registry_cooldown_*` and
+`test_set_oracle_registry_cooldown_ledgers_*` tests for the behavior
+verified end-to-end.
 
 ### Exempt Functions
 
