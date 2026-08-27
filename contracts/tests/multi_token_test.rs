@@ -1,19 +1,16 @@
 #![cfg(test)]
 
 mod test_context;
-use invoice_liquidity::{
-    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus,
-    ReferralCode,
-};
+use invoice_liquidity::{ContractError, InvoiceStatus, ReferralCode};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::Client as TokenClient,
-    Address, Env,
+    Address,
 };
 
 use test_context::TestContext;
 
-const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30; // 30 days
+const _DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30; // 30 days
 const DISCOUNT_RATE: u32 = 300; // 3.00%
 const INVOICE_AMOUNT: i128 = 1_000_000_000;
 

@@ -46,6 +46,10 @@ skip = [
   { name = "darling", version = "=0.20.11" },
   { name = "darling_core", version = "=0.20.11" },
   { name = "darling_macro", version = "=0.20.11" },
+  { name = "crate-git-revision" },
+  { name = "hashbrown" },
+  { name = "stellar-strkey" },
+  { name = "syn" },
 ]
 
 [sources]

@@ -93,7 +93,7 @@ fn advance_past_rate_limit_cooldown(env: &Env) {
     env.ledger().set(info);
 }
 
-fn make_invoice_params(t: &TestEnv) -> InvoiceParams {
+fn _make_invoice_params(t: &TestEnv) -> InvoiceParams {
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
     InvoiceParams {
         freelancer: t.freelancer.clone(),
@@ -106,7 +106,7 @@ fn make_invoice_params(t: &TestEnv) -> InvoiceParams {
     }
 }
 
-fn make_invoice_params_with_referral(t: &TestEnv, referral: ReferralCode) -> InvoiceParams {
+fn _make_invoice_params_with_referral(t: &TestEnv, referral: ReferralCode) -> InvoiceParams {
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
     InvoiceParams {
         freelancer: t.freelancer.clone(),

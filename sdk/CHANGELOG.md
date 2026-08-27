@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- fd43000: feat: add Changesets for coordinated SDK and CLI version management
+- b91a567: Add SDK methods to query NFT metadata and ownership: getNftMetadata() and getNftOwner() (#423). These functions expose the contract's query_nft_metadata and query_nft_owner endpoints, enabling NFT marketplace features by allowing clients to fetch complete NFT metadata including invoice details, amount, owner, and mint timestamp.
+
 All notable changes to the ILN SDK (`@iln/sdk`) will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
@@ -13,6 +20,7 @@ To regenerate: `cd sdk && git-cliff --config .cliff.toml`
 ## [0.1.0] - 2024
 
 ### Added
+
 - Initial SDK implementation with ILNClient builder pattern
 - Freighter wallet adapter for browser integration
 - Core invoice methods:
@@ -40,6 +48,7 @@ To regenerate: `cd sdk && git-cliff --config .cliff.toml`
 - Error mapping from Soroban error codes to descriptive messages
 
 ### Documentation
+
 - Comprehensive SDK README with usage guide and examples
 - Integration guide with tested code examples
 - TypeDoc API documentation generation

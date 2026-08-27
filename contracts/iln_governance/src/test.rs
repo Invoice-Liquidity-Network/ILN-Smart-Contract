@@ -418,7 +418,10 @@ fn test_cast_vote_emits_vote_cast_event() {
     let id = create_fee_proposal(&t);
     t.contract.cast_vote(&t.voter_a, &id, &true);
     let events = t.env.events().all();
-    assert!(!events.events().is_empty(), "VoteCast event should be emitted");
+    assert!(
+        !events.events().is_empty(),
+        "VoteCast event should be emitted"
+    );
 }
 
 #[test]
@@ -661,7 +664,10 @@ fn test_delegate_votes_emits_votes_delegated_event() {
     let t = setup();
     t.contract.delegate_votes(&t.voter_a, &t.voter_b);
     let events = t.env.events().all();
-    assert!(!events.events().is_empty(), "VotesDelegated event should be emitted");
+    assert!(
+        !events.events().is_empty(),
+        "VotesDelegated event should be emitted"
+    );
 }
 
 #[test]
@@ -926,7 +932,10 @@ fn test_veto_emits_proposal_vetoed_event() {
     t.contract.veto_proposal(&id, &reason_hash(&t.env));
 
     let events = t.env.events().all();
-    assert!(!events.events().is_empty(), "ProposalVetoed event should be emitted");
+    assert!(
+        !events.events().is_empty(),
+        "ProposalVetoed event should be emitted"
+    );
 }
 
 /// Veto power is enabled after initialisation.

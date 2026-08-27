@@ -1,9 +1,7 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol};
 
 use crate::config::Config;
-use crate::invoice::{
-    AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
-};
+use crate::invoice::{AppealRecord, Invoice, LpFundRequest};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -392,6 +390,12 @@ pub struct StatsAccumulator {
     pub invoices_delta: i64,
     pub funded_delta: i64,
     pub paid_delta: i64,
+}
+
+impl Default for StatsAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatsAccumulator {

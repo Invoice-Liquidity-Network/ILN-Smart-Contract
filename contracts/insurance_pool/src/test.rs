@@ -7,12 +7,13 @@ use soroban_sdk::{
     Address, Env,
 };
 
+#[allow(dead_code)]
 struct Setup {
     env: Env,
     client: InsurancePoolClient<'static>,
     token_client: TokenClient<'static>,
     token_admin: StellarAssetClient<'static>,
-    admin: Address,
+    _admin: Address,
     lp: Address,
 }
 
@@ -42,7 +43,7 @@ fn setup() -> Setup {
         client,
         token_client,
         token_admin,
-        admin,
+        _admin: admin,
         lp,
     }
 }

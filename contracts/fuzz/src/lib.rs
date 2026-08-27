@@ -255,10 +255,7 @@ mod tests {
                 &require_oracle,
             );
 
-            match result {
-                Ok(_) => {}
-                Err(_) => {}
-            }
+            if result.is_err() {}
         }
     }
 }
