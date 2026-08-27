@@ -28,6 +28,10 @@ struct MockRegistryOracle;
 
 #[contractimpl]
 impl MockRegistryOracle {
+    pub fn interface_version(_env: Env) -> u32 {
+        crate::oracle_interface::ORACLE_INTERFACE_VERSION
+    }
+
     pub fn set_response(env: Env, verified: bool, ts: u32) {
         env.storage()
             .instance()
@@ -480,11 +484,12 @@ fn test_register_token_oracle_unauthorized_caller() {
 
 #[test]
 fn test_remove_oracle_unauthorized_caller() {
-    let (env, admin, _, client) = setup_env_no_mock_auths();
-    let oracle = Address::generate(&env);
+    let (env, _admin, _, client) = setup_env_no_mock_auths();
 
     env.mock_all_auths();
-    client.register_oracle(&OracleFeedType::Price, &oracle);
+    let oracle_id = env.register_contract(None, MockRegistryOracle);
+    MockRegistryOracleClient::new(&env, &oracle_id).set_response(&true, &env.ledger().sequence());
+    client.register_oracle(&OracleFeedType::Price, &oracle_id);
 
     let imposter = Address::generate(&env);
     env.mock_auths(&[MockAuth {
@@ -502,5 +507,190 @@ fn test_remove_oracle_unauthorized_caller() {
         res.is_err(),
         "remove_oracle should fail for non-admin caller"
     );
-    let _ = admin;
+}
+
+#[test]
+fn test_register_oracle_accepts_compatible_interface_version() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let result = t
+        .contract
+        .try_register_oracle(&OracleFeedType::Identity, &oracle);
+    assert!(result.is_ok(), "compatible oracle version must be accepted");
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle)
+    );
+}
+
+#[contract]
+struct IncompatibleVersionOracle;
+
+#[contractimpl]
+impl IncompatibleVersionOracle {
+    pub fn interface_version(_env: Env) -> u32 {
+        999
+    }
+
+    pub fn get_payer_data(env: Env, _payer: Address) -> OracleVerificationResponse {
+        OracleVerificationResponse {
+            is_verified: true,
+            timestamp: env.ledger().sequence(),
+        }
+    }
+}
+
+#[test]
+fn test_register_oracle_rejects_incompatible_interface_version() {
+    let t = setup();
+    let oracle = t.env.register_contract(None, IncompatibleVersionOracle);
+    let result = t
+        .contract
+        .try_register_oracle(&OracleFeedType::Identity, &oracle);
+    assert_eq!(
+        result.err(),
+        Some(Ok(ContractError::IncompatibleInterfaceVersion))
+    );
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "incompatible oracle must not be persisted"
+    );
+}
+
+// ── Cross-contract pause boundary ─────────────────────────────────────────────
+//
+// `pause()` only sets a flag read by the *invoice_liquidity* contract's own
+// state-changing entry points (see the `is_paused` guards in `fund_invoice`,
+// `submit_invoice`, etc. in lib.rs). It has no effect on:
+//   1. This contract's own read-only oracle registry queries
+//      (`get_oracle_for_token`, `get_oracle_health`, `check_oracle_health`) —
+//      they're informational, carry no `is_paused` guard, and stay callable
+//      by monitors/keepers throughout an incident.
+//   2. The registry's admin/governance mutations (`register_oracle`,
+//      `remove_oracle`, `register_token_oracle`, `remove_token_oracle`) —
+//      these are gated by `require_admin` only, not `is_paused`, so
+//      governance can still repoint or clear a compromised oracle while the
+//      protocol is paused (arguably a requirement during an oracle-related
+//      incident, not a gap).
+//   3. The externally deployed oracle contracts themselves — they are
+//      separate contracts with their own lifecycle, wholly outside this
+//      contract's `Paused` flag.
+// `fund_invoice` never observes any of this: it checks `is_paused` before
+// doing anything else, so a paused call never reaches the oracle registry at
+// all — it fails fast with `ContractPaused` and leaves no health record.
+
+#[test]
+fn test_get_oracle_for_token_readable_while_paused() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    t.contract.pause();
+
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(oracle),
+        "registry resolution is a read-only view and must work while paused"
+    );
+}
+
+#[test]
+fn test_check_oracle_health_readable_while_paused() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    t.contract.pause();
+
+    // check_oracle_health performs a live cross-contract call to the oracle
+    // and persists a health snapshot. Neither the call nor the write is
+    // gated on `is_paused` — it must succeed exactly as it would unpaused.
+    let health = t
+        .contract
+        .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer)
+        .expect("oracle health check must succeed while contract is paused");
+    assert!(!health.is_stale);
+    assert_eq!(health.oracle, oracle);
+
+    // And the recorded snapshot is readable back, still while paused.
+    assert_eq!(
+        t.contract
+            .get_oracle_health(&OracleFeedType::Identity, &t.token.address),
+        Some(health)
+    );
+}
+
+#[test]
+fn test_fund_invoice_paused_never_reaches_oracle_registry() {
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    let invoice_id = make_invoice(&t);
+    t.contract.pause();
+
+    // fund_invoice must fail fast on the pause guard, before it ever
+    // resolves or queries the oracle registry — even with oracle
+    // verification requested and a healthy oracle registered.
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+
+    // No health snapshot was ever recorded — proof the oracle was never
+    // touched, rather than silently queried and its result discarded.
+    assert_eq!(
+        t.contract
+            .get_oracle_health(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "a paused fund_invoice call must not query the oracle registry at all"
+    );
+}
+
+#[test]
+fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
+    let t = setup();
+    let default_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    let token_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+
+    t.contract.pause();
+
+    // Governance/admin oracle config changes are a different concern from
+    // the core contract's operational pause and must go through unaffected.
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &default_oracle);
+    t.contract.register_token_oracle(
+        &OracleFeedType::Identity,
+        &t.token.address,
+        &token_oracle,
+    );
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(token_oracle)
+    );
+
+    t.contract
+        .remove_token_oracle(&OracleFeedType::Identity, &t.token.address);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(default_oracle),
+        "removing the per-token override must succeed while paused, falling back to the default"
+    );
+
+    t.contract.remove_oracle(&OracleFeedType::Identity);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "removing the feed-type default must succeed while paused"
+    );
 }

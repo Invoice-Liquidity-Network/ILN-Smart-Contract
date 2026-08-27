@@ -5,6 +5,7 @@ import { createTelegramRouter } from '../src/api/telegram.js';
 import type { TelegramSubscription } from '../src/api/telegram.js';
 import { deliverTelegramNotification, buildTelegramMessage } from '../src/delivery/telegram.js';
 import type { TelegramInvoiceEvent } from '../src/delivery/telegram.js';
+import { PerRecipientRateLimiter } from '../src/delivery/rateLimiter.js';
 
 describe('Telegram Delivery & Router', () => {
   const store = new Map<string, TelegramSubscription>();
@@ -32,6 +33,46 @@ describe('Telegram Delivery & Router', () => {
     expect(text).toContain('`GAAFreelancer`');
     expect(text).toContain('`GAAPayer`');
     expect(text).toContain('[View Invoice](https://app.example.com/invoice/101)');
+  });
+
+  it('rate limits per chat: one exhausted chat does not affect another', async () => {
+    const rateLimiter = new PerRecipientRateLimiter({
+      maxRequests: 2,
+      windowMs: 1000,
+      now: () => 0,
+    });
+    const http = vi.fn(async () => ({ ok: true, status: 200 }));
+    const event: TelegramInvoiceEvent = {
+      type: 'invoice.submitted',
+      invoiceId: 201,
+      token: 'USDC',
+      amount: '10000000',
+      dueDate: 1700000000,
+    };
+
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_1', event, http, { rateLimiter })).ok,
+    ).toBe(true);
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_1', event, http, { rateLimiter })).ok,
+    ).toBe(true);
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_1', event, http, { rateLimiter })).status,
+    ).toBe(429);
+
+    // A different chat is unaffected.
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_2', event, http, { rateLimiter })).ok,
+    ).toBe(true);
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_2', event, http, { rateLimiter })).ok,
+    ).toBe(true);
+    expect(
+      (await deliverTelegramNotification('bot_a', 'chat_2', event, http, { rateLimiter })).status,
+    ).toBe(429);
+
+    // Only in-budget sends reached the HTTP client.
+    expect(http).toHaveBeenCalledTimes(4);
   });
 
   it('delivers telegram notification using http client', async () => {

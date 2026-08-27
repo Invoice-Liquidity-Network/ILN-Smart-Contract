@@ -10,7 +10,7 @@ ILN spans Soroban smart contracts, a TypeScript SDK, a CLI, an indexer, and a no
 | SDK | XDR encoding, transaction construction, signing flow, contract ID handling, and client-side validation defects | [sdk](../sdk), [SDK Integration](sdk-integration.md) |
 | CLI | Wallet profile handling, local secret storage, command validation, and network configuration defects | [cli](../cli), [CLI README](../cli/README.md) |
 | Indexer | API behavior, event ingestion, database handling, cache safety, and denial-of-service exposure | [indexer](../indexer) |
-| Notifications | Webhook subscription handling, HMAC signing, SSRF defenses, rate limiting, and circuit breaker behavior | [notifications](../notifications), [notifications README](../notifications/README.md) |
+| Notifications | Webhook subscription handling, HMAC signing, SSRF defenses, rate limiting, and circuit breaker behavior | [notifications](../notifications), [webhook verification](webhook-verification.md) |
 | CI/CD and deployment scripts | Secret handling, deployment correctness, artifact integrity, and release automation | [.github/workflows](../.github/workflows), [scripts](../scripts) |
 
 Out of scope: spam, social engineering, physical attacks, attacks requiring compromised maintainer machines, and findings that only affect unsupported local configurations without a protocol or user-impact path.
@@ -295,3 +295,45 @@ Key design decisions:
 - Emergency functions (`pause`, `unpause`, `resolve_appeal`, `resolve_dispute`) are exempt.
 - Rate limits are per-function, so calling `update_fee_rate` does not affect `update_max_discount`.
 - Each rate-limited function is keyed by a `Symbol` in instance storage (`DataKey::RateLimit(Symbol)`).
+
+## Notification Delivery Rate Limiting (Issue #728)
+
+Delivery limits in the notifications service are scoped **per recipient**, not globally, so one misconfigured high-volume subscriber cannot starve delivery to everyone else.
+
+| Channel | Scope key | Implementation |
+|---------|-----------|----------------|
+| Webhooks | per webhook endpoint id / URL | `WebhookDeliveryService` creates one `SlidingWindowRateLimiter` per endpoint; the budget is tunable via `limiterOptions` |
+| Email | per recipient email address (normalized lowercase) | `EmailDeliveryService` uses a `PerRecipientRateLimiter` keyed by recipient |
+| Slack | per webhook URL (channel) | `deliverSlackNotification` uses a `PerRecipientRateLimiter` keyed by URL |
+| Telegram | per `botToken:chatId` | `deliverTelegramNotification` uses a `PerRecipientRateLimiter` keyed by bot + chat |
+
+Defaults are 1,000 deliveries per recipient per hour. A recipient that exhausts its budget receives `429`/`rate_limited` responses while other recipients continue to be served. Isolation is covered by tests in `notifications/tests/` (`webhookDelivery`, `emailDelivery`, `slack`, `telegram`, `rateLimiter`).
+
+## Privacy and Data Retention (Issue #733)
+
+### What the notifications service stores
+
+Webhook delivery attempts are recorded in an in-memory delivery history store (`notifications/src/delivery/deliveryHistory.ts`) so operators can debug delivery failures. Each record contains:
+
+- **Delivery metadata** (kept for debugging): webhook id, event type, delivery timestamp, HTTP status code, attempt count, next retry time.
+- **Response body** (potentially sensitive): the HTTP response returned by the destination, which can echo back recipient email addresses or message content. This is the only place the service retains data derived from notification messages.
+
+### Retention policy
+
+To minimize how long recipient PII is held, the store applies two retention windows:
+
+- **Response bodies** are purged after `bodyRetentionMs`, default **7 days**. The body is cleared while delivery metadata is retained for debugging.
+- **Full records** are removed after `recordRetentionMs`, default **90 days**.
+
+Both windows are configurable via environment variables on the notifications service:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `NOTIFICATIONS_DELIVERY_BODY_RETENTION_MS` | 7 days | How long response bodies are retained before purging |
+| `NOTIFICATIONS_DELIVERY_RECORD_RETENTION_MS` | 90 days | How long full delivery records are retained |
+
+Purging runs opportunistically on every record write and read, and `purgeExpired()` is exposed so an operator can also trigger it from a scheduled job. Because the store is in-memory, a service restart clears all delivery history; the retention policy limits how long data survives within a running process.
+
+### Why this framing
+
+ILN is a public-good protocol, but "public" does not mean "retains everything". The policy above is deliberately conservative: keep the minimum needed for debugging, purge bodies first, and make the windows explicit and configurable rather than claiming a fixed retention guarantee the software does not enforce.
