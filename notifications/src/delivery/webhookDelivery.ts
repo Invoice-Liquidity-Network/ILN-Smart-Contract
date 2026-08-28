@@ -74,6 +74,12 @@ export class WebhookDeliveryService {
 
     const body = JSON.stringify(payload);
     const signature = signPayload(endpoint.secret, body);
+    try {
+      await validateWebhookUrl(endpoint.url);
+    } catch (err) {
+      this.opts.logger?.(`webhook_ssrf_blocked url=${endpoint.url} err=${err}`);
+      return { ok: false, status: 0, skippedReason: undefined };
+    }
     let statusCode = 0;
     let responseBody = '';
     try {
