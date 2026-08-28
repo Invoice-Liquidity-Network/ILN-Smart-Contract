@@ -361,6 +361,17 @@ if env.ledger().sequence() > invoice.due_date_ledger + appeal_window_ledgers {
 
 ### D. ORACLE MANIPULATION ATTACKS
 
+> **⚠️ Pending re-review (Issue #39):** D1/D2 below predate the payer-verification
+> oracle interface and governance-controlled oracle registry (Issue #93/#532) —
+> D2 in particular states "no integration with external credit oracles," which
+> is no longer accurate now that `oracle_interface.rs`/`oracle_registry.rs`
+> exist and are live in `fund_invoice`. A full re-review of this section is
+> tracked as Issue #39. In the meantime, see
+> [**D3 below**](#d3-payer-verification-oracle-manipulation-economic-model)
+> and [`docs/oracle-attack-economics.md`](oracle-attack-economics.md) for a
+> quantified cost/benefit model of manipulating the oracle that actually ships
+> today.
+
 #### D1. Reputation Score Manipulation
 
 **Description:**  
@@ -817,6 +828,7 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 | **Appeal Window Bypass** | MEDIUM | Ledger sequence windows | LOW (cryptographically protected) |
 | **Reputation Sybil Attack** | MEDIUM | Decay mechanism, admin oversight | MEDIUM (no external oracle) |
 | **Missing Credit Oracle** | HIGH | None (design limitation) | HIGH (LPs assume all risk) |
+| **Payer-Verification Oracle Manipulation (D3)** | HIGH | Opt-in verification, freshness window, `pause()`, governance-gated registration | HIGH (no oracle stake/quorum, no max invoice cap — see [oracle-attack-economics.md](oracle-attack-economics.md)) |
 | **Admin Key Compromise** | CRITICAL | Require auth, public events | CRITICAL (single point of failure) |
 | **Parameter Misconfiguration** | MEDIUM | Bounds checks (partial) | MEDIUM (incomplete validation) |
 | **Token Transfer Failure** | MEDIUM | Atomic transactions | LOW (Soroban guarantees) |
