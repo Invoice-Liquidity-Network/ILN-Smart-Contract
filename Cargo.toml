@@ -4,8 +4,13 @@ members = [
   "contracts/*",
 ]
 
+# `contracts/*` globs every directory under contracts/, including ones that
+# are containers rather than crates (no Cargo.toml of their own). Cargo errors
+# out on those, so they have to be excluded explicitly.
 exclude = [
-  "contracts/tests"
+  "contracts/tests",
+  # Holds twap_oracle/, an example crate that is not part of the build.
+  "contracts/examples",
 ]
 
 [workspace.dependencies]

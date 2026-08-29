@@ -1110,7 +1110,7 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
     s.env.ledger().set_timestamp(0);
 
     // Create and enroll 100 "latecomer" LPs with minimal premiums
-    let mut latecomers = Vec::new();
+    let mut latecomers = std::vec::Vec::new();
     for i in 0..NUM_LATECOMERS {
         let lp = Address::generate(&s.env);
         s.token_admin.mint(&lp, &MINIMAL_PREMIUM);
@@ -1173,7 +1173,7 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
         "pool should retain positive balance after bounded defaults"
     );
 
-    println!(
+    std::println!(
         "Adverse selection stress test results:\n  Initial balance: {}\n  After enrollments: {}\n  After {} claims: {}\n  Total paid out: {}\n  Remaining runway: {:?} months",
         initial_pool_balance,
         balance_after_enrollments,
@@ -1193,7 +1193,7 @@ fn insurance_pool_handles_sequential_mass_enrollment_and_claims() {
     const NUM_WAVES: usize = 5;
     const PREMIUM_PER_LP: i128 = COVERAGE / 500;
 
-    let mut enrolled_lps = Vec::new();
+    let mut enrolled_lps = std::vec::Vec::new();
     for wave in 0..NUM_WAVES {
         // Enroll a wave of LPs
         for lp_idx in 0..WAVE_SIZE {
