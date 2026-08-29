@@ -43,7 +43,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Glossary complete | Publish protocol terminology for DeFi, invoice factoring, Stellar, and ILN-specific terms. | Docs lead | Complete | [#301](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/301) |
 | SDK guide complete | Confirm SDK examples match current contract IDs, methods, and error handling. | SDK lead | In progress | [SDK Integration](sdk-integration.md) |
 | Security docs linked | Link security policy from root, docs index, and release checklist. | Docs lead | In progress | [Security Policy](security.md) |
-| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
+| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | In progress | [Mainnet Launch Notes](mainnet-launch-notes.md) |
 
 ## Community
 
