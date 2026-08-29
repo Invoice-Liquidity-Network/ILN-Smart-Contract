@@ -20,7 +20,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | Upgrade path tested | Test upload, deploy, migration, rollback decision points, and post-upgrade smoke checks. | Contracts lead | In progress | [Upgrade Guide](upgrade-guide.md) |
 | Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Not started | [Access Control](access-control.md) |
-| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout](storage-layout.md) |
+| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout Freeze Sign-off](storage-layout.md#10-storage-layout-freeze--sign-off-gate-issue-651) |
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
 | Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | In progress | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) |
 | Contract IDs published | Publish verified mainnet contract IDs and SAC addresses after deployment. | Release lead | Not started | [README](../README.md) |
@@ -34,6 +34,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Notifications deployed | Deploy webhook/email notifications with HMAC signing, rate limiting, and SSRF controls verified. | Infrastructure lead | In progress | [notifications](../notifications) |
 | Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | Not started | [Security Policy](security.md) |
 | Deployment secrets reviewed | Confirm production secrets are stored in GitHub Actions or approved secret management only. | Release lead | In progress | [Deploy testnet workflow](../.github/workflows/deploy-testnet.yml) |
+| Mainnet/testnet config drift check | Automated CI check that `.contracts-testnet.env` and any future `.contracts-mainnet.env` do not silently drift (missing keys, wrong `NETWORK` value, or a value copy-pasted between networks). | Release lead | Complete | [#653](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/653) |
 
 ## Documentation
 
