@@ -1,5 +1,13 @@
 import { humanizeEvents, xdr } from '@stellar/stellar-sdk';
-import type { EventRepository, InvoiceRecord, IngestedEventRecord, ReputationUpdateRecord } from '../db/eventRepository.js';
+import type {
+  EventRepository,
+  InvoiceRecord,
+  IngestedEventRecord,
+  ReputationUpdateRecord,
+  InsurancePoolEnrollmentRecord,
+  InsurancePoolPremiumRecord,
+  InsurancePoolClaimRecord,
+} from '../db/eventRepository.js';
 
 export interface HorizonTransactionRecord {
   hash: string;
@@ -185,6 +193,18 @@ export class EventListener {
           this.repository.insertReputationUpdate(processed.reputationUpdateRow);
         }
 
+        if (processed.insuranceEnrollmentRow) {
+          this.repository.insertInsuranceEnrollment(processed.insuranceEnrollmentRow);
+        }
+
+        if (processed.insurancePremiumRow) {
+          this.repository.insertInsurancePremium(processed.insurancePremiumRow);
+        }
+
+        if (processed.insuranceClaimRow) {
+          this.repository.insertInsuranceClaim(processed.insuranceClaimRow);
+        }
+
         this.repository.insertEvent(processed.rawEvent);
 
         this.logger.info(
@@ -257,6 +277,9 @@ function normalizeProcessedEvent(
   rawEvent: IngestedEventRecord;
   invoiceRow?: InvoiceRecord;
   reputationUpdateRow?: ReputationUpdateRecord;
+  insuranceEnrollmentRow?: InsurancePoolEnrollmentRecord;
+  insurancePremiumRow?: InsurancePoolPremiumRecord;
+  insuranceClaimRow?: InsurancePoolClaimRecord;
 } {
   const normalizedData = normalizeJsonValue(event.data);
   const topicsJson = JSON.stringify(normalizeJsonValue(event.topics));
@@ -430,6 +453,82 @@ function normalizeProcessedEvent(
         reputationUpdateRow,
       };
     }
+    // Insurance pool events (Issue #695)
+    case 'InsurancePoolEnrolled': {
+      const lp = coerceString(payload.lp, '');
+      const enrollmentRow: InsurancePoolEnrollmentRecord = {
+        lp_address: lp,
+        contract_id: common.contract_id ?? '',
+        enrolled_at: txTimestamp,
+        ledger,
+        transaction_hash: record.hash,
+        event_index: eventIndex,
+      };
+
+      return {
+        rawEvent: {
+          invoice_id: null,
+          event_type: rawEventType,
+          ledger,
+          timestamp: txTimestamp,
+          data: JSON.stringify(normalizedData),
+          ...common,
+        },
+        insuranceEnrollmentRow: enrollmentRow,
+      };
+    }
+    case 'InsurancePoolPremiumDeposited': {
+      const lp = coerceString(payload.lp, '');
+      const amount = coerceString(payload.amount, '0');
+      const premiumRow: InsurancePoolPremiumRecord = {
+        lp_address: lp,
+        contract_id: common.contract_id ?? '',
+        amount,
+        premium_at: txTimestamp,
+        ledger,
+        transaction_hash: record.hash,
+        event_index: eventIndex,
+      };
+
+      return {
+        rawEvent: {
+          invoice_id: null,
+          event_type: rawEventType,
+          ledger,
+          timestamp: txTimestamp,
+          data: JSON.stringify(normalizedData),
+          ...common,
+        },
+        insurancePremiumRow: premiumRow,
+      };
+    }
+    case 'InsurancePoolClaimed': {
+      const invoiceId = coerceNumber(payload.invoice_id, 0);
+      const lp = coerceString(payload.lp, '');
+      const payout = coerceString(payload.payout, '0');
+      const claimRow: InsurancePoolClaimRecord = {
+        invoice_id: invoiceId,
+        lp_address: lp,
+        contract_id: common.contract_id ?? '',
+        payout_amount: payout,
+        claimed_at: txTimestamp,
+        ledger,
+        transaction_hash: record.hash,
+        event_index: eventIndex,
+      };
+
+      return {
+        rawEvent: {
+          invoice_id: invoiceId > 0 ? invoiceId : null,
+          event_type: rawEventType,
+          ledger,
+          timestamp: txTimestamp,
+          data: JSON.stringify(normalizedData),
+          ...common,
+        },
+        insuranceClaimRow: claimRow,
+      };
+    }
     default: {
       return {
         rawEvent: {
@@ -585,6 +684,31 @@ function canonicalEventType(rawEventType: string): string {
       return 'ParameterUpdated';
     case 'contract_upgraded':
       return 'ContractUpgraded';
+    // Insurance pool events (Issue #695)
+    case 'init':
+      return 'InsurancePoolInitialized';
+    case 'enrolled':
+      return 'InsurancePoolEnrolled';
+    case 'premium':
+      return 'InsurancePoolPremiumDeposited';
+    case 'claimed':
+      return 'InsurancePoolClaimed';
+    case 'cov_prop':
+      return 'InsuranceCoverageProposed';
+    case 'cov_exec':
+      return 'InsuranceCoverageExecuted';
+    case 'cov_cncl':
+      return 'InsuranceCoverageCancelled';
+    case 'adm_prop':
+      return 'InsuranceAdminProposed';
+    case 'adm_exec':
+      return 'InsuranceAdminExecuted';
+    case 'adm_cncl':
+      return 'InsuranceAdminCancelled';
+    case 'prem_gov':
+      return 'InsurancePremiumRateGovernance';
+    case 'cap_set':
+      return 'InsuranceBalanceCapSet';
     default:
       return normalized
         .split('_')
@@ -617,6 +741,19 @@ function inferRawEventType(contractEventType: string): string {
     AdminChanged: 'admin_changed',
     ParameterUpdated: 'parameter_updated',
     ContractUpgraded: 'contract_upgraded',
+    // Insurance pool events (Issue #695)
+    InsurancePoolInitialized: 'init',
+    InsurancePoolEnrolled: 'enrolled',
+    InsurancePoolPremiumDeposited: 'premium',
+    InsurancePoolClaimed: 'claimed',
+    InsuranceCoverageProposed: 'cov_prop',
+    InsuranceCoverageExecuted: 'cov_exec',
+    InsuranceCoverageCancelled: 'cov_cncl',
+    InsuranceAdminProposed: 'adm_prop',
+    InsuranceAdminExecuted: 'adm_exec',
+    InsuranceAdminCancelled: 'adm_cncl',
+    InsurancePremiumRateGovernance: 'prem_gov',
+    InsuranceBalanceCapSet: 'cap_set',
   };
 
   return mapping[contractEventType] ?? contractEventType.toLowerCase();

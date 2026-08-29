@@ -95,6 +95,7 @@ export class ILNClient {
   private _isEnrolled?: typeof import("./methods/insurance.js").isEnrolled;
   private _getPremiumsPaid?: typeof import("./methods/insurance.js").getPremiumsPaid;
   private _getInsurancePoolInfo?: typeof import("./methods/insurance.js").getInsurancePoolInfo;
+  private _getPoolHealth?: typeof import("./methods/insurance.js").getPoolHealth;
   private _getDistributionAccrual?: typeof import("./methods/distribution.js").getDistributionAccrual;
   private _submitBatchTransaction?: typeof import("./methods/batch.js").submitBatchTransaction;
 
@@ -332,6 +333,18 @@ export class ILNClient {
   }
 
   /**
+   * Get the insurance pool health snapshot.
+   *
+   * @param insurancePoolContractId - Deployed insurance pool contract address
+   */
+  async getPoolHealth(insurancePoolContractId: string) {
+    if (!this._getPoolHealth) {
+      this._getPoolHealth = (await import("./methods/insurance.js")).getPoolHealth;
+    }
+    return this._getPoolHealth(this.rpc, insurancePoolContractId, this.networkPassphrase);
+  }
+
+  /**
    * Fetch a participant's accrued distribution tokens.
    *
    * @param distributionContractId - Deployed distribution contract address
@@ -460,6 +473,10 @@ class ILNSingleton {
 
   async getInsurancePoolInfo(insurancePoolContractId: string, lpAddress: string) {
     return this.client.getInsurancePoolInfo(insurancePoolContractId, lpAddress);
+  }
+
+  async getPoolHealth(insurancePoolContractId: string) {
+    return this.client.getPoolHealth(insurancePoolContractId);
   }
 
   async getDistributionAccrual(distributionContractId: string, participantAddress: string) {

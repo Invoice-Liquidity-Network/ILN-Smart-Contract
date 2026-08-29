@@ -4,6 +4,7 @@ import { createLeaderboardRouter } from './api/routes/leaderboard.js';
 import { createReputationRouter } from './api/routes/reputation.js';
 import { createStatsRouter } from './api/routes/stats.js';
 import { createInvoicesRouter } from './api/routes/invoices.js';
+import { createInsuranceRouter } from './api/routes/insurance.js';
 import { config } from './config.js';
 import { createApiKeyMiddleware } from './middleware/apiKey.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
@@ -74,6 +75,7 @@ export function createApp(
   app.use(createReputationRouter(db));
   app.use(createStatsRouter(db));
   app.use(createInvoicesRouter(db));
+  app.use(createInsuranceRouter(db));
   app.use(createEventsRouter(db));
   mountGraphQL(app, db, {
     maxDepth: options.graphqlMaxDepth ?? config.graphqlMaxDepth,

@@ -2,9 +2,10 @@
  * `iln insurance` — enroll, deposit, claim, and check status against the
  * default-protection insurance pool contract.
  *
- * Issue: #459, #527
+ * Issue: #459, #527, #693
  *
- * Supports real token transfers (Issue #527) and risk-priced premiums (Issue #528).
+ * Supports real token transfers (Issue #527), risk-priced premiums (Issue #528),
+ * and comprehensive pool health and LP status monitoring (Issue #693).
  */
 import { Command } from "commander";
 import { ILNClient } from "@iln/sdk";
@@ -19,7 +20,15 @@ export interface InsuranceStatus {
   tokenAddress?: string;
 }
 
+export interface PoolHealth {
+  balance: bigint;
+  enrolledLpCount: number;
+  estimatedMonthlyClaimRate: bigint;
+  monthsOfCoverage: number | null;
+}
+
 export type StatusFetcher = (contractId: string, address: string) => Promise<InsuranceStatus>;
+export type HealthFetcher = (contractId: string) => Promise<PoolHealth>;
 export type EnrollExecutor = (contractId: string) => Promise<{ txHash: string }>;
 export type DepositExecutor = (contractId: string, amount: number) => Promise<{ txHash: string }>;
 export type ClaimExecutor = (contractId: string, invoiceId: string, lpAddress: string) => Promise<{ txHash: string }>;
@@ -27,6 +36,11 @@ export type ClaimExecutor = (contractId: string, invoiceId: string, lpAddress: s
 async function defaultStatusFetcher(contractId: string, address: string): Promise<InsuranceStatus> {
   const client = ILNClient.testnet();
   return client.getInsurancePoolInfo(contractId, address);
+}
+
+async function defaultHealthFetcher(contractId: string): Promise<PoolHealth> {
+  const client = ILNClient.testnet();
+  return client.getPoolHealth(contractId);
 }
 
 async function defaultEnrollExecutor(): Promise<{ txHash: string }> {
@@ -54,7 +68,8 @@ export function makeInsuranceCommand(
   fetchStatus: StatusFetcher = defaultStatusFetcher,
   executeEnroll: EnrollExecutor = defaultEnrollExecutor,
   executeDeposit: DepositExecutor = defaultDepositExecutor,
-  executeClaim: ClaimExecutor = defaultClaimExecutor
+  executeClaim: ClaimExecutor = defaultClaimExecutor,
+  fetchHealth: HealthFetcher = defaultHealthFetcher
 ): Command {
   const cmd = new Command("insurance").description(
     "Manage default-protection insurance pool enrollment and claims"
@@ -133,6 +148,29 @@ export function makeInsuranceCommand(
         });
       } catch (err) {
         formatError((err as Error).message, "INSURANCE_CLAIM_ERROR", json);
+      }
+    });
+
+  cmd
+    .command("health")
+    .description("Show insurance pool health metrics and solvency runway")
+    .requiredOption("--contract <id>", "Insurance pool contract address")
+    .action(async (opts: { contract: string }) => {
+      const json = isJsonMode(cmd.parent?.opts() as Record<string, unknown> | undefined);
+      try {
+        const health = await fetchHealth(opts.contract);
+        formatOutput(health, json, () => {
+          console.log(`Pool Balance:                ${health.balance}`);
+          console.log(`Enrolled LPs:                ${health.enrolledLpCount}`);
+          console.log(`Estimated Monthly Claims:    ${health.estimatedMonthlyClaimRate}`);
+          if (health.monthsOfCoverage !== null) {
+            console.log(`Months of Coverage Runway:   ${health.monthsOfCoverage}`);
+          } else {
+            console.log(`Months of Coverage Runway:   Not yet estimable (no claim history)`);
+          }
+        });
+      } catch (err) {
+        formatError((err as Error).message, "INSURANCE_HEALTH_ERROR", json);
       }
     });
 
