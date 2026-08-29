@@ -54,15 +54,16 @@ use events::{
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
     get_dispute, get_fund_queue, get_fund_queue_opened_at, get_invoice_funders, get_lp_invoices,
-    get_lp_score, get_min_payer_reputation, get_payer_score, get_pre_default_payer_score,
-    get_queue_resolution, get_reputation, get_submitter_invoices, increment_invoices_defaulted,
-    increment_invoices_paid, increment_invoices_submitted, increment_total_funded,
-    increment_total_invoices, increment_total_paid, invoice_exists, is_paused, load_invoice,
-    next_invoice_id, remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal,
-    save_dispute, save_fund_queue, save_invoice, save_invoice_funders,
-    save_pre_default_payer_score, save_queue_resolution, set_lp_score, set_min_payer_reputation,
-    set_paused, set_payer_score, set_reputation, try_load_invoice, try_set_fund_queue_opened_at,
-    ContractStats, DisputeRecord, StorageKey,
+    get_lp_score, get_max_invoice_amount, get_min_payer_reputation, get_payer_score,
+    get_pre_default_payer_score, get_queue_resolution, get_reputation, get_submitter_invoices,
+    get_token_volume, get_token_volume_cap, increment_invoices_defaulted, increment_invoices_paid,
+    increment_invoices_submitted, increment_total_funded, increment_total_invoices,
+    increment_total_paid, invoice_exists, is_paused, load_invoice, next_invoice_id,
+    remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal, save_dispute,
+    save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
+    save_queue_resolution, set_lp_score, set_max_invoice_amount, set_min_payer_reputation,
+    set_paused, set_payer_score, set_reputation, set_token_volume_cap, try_load_invoice,
+    try_set_fund_queue_opened_at, ContractStats, DisputeRecord, StorageKey,
 };
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -1011,6 +1012,13 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::InvalidDiscountRate);
         }
 
+        // Issue #655: staged mainnet rollout — reject invoices above the
+        // governance-configured per-invoice cap. 0 = uncapped (default).
+        let max_invoice_amount = get_max_invoice_amount(&env);
+        if max_invoice_amount > 0 && amount > max_invoice_amount {
+            return Err(ContractError::MaxInvoiceAmountExceeded);
+        }
+
         validate_invoice_terms(&env, amount, due_date, discount_rate)?;
 
         // token validation
@@ -1676,6 +1684,22 @@ impl InvoiceLiquidityContract {
             .ok_or(ContractError::ArithmeticOverflow)?;
         if prospective_funded > invoice.amount {
             return Err(ContractError::OverfundingRejected);
+        }
+
+        // Issue #655: staged mainnet rollout — reject funding that would
+        // push this token's cumulative funded volume past the
+        // governance-configured cap (0 = uncapped). Checked against the
+        // same `TokenVolume` counter `add_volume` maintains below, so
+        // raising the cap via governance takes effect immediately without
+        // any separate migration.
+        let token_volume_cap = get_token_volume_cap(&env, &invoice.token);
+        if token_volume_cap > 0 {
+            let prospective_volume = get_token_volume(&env, &invoice.token)
+                .checked_add(fund_amount)
+                .ok_or(ContractError::ArithmeticOverflow)?;
+            if prospective_volume > token_volume_cap {
+                return Err(ContractError::GlobalVolumeCapExceeded);
+            }
         }
 
         // --- Execute transfer ---
@@ -2874,6 +2898,86 @@ impl InvoiceLiquidityContract {
                 param_name: pn,
                 old_value: old_value as i128,
                 new_value: value as i128,
+                updated_by,
+            },
+        );
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #655: staged mainnet rollout caps
+    // ----------------------------------------------------------------
+    /// Current per-invoice amount cap (0 = uncapped).
+    /// Access: Anyone
+    pub fn max_invoice_amount(env: Env) -> i128 {
+        get_max_invoice_amount(&env)
+    }
+
+    /// Update the maximum single-invoice amount. Intended to be raised over
+    /// time via governance as a staged mainnet rollout progresses.
+    /// Access: Admin only (routed through governance once `admin` is set to
+    /// the governance contract's address — see `iln_governance`).
+    pub fn set_max_invoice_amount(env: Env, value: i128) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        check_rate_limit(&env, "set_max_invoice_amount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        let old_value = get_max_invoice_amount(&env);
+        set_max_invoice_amount(&env, value);
+        let pn = Symbol::new(&env, "max_invoice_amount");
+        env.events().publish(
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value,
+                new_value: value,
+                updated_by,
+            },
+        );
+        Ok(())
+    }
+
+    /// Current cumulative funded-volume cap for `token` (0 = uncapped).
+    /// Access: Anyone
+    pub fn token_volume_cap(env: Env, token: Address) -> i128 {
+        get_token_volume_cap(&env, &token)
+    }
+
+    /// Update the cumulative funded-volume cap for `token`. Intended to be
+    /// raised over time via governance as a staged mainnet rollout
+    /// progresses — checked against the same cumulative counter used for
+    /// `get_contract_stats` reporting.
+    /// Access: Admin only (routed through governance once `admin` is set to
+    /// the governance contract's address — see `iln_governance`).
+    pub fn set_token_volume_cap(
+        env: Env,
+        token: Address,
+        value: i128,
+    ) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        check_rate_limit(&env, "set_token_volume_cap", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        let old_value = get_token_volume_cap(&env, &token);
+        set_token_volume_cap(&env, &token, value);
+        // Note: the target token is not carried in the event topics (kept at
+        // 3, matching every other parameter_updated event in this contract)
+        // — it is visible in the `set_token_volume_cap` call's own arguments
+        // on-chain, and callers needing it per-event should track via
+        // `token_volume_cap(token)` reads rather than topic filtering.
+        let pn = Symbol::new(&env, "token_volume_cap");
+        env.events().publish(
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value,
+                new_value: value,
                 updated_by,
             },
         );

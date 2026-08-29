@@ -79,4 +79,10 @@ pub enum ContractError {
     /// deviated beyond the configured threshold from every other — no
     /// source survived to produce a validated price.
     AllPriceSourcesRejected = 43,
+    /// Issue #655: invoice `amount` exceeds the governance-configured
+    /// staged-rollout per-invoice cap.
+    MaxInvoiceAmountExceeded = 44,
+    /// Issue #655: funding this amount would push the token's cumulative
+    /// funded volume past the governance-configured staged-rollout cap.
+    GlobalVolumeCapExceeded = 45,
 }

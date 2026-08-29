@@ -121,6 +121,14 @@ pub enum ProposalAction {
     /// Tuple: (high_rep_threshold, bonus_bps, min_discount_rate_bps) —
     /// mirrors reputation_bonus::config::Config's fields.
     UpdateReputationBonusParams(u32, u32, u32),
+    /// Issue #655: update the ILN contract's per-invoice size cap for a
+    /// staged mainnet rollout (0 = uncapped). Raised over time as
+    /// confidence in the deployment grows.
+    UpdateMaxInvoiceAmount(i128),
+    /// Issue #655: update the ILN contract's cumulative funded-volume cap
+    /// for a given token, for a staged mainnet rollout (0 = uncapped).
+    /// Tuple: (token, cap).
+    UpdateTokenVolumeCap(Address, i128),
 }
 
 /// Issue #532: mirrors `invoice_liquidity::oracle_registry::OracleFeedType`.
@@ -1180,6 +1188,15 @@ impl GovContract {
                         oracle.into_val(&env),
                     ];
                     Self::invoke_and_check(&env, &iln_contract, "register_token_oracle", args)
+                }
+                ProposalAction::UpdateMaxInvoiceAmount(cap) => {
+                    let args: Vec<soroban_sdk::Val> = vec![&env, cap.into_val(&env)];
+                    Self::invoke_and_check(&env, &iln_contract, "set_max_invoice_amount", args)
+                }
+                ProposalAction::UpdateTokenVolumeCap(token, cap) => {
+                    let args: Vec<soroban_sdk::Val> =
+                        vec![&env, token.into_val(&env), cap.into_val(&env)];
+                    Self::invoke_and_check(&env, &iln_contract, "set_token_volume_cap", args)
                 }
             };
 

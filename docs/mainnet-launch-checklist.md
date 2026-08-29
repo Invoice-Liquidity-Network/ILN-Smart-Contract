@@ -24,6 +24,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
 | Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | Not started | [Developer Quickstart](developer-quickstart.md) |
 | Contract IDs published | Publish verified mainnet contract IDs and SAC addresses after deployment. | Release lead | Not started | [README](../README.md) |
+| Staged rollout caps configured | Set initial per-invoice and per-token volume caps via governance before opening to real funds; raise over time. | Governance lead | In progress | [#655](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/655) |
 
 ## Infrastructure
 
@@ -33,7 +34,8 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | In progress | [monitoring-runbook.md](monitoring-runbook.md) |
 | Notifications deployed | Deploy webhook/email notifications with HMAC signing, rate limiting, and SSRF controls verified. | Infrastructure lead | In progress | [notifications](../notifications) |
 | Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | Not started | [Security Policy](security.md) |
-| Deployment secrets reviewed | Confirm production secrets are stored in GitHub Actions or approved secret management only. | Release lead | In progress | [Deploy testnet workflow](../.github/workflows/deploy-testnet.yml) |
+| Deployment secrets reviewed | Confirm production secrets follow an approved, reviewed custody path distinct from testnet's GitHub Actions secret. | Release lead | In progress | [Deployment Secret Management](deployment-secrets.md) |
+| Mainnet rollback runbook rehearsed | Publish and rehearse the early-launch rollback decision procedure (pause, veto, in-place rollback, full redeploy) before mainnet launch. | Release lead | In progress | [#657](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/657) |
 
 ## Documentation
 

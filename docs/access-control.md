@@ -96,6 +96,10 @@ Publicly accessible read or state-transition functions that do not require speci
 | `get_version` | Anyone | Reads contract version string |
 | `get_storage_version` | Anyone | Reads storage schema version for migrations |
 | `migrate` | Admin | Executes storage migration logic for upgrades |
+| `max_invoice_amount` | Anyone | Reads the per-invoice size cap for the staged mainnet rollout (Issue #655; 0 = uncapped) |
+| `set_max_invoice_amount` | Admin (routed through governance once `admin` = the governance contract) | Sets the per-invoice size cap; raised over time as rollout confidence grows (rate-limited: ~30min) |
+| `token_volume_cap` | Anyone | Reads the cumulative funded-volume cap for a token (Issue #655; 0 = uncapped) |
+| `set_token_volume_cap` | Admin (routed through governance once `admin` = the governance contract) | Sets the cumulative funded-volume cap for a token (rate-limited: ~30min) |
 
 ### Oracle Registry & Price Oracle
 
@@ -267,6 +271,8 @@ Certain admin operations are sensitive to high-frequency invocation — an attac
 | `update_fee_rate` | 360 ledgers (~30min) | Economic parameter manipulation |
 | `update_max_discount` | 360 ledgers (~30min) | Economic parameter manipulation |
 | `set_min_payer_reputation` | 360 ledgers (~30min) | Economic parameter manipulation |
+| `set_max_invoice_amount` | 360 ledgers (~30min) | Economic parameter manipulation (Issue #655 staged rollout cap) |
+| `set_token_volume_cap` | 360 ledgers (~30min) | Economic parameter manipulation (Issue #655 staged rollout cap) |
 | `set_distribution_contract` | 120 ledgers (~10min) | Infrastructure change |
 | `set_price_oracle` | 120 ledgers (~10min) | Infrastructure change |
 | `set_max_oracle_age` | 120 ledgers (~10min) | Infrastructure change |

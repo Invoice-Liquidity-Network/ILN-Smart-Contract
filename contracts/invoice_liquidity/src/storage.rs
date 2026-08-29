@@ -18,6 +18,9 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
+    /// Issue #655: governance-configurable cap on a single invoice's `amount`,
+    /// for a staged mainnet rollout. `0` = uncapped (default).
+    MaxInvoiceAmount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -51,6 +54,11 @@ pub enum DataKey {
     TotalVolumeEurc,
     TotalVolumeXlm,
     TokenVolume(Address),
+    /// Issue #655: governance-configurable cap on cumulative funded volume
+    /// (`TokenVolume`) for a given token, for a staged mainnet rollout — can
+    /// be raised over time as confidence in the deployment grows. `0` =
+    /// uncapped (default).
+    TokenVolumeCap(Address),
     /// Referral counts keyed by fixed-size code
     ReferralCount(BytesN<32>),
     Dispute(u64),
