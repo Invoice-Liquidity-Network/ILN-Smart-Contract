@@ -3448,6 +3448,9 @@ fn notify_distribution_settlement(
 // ----------------------------------------------------------------
 
 pub(crate) mod test;
+// Issue #124 / #641 / #639: multisig admin module + error-path coverage
+// (AlreadySigned / ProposalExpired / ThresholdNotReached).
+mod tests_multisig_admin;
 mod tests_insurance_integration;
 mod tests_lifecycle_integration;
 mod tests_min_invoice_amount;

@@ -3,6 +3,34 @@ use soroban_sdk::{contracttype, Address, BytesN, Symbol};
 use crate::invoice::{InvoiceStatus, ReferralCode};
 use crate::oracle_registry::OracleFeedType;
 
+/// Issue #640: emitted when a multisig-approved `RotateSigner` proposal
+/// executes, scheduling (but not yet applying) the signer swap.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationScheduled {
+    pub old_signer: Address,
+    pub new_signer: Address,
+    pub effective_at: u64,
+}
+
+/// Issue #640: emitted once a scheduled rotation's timelock has elapsed
+/// and the signer swap has actually been applied.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationFinalized {
+    pub old_signer: Address,
+    pub new_signer: Address,
+}
+
+/// Issue #640: emitted when a pending signer rotation is cancelled before
+/// it takes effect.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationCancelled {
+    pub old_signer: Address,
+    pub new_signer: Address,
+}
+
 /// Emitted when an oracle is registered for a feed type, either as the
 /// feed-type-wide default (`token: None`) or a per-token override
 /// (`token: Some(..)`) (Issue #532).
