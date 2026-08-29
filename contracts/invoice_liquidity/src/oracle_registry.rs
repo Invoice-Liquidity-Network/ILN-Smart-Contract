@@ -34,11 +34,9 @@ use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 use crate::access::{check_rate_limit, require_admin};
 use crate::errors::ContractError;
 use crate::events::{
-    LegacyOracleFallbackUsed, OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded,
-    OracleRegistered, OracleUnregistered, PriceOutlierRejected, PriceSourceAdded,
-    PriceSourceRemoved,
+    OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded, OracleRegistered,
+    OracleUnregistered, PriceOutlierRejected, PriceSourceAdded, PriceSourceRemoved,
 };
-use crate::invoice::DisputeOracleSnapshot;
 use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
 use crate::storage::DataKey;
 use crate::OracleVerificationResponse;
@@ -49,103 +47,6 @@ use crate::OracleVerificationResponse;
 /// chain (or is rejected if nothing else resolves) until governance calls
 /// `reset_oracle_circuit`.
 pub const MAX_CONSECUTIVE_STALE_QUERIES: u32 = 3;
-
-// ── Registry mutation cooldown (Issue #oracle-registry-cooldown) ──────────
-//
-// register_oracle/register_token_oracle/remove_oracle/remove_token_oracle
-// were previously gated by authorization alone, with no cooldown — a
-// compromised or malicious admin/governance-authorized caller could rapidly
-// flip oracle configuration (register, remove, register a different
-// address, ...) to create confusion or exploit timing windows around other
-// operations (e.g. funding calls resolving inconsistently mid-attack, or
-// obscuring which oracle was actually live when something went wrong).
-//
-// The cooldown is scoped per *resolution channel* — the feed-type-wide
-// default (register_oracle/remove_oracle) and each specific per-token
-// override (register_token_oracle/remove_token_oracle) each track their
-// own last-mutation ledger independently, mirroring how `OracleRegistry`/
-// `TokenOracle` are already two distinct storage shapes. This directly
-// targets the actual threat (rapidly flipping the *same* channel back and
-// forth) without blocking unrelated, legitimate administration of a
-// different feed type or token.
-
-/// Default minimum spacing (in ledgers) enforced between mutations to the
-/// same oracle registry resolution channel, until governance configures a
-/// different value via `set_oracle_registry_cooldown_ledgers`. 720 ledgers
-/// (~1 hour at 5s/ledger) — deliberately conservative, matching the
-/// magnitude already used for `set_admin`'s cooldown
-/// (`ADMIN_CHANGE_COOLDOWN_LEDGERS`) as a similarly sensitive control
-/// surface, rather than the much shorter `DEFAULT_RATE_LIMIT_LEDGERS` (120)
-/// used for lower-stakes setters like `add_token`.
-pub const DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS: u64 = 720;
-
-/// Check and, if not currently on cooldown, record a mutation to the
-/// resolution channel identified by `cooldown_key` (must be either
-/// `DataKey::OracleRegistryDefaultCooldown` or
-/// `DataKey::OracleRegistryTokenCooldown`). Returns
-/// `ContractError::OracleRegistryCooldownActive` if the channel's last
-/// mutation was less than `get_oracle_registry_cooldown_ledgers()` ledgers
-/// ago.
-///
-/// Deliberately checks `Option<u32>` (via a plain `get`, not
-/// `unwrap_or(0)`) rather than defaulting a never-mutated channel's "last
-/// mutation ledger" to `0` — with a several-hundred-ledger default
-/// cooldown, defaulting to `0` would make a channel's very first-ever
-/// mutation look like it happened at ledger 0 and incorrectly reject it if
-/// the current ledger sequence is below the cooldown (routinely true: test
-/// environments and even early mainnet ledger sequences can start well
-/// under a few hundred). A channel with no recorded mutation has no
-/// cooldown to violate, full stop.
-fn check_oracle_registry_cooldown(env: &Env, cooldown_key: DataKey) -> Result<(), ContractError> {
-    let last_ledger: Option<u32> = env.storage().instance().get(&cooldown_key);
-    let current_ledger = env.ledger().sequence();
-
-    if let Some(last_ledger) = last_ledger {
-        let cooldown = get_oracle_registry_cooldown_ledgers(env.clone());
-        if current_ledger < last_ledger.saturating_add(cooldown as u32) {
-            return Err(ContractError::OracleRegistryCooldownActive);
-        }
-    }
-
-    env.storage().instance().set(&cooldown_key, &current_ledger);
-    Ok(())
-}
-
-/// Update the governance-configurable cooldown (in ledgers) enforced
-/// between mutations to the same oracle registry resolution channel.
-/// Rejects `0` (would disable the protection entirely — use a very small
-/// positive value instead if a near-zero cooldown is genuinely intended,
-/// so the intent is visible rather than silently indistinguishable from
-/// "never configured").
-///
-/// This setter is itself rate-limited (`DEFAULT_RATE_LIMIT_LEDGERS`,
-/// ~10 min) via the standard per-function limiter — separate from, and in
-/// addition to, the per-channel cooldown this parameter controls.
-///
-/// Access: Admin only.
-pub fn set_oracle_registry_cooldown_ledgers(env: &Env, ledgers: u64) -> Result<(), ContractError> {
-    require_admin(env)?;
-    check_rate_limit(
-        env,
-        "set_oracle_registry_cooldown_ledgers",
-        crate::constants::DEFAULT_RATE_LIMIT_LEDGERS,
-    )?;
-    if ledgers == 0 {
-        return Err(ContractError::InvalidAmount);
-    }
-    env.storage()
-        .instance()
-        .set(&DataKey::OracleRegistryCooldownLedgers, &ledgers);
-    Ok(())
-}
-
-/// The currently configured oracle registry mutation cooldown, in ledgers.
-pub fn get_oracle_registry_cooldown_ledgers(env: Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&DataKey::OracleRegistryCooldownLedgers)
-        .unwrap_or(DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS)
-}
 
 /// The kind of off-chain data an oracle provides.
 #[contracttype]

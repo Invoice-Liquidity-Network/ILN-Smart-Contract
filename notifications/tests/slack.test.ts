@@ -4,6 +4,7 @@ import {
   deliverSlackNotification,
   type SlackInvoiceEvent,
 } from '../src/delivery/slack';
+import { PerRecipientRateLimiter } from '../src/delivery/rateLimiter';
 
 const baseEvent: SlackInvoiceEvent = {
   type: 'invoice.submitted',
@@ -131,6 +132,41 @@ describe('Slack notification', () => {
       const res = await deliverSlackNotification('https://hooks.slack.com/xxx', baseEvent, http);
       expect(res.ok).toBe(false);
       expect(res.status).toBe(0);
+    });
+
+    it('rate limits per channel: one exhausted channel does not affect another', async () => {
+      const rateLimiter = new PerRecipientRateLimiter({
+        maxRequests: 2,
+        windowMs: 1000,
+        now: () => 0,
+      });
+      const http = vi.fn(async () => ({ ok: true, status: 200 }));
+      const noisy = 'https://hooks.slack.com/services/T1/B1/noisy';
+      const quiet = 'https://hooks.slack.com/services/T2/B2/quiet';
+
+      expect((await deliverSlackNotification(noisy, baseEvent, http, { rateLimiter })).ok).toBe(
+        true,
+      );
+      expect((await deliverSlackNotification(noisy, baseEvent, http, { rateLimiter })).ok).toBe(
+        true,
+      );
+      expect(
+        (await deliverSlackNotification(noisy, baseEvent, http, { rateLimiter })).status,
+      ).toBe(429);
+
+      // The quiet channel is unaffected.
+      expect((await deliverSlackNotification(quiet, baseEvent, http, { rateLimiter })).ok).toBe(
+        true,
+      );
+      expect((await deliverSlackNotification(quiet, baseEvent, http, { rateLimiter })).ok).toBe(
+        true,
+      );
+      expect(
+        (await deliverSlackNotification(quiet, baseEvent, http, { rateLimiter })).status,
+      ).toBe(429);
+
+      // Only in-budget sends reached the HTTP client.
+      expect(http).toHaveBeenCalledTimes(4);
     });
   });
 });

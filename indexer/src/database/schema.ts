@@ -73,6 +73,12 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_reputation_address ON reputation_updates(address);
     CREATE INDEX IF NOT EXISTS idx_reputation_timestamp ON reputation_updates(timestamp);
     CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
+    CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices(created_at);
+    CREATE INDEX IF NOT EXISTS idx_invoices_token ON invoices(token);
+    CREATE INDEX IF NOT EXISTS idx_invoices_funder ON invoices(funder);
+    CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
+    CREATE INDEX IF NOT EXISTS idx_events_contract_event_type ON events(contract_event_type);
+    CREATE INDEX IF NOT EXISTS idx_reputation_updates_address_id ON reputation_updates(address, id);
     CREATE INDEX IF NOT EXISTS idx_stats_history_date ON stats_history(date);
     CREATE INDEX IF NOT EXISTS idx_invoices_freelancer ON invoices(freelancer);
     CREATE INDEX IF NOT EXISTS idx_invoices_payer ON invoices(payer);

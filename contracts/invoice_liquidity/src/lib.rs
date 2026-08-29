@@ -615,53 +615,6 @@ impl InvoiceLiquidityContract {
         oracle_registry::get_verified_price(env, feed_type, token)
     }
 
-    // ── Issue #oracle-registry-cooldown: mutation cooldown ──────────
-
-    /// Update the governance-configurable minimum spacing (in ledgers)
-    /// enforced between mutations to the same oracle registry resolution
-    /// channel — see `register_oracle`/`remove_oracle`/
-    /// `register_token_oracle`/`remove_token_oracle`. Defaults to
-    /// [`oracle_registry::DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS`]
-    /// (~1 hour) until set.
-    /// Access: Admin only
-    pub fn set_oracle_registry_cooldown_ledgers(
-        env: Env,
-        ledgers: u64,
-    ) -> Result<(), ContractError> {
-        oracle_registry::set_oracle_registry_cooldown_ledgers(&env, ledgers)
-    }
-
-    /// The currently configured oracle registry mutation cooldown, in
-    /// ledgers.
-    /// Access: Anyone
-    pub fn get_oracle_registry_cooldown_ledgers(env: Env) -> u64 {
-        oracle_registry::get_oracle_registry_cooldown_ledgers(env)
-    }
-
-    // ── Issue #legacy-oracle-fallback: legacy price_oracle fallback toggle ──
-
-    /// Enable or disable the legacy `Config.price_oracle` fallback
-    /// (Identity feed only, consulted by `resolve_oracle` when neither a
-    /// per-token override nor a feed-type default is registered). Defaults
-    /// to enabled. Disable once migration to explicit `oracle_registry`
-    /// configuration is confirmed complete, to force every token relying
-    /// on it to have an explicit entry instead of silently falling back.
-    /// Reversible — not a one-way switch.
-    /// Access: Admin only
-    pub fn set_legacy_oracle_fallback_enabled(
-        env: Env,
-        enabled: bool,
-    ) -> Result<(), ContractError> {
-        oracle_registry::set_legacy_oracle_fallback_enabled(&env, enabled)
-    }
-
-    /// Whether the legacy `Config.price_oracle` fallback is currently
-    /// enabled.
-    /// Access: Anyone
-    pub fn is_legacy_oracle_fallback_enabled(env: Env) -> bool {
-        oracle_registry::is_legacy_oracle_fallback_enabled(&env)
-    }
-
     // ── Issue #529: insurance pool integration ────────────────────
 
     /// Configure the deployed insurance pool contract address consulted by
