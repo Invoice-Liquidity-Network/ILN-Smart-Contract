@@ -201,6 +201,12 @@ clippy: ## Run clippy with warnings denied
 deploy-testnet: ## Deploy all contracts to Stellar testnet
 	bash scripts/deploy-testnet.sh
 
+deploy-mainnet-dry-run: ## Dry-run the mainnet deployment (no transactions submitted)
+	bash scripts/deploy-mainnet.sh --dry-run
+
+deploy-mainnet: ## Deploy all contracts to Stellar mainnet (requires CONFIRM="DEPLOY TO MAINNET")
+	bash scripts/deploy-mainnet.sh
+
 seed: ## Seed the testnet deployment with sample data
 	npx tsx scripts/seed.ts
 
@@ -210,6 +216,12 @@ reset-testnet: ## Reset local/testnet state
 
 health: ## Run the deployment health check (JSON metrics)
 	npx tsx scripts/check-contract-health.ts --pretty
+
+verify-mainnet: ## Run mainnet-readiness verification (writes verification-report.mainnet.json)
+	NETWORK=mainnet npx tsx scripts/verify-deployment.ts
+
+publish-mainnet: ## Publish verified mainnet contract IDs/SAC addresses to README.md
+	bash scripts/publish-mainnet-contracts.sh
 
 docs: ## Generate SDK API documentation (typedoc)
 	cd sdk && $(PKG) run docs
