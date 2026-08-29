@@ -12,6 +12,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod invoice;
+pub mod multisig;
 pub mod nft;
 pub mod rate_logic;
 pub mod storage;
@@ -49,7 +50,8 @@ use events::{
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
-    PriceOracleUpdated, TokenAdded, TokenRemoved,
+    PriceOracleUpdated, SignerRotationCancelled, SignerRotationFinalized,
+    SignerRotationScheduled, TokenAdded, TokenRemoved,
 };
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
@@ -767,6 +769,270 @@ impl InvoiceLiquidityContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+        Ok(())
+    }
+
+    // ------------------------------------------------------------
+    // Multi-sig admin (Issue #124 / #641)
+    // ------------------------------------------------------------
+    // Threshold-gated alternative to the single-admin pause/unpause/
+    // remove_token/update_fee_rate/update_max_discount calls above: once
+    // bootstrapped, critical admin actions can instead be routed through
+    // propose_*/sign_proposal/execute_proposal, requiring `threshold`
+    // distinct signers to agree. The existing single-admin entry points
+    // above are unaffected — this is an additive authorization path.
+
+    /// Bootstrap the multisig admin signer set and approval threshold.
+    /// Access: Admin only (one-time; see `multisig::initialize`)
+    pub fn initialize_multisig_admin(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ContractError> {
+        multisig::initialize(&env, signers, threshold)
+    }
+
+    /// Returns the configured multisig admin signer set / threshold, if bootstrapped.
+    /// Access: Anyone
+    pub fn get_multisig_admin(env: Env) -> Option<multisig::MultisigAdmin> {
+        env.storage().instance().get(&DataKey::MultisigAdmin)
+    }
+
+    /// Returns a stored multisig proposal by id, if any.
+    /// Access: Anyone
+    pub fn get_multisig_proposal(env: Env, proposal_id: u64) -> Option<multisig::MultisigProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MultisigProposal(proposal_id))
+    }
+
+    /// Propose pausing the contract via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_pause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::Pause)
+    }
+
+    /// Propose unpausing the contract via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_unpause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::Unpause)
+    }
+
+    /// Propose removing a token from the approved-token allowlist via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_remove_token(
+        env: Env,
+        proposer: Address,
+        token: Address,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::RemoveToken(token))
+    }
+
+    /// Propose a new protocol fee rate via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_set_fee_rate(env: Env, proposer: Address, rate: u32) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::SetFeeRate(rate))
+    }
+
+    /// Propose a new maximum discount rate via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_set_max_discount(
+        env: Env,
+        proposer: Address,
+        rate: u32,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::SetMaxDiscount(rate))
+    }
+
+    /// Propose replacing the multisig signer set / threshold via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_update_multisig(
+        env: Env,
+        proposer: Address,
+        new_signers: Vec<Address>,
+        new_threshold: u32,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(
+            &env,
+            &proposer,
+            multisig::AdminAction::UpdateMultisig {
+                new_signers,
+                new_threshold,
+            },
+        )
+    }
+
+    /// Propose rotating `old_signer` out for `new_signer` via the multisig
+    /// flow. Executing this proposal schedules the swap behind a timelock
+    /// (see `finalize_signer_rotation`) rather than applying it
+    /// immediately (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn propose_rotate_signer(
+        env: Env,
+        proposer: Address,
+        old_signer: Address,
+        new_signer: Address,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(
+            &env,
+            &proposer,
+            multisig::AdminAction::RotateSigner {
+                old_signer,
+                new_signer,
+            },
+        )
+    }
+
+    /// Returns the currently scheduled signer rotation, if any (Issue #640).
+    /// Access: Anyone
+    pub fn get_pending_signer_rotation(env: Env) -> Option<multisig::PendingRotation> {
+        env.storage().instance().get(&DataKey::PendingSignerRotation)
+    }
+
+    /// Finalize a scheduled signer rotation once its timelock has elapsed,
+    /// swapping a compromised or departing signer's key in the multisig
+    /// signer set without a contract upgrade (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn finalize_signer_rotation(env: Env, caller: Address) -> Result<(), ContractError> {
+        let rotation = multisig::finalize_rotation(&env, &caller)?;
+        env.events().publish(
+            (Symbol::new(&env, "signer_rotation_finalized"),),
+            SignerRotationFinalized {
+                old_signer: rotation.old_signer,
+                new_signer: rotation.new_signer,
+            },
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending signer rotation before it takes effect — the
+    /// reaction mechanism the timelock exists to enable if a scheduled
+    /// rotation looks malicious or mistaken (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn cancel_signer_rotation(env: Env, caller: Address) -> Result<(), ContractError> {
+        let rotation = multisig::cancel_rotation(&env, &caller)?;
+        env.events().publish(
+            (Symbol::new(&env, "signer_rotation_cancelled"),),
+            SignerRotationCancelled {
+                old_signer: rotation.old_signer,
+                new_signer: rotation.new_signer,
+            },
+        );
+        Ok(())
+    }
+
+    /// Approve a pending multisig proposal.
+    /// Access: configured multisig signer only
+    pub fn sign_proposal(env: Env, signer: Address, proposal_id: u64) -> Result<(), ContractError> {
+        multisig::sign(&env, &signer, proposal_id)
+    }
+
+    /// Execute a multisig proposal once its approval threshold has been
+    /// met, applying the action it authorized.
+    /// Access: configured multisig signer only
+    pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), ContractError> {
+        let action = multisig::execute(&env, &caller, proposal_id)?;
+        match action {
+            multisig::AdminAction::Pause => {
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "paused"),),
+                    ContractPaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            multisig::AdminAction::Unpause => {
+                set_paused(&env, false);
+                env.events().publish(
+                    (Symbol::new(&env, "unpaused"),),
+                    ContractUnpaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            multisig::AdminAction::RemoveToken(token) => {
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::ApprovedToken(token.clone()), &false);
+                let list: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::TokenList)
+                    .unwrap_or(Vec::new(&env));
+                let mut pruned: Vec<Address> = Vec::new(&env);
+                for t in list.iter() {
+                    if t != token {
+                        pruned.push_back(t);
+                    }
+                }
+                env.storage().persistent().set(&DataKey::TokenList, &pruned);
+                env.events().publish(
+                    (Symbol::new(&env, "token_removed"), token.clone()),
+                    TokenRemoved { token },
+                );
+            }
+            multisig::AdminAction::SetFeeRate(rate) => {
+                let old_rate: u32 = env.storage().instance().get(&StorageKey::FeeRate).unwrap_or(0);
+                env.storage().instance().set(&StorageKey::FeeRate, &rate);
+                let pn = Symbol::new(&env, "protocol_fee_rate_bps");
+                env.events().publish(
+                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    ParameterUpdated {
+                        param_name: pn,
+                        old_value: old_rate as i128,
+                        new_value: rate as i128,
+                        updated_by: caller.clone(),
+                    },
+                );
+            }
+            multisig::AdminAction::SetMaxDiscount(rate) => {
+                let old_rate: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&StorageKey::MaxDiscountRate)
+                    .unwrap_or(0);
+                env.storage().instance().set(&StorageKey::MaxDiscountRate, &rate);
+                let pn = Symbol::new(&env, "max_discount_rate_bps");
+                env.events().publish(
+                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    ParameterUpdated {
+                        param_name: pn,
+                        old_value: old_rate as i128,
+                        new_value: rate as i128,
+                        updated_by: caller.clone(),
+                    },
+                );
+            }
+            multisig::AdminAction::UpdateMultisig {
+                new_signers,
+                new_threshold,
+            } => {
+                if !multisig::is_valid_config(&new_signers, new_threshold) {
+                    return Err(ContractError::InvalidMultisigConfig);
+                }
+                let updated = multisig::MultisigAdmin {
+                    signers: new_signers,
+                    threshold: new_threshold,
+                };
+                env.storage().instance().set(&DataKey::MultisigAdmin, &updated);
+            }
+            multisig::AdminAction::RotateSigner {
+                old_signer,
+                new_signer,
+            } => {
+                let rotation =
+                    multisig::schedule_rotation(&env, old_signer.clone(), new_signer.clone())?;
+                env.events().publish(
+                    (Symbol::new(&env, "signer_rotation_scheduled"),),
+                    SignerRotationScheduled {
+                        old_signer,
+                        new_signer,
+                        effective_at: rotation.effective_at,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
