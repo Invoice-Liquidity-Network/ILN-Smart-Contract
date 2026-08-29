@@ -389,3 +389,26 @@ This check should run on every PR to enforce that new functions and their access
 - **Centralized Verification**: Extracted inline logic ensures uniform verification logic and robust testing.
 - **Auditability Improvements**: Every guard clearly emits a deterministic `Unauthorized` error instead of panicking, enhancing tracing.
 - **Rejection Behavior**: If authorization fails, the protocol safely rejects the mutation without consuming extra gas or altering contract state.
+
+## 14. Mainnet Admin Signer Verification (Issue #647)
+
+Once the production admin is configured as a multi-sig account (see "Multi-sig admin
+configured" in the [Mainnet Launch Checklist](mainnet-launch-checklist.md)), the set of
+Stellar keys authorized to sign as that account must stay in sync with who
+[CODEOWNERS](../.github/CODEOWNERS) says is on the contracts team — otherwise a
+maintainer could retain signing power after leaving the team, or a key could be added
+on-chain that no one off-chain can account for, with no way to notice either.
+
+- **Mapping**: [`.github/mainnet-admin-signers.json`](../.github/mainnet-admin-signers.json)
+  records which GitHub identity controls each on-chain signer key, and which CODEOWNERS
+  team it should match (`@Keengfk/contracts-team`). It is itself CODEOWNERS-protected so
+  changes require contracts-team and security-lead review.
+- **Check**: [`scripts/verify-admin-signers.ts`](../scripts/verify-admin-signers.ts) fetches
+  the admin account's signers from Horizon and confirms every on-chain key has a mapping
+  entry (and vice versa), and — when a `GITHUB_TOKEN` is available — that every mapped
+  signer is still a current member of the CODEOWNERS team.
+- **CI**: [`.github/workflows/admin-signer-check.yml`](../.github/workflows/admin-signer-check.yml)
+  runs this on every change to CODEOWNERS or the signer mapping, plus a daily schedule to
+  catch drift introduced directly on-chain.
+- Before the multi-sig admin is configured, the check is a no-op (`ADMIN_ADDRESS` is
+  unset), so it does not block CI ahead of launch.

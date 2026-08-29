@@ -18,10 +18,11 @@ them.
 4. [Getting Started](#getting-started)
 5. [Building & Testing](#building--testing)
 6. [Deploying to Testnet](#deploying-to-testnet)
-7. [Documentation](#documentation)
-8. [Contributing](#contributing)
-9. [Security](#security)
-10. [License](#license)
+7. [Mainnet Contract Addresses](#mainnet-contract-addresses)
+8. [Documentation](#documentation)
+9. [Contributing](#contributing)
+10. [Security](#security)
+11. [License](#license)
 
 ---
 
@@ -165,6 +166,26 @@ deployment with sample invoices, and `make reset-testnet` to reset local/testnet
 
 ---
 
+## Mainnet Contract Addresses
+
+The table below is published by [`scripts/publish-mainnet-contracts.sh`](scripts/publish-mainnet-contracts.sh)
+after a mainnet deployment passes `scripts/verify-deployment.ts` (see the
+[Mainnet Deployment Runbook](docs/mainnet-deployment-runbook.md)). It is generated from
+`.contracts-mainnet.env`, never edited by hand, so the addresses below always match what
+verification actually checked.
+
+<!-- MAINNET_CONTRACT_IDS_START -->
+| Resource | Contract ID | Notes |
+|----------|-------------|-------|
+| **`invoice_liquidity`** | _Not yet deployed_ | Primary integration contract; used in [SDK examples](docs/sdk-integration.md) |
+| **`iln_governance`** | _Not yet deployed_ | Governance proposals and voting |
+| **`iln_distribution`** | _Not yet deployed_ | Rewards distribution |
+| **`reputation_bonus`** | _Not yet deployed_ | Reputation-based bonus rules |
+| **Mainnet USDC (SAC)** | _Not yet deployed_ | Referenced in SDK integration guide |
+<!-- MAINNET_CONTRACT_IDS_END -->
+
+---
+
 ## Documentation
 
 This README covers the repository as a whole. Deeper documentation lives in [`docs/`](docs/) —
@@ -178,6 +199,7 @@ start at the [Documentation Index](docs/index.md), or jump to:
 | Storage layout | [Storage Layout](docs/storage-layout.md) |
 | Security model & risks | [Threat Model](docs/threat-model.md), [Access Control](docs/access-control.md) |
 | Upgrades | [Upgrade Guide](docs/upgrade-guide.md) |
+| Mainnet deployment | [Mainnet Deployment Runbook](docs/mainnet-deployment-runbook.md) |
 | SDK usage | [SDK Integration Guide](docs/sdk-integration.md), [`sdk/README.md`](sdk/README.md) |
 | CLI usage | [`cli/README.md`](cli/README.md) |
 | Indexer REST API | [Indexer API Reference](docs/api-reference.md), [`indexer/README.md`](indexer/README.md) |
