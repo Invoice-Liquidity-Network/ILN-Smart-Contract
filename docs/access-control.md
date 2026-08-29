@@ -412,3 +412,35 @@ on-chain that no one off-chain can account for, with no way to notice either.
   catch drift introduced directly on-chain.
 - Before the multi-sig admin is configured, the check is a no-op (`ADMIN_ADDRESS` is
   unset), so it does not block CI ahead of launch.
+
+## 15. On-Chain Admin Action Audit Log (Issue #645)
+
+For SCF review and community trust, every admin-gated call that actually executes in
+`invoice_liquidity` (`set_admin`, `pause`/`unpause`, `add_token`/`remove_token`,
+`update_fee_rate`, `update_max_discount`, `update_decay_params`, `update_fee_tiers`,
+`set_min_payer_reputation`, `set_price_oracle`, `set_max_oracle_age`,
+`set_distribution_contract`, `set_insurance_pool`, `upgrade`, `migrate`,
+`resolve_appeal`, `resolve_dispute`) is appended to a bounded on-chain ring buffer,
+independent of the per-action events (`AdminChanged`, `ParameterUpdated`, `TokenAdded`,
+...) that were already published.
+
+- **Query**: `get_recent_admin_actions(limit: u32) -> Vec<AdminActionRecord>` — a public,
+  unauthenticated view returning up to `limit` entries (capped at
+  `ADMIN_ACTION_LOG_CAPACITY = 50`), newest first. Each `AdminActionRecord` carries a
+  monotonic `seq`, the `action` name, the `admin` address that authorized it, and the
+  `ledger`/`timestamp` at which it executed.
+- **Why a view instead of replaying events**: reconstructing "what has the admin done
+  recently" from the Horizon event stream requires paging through the full history and
+  filtering by topic; this view answers the same question in a single contract call, with
+  no off-chain indexing dependency — useful for reviewers or dashboards that just need a
+  recent-activity snapshot.
+- **Recording point**: entries are written in `access::record_admin_action`, called
+  immediately after each function's `require_admin` check succeeds. Because Soroban
+  transactions are atomic, a log entry is rolled back along with the rest of the
+  transaction if the function later errors (e.g. `RateLimited`, `InvoiceNotFound`) — so
+  the log only ever reflects actions that actually took effect, not merely
+  authorized-but-failed attempts.
+- **Bounded, not a replacement**: the ring buffer only retains the most recent 50 entries
+  and is not a substitute for the unbounded event log — it is a cheap on-chain
+  "recent activity" view layered on top of it. Long-horizon audit trails should still be
+  built from indexed events (see [event-types.md](event-types.md)).
