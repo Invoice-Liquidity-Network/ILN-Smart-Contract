@@ -101,5 +101,63 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_reputation_updates_address_id ON reputation_updates(address, id);
     CREATE INDEX IF NOT EXISTS idx_stats_history_date ON stats_history(date);
     CREATE INDEX IF NOT EXISTS idx_indexer_state_key ON indexer_state(state_key);
+
+    CREATE TABLE IF NOT EXISTS insurance_pool_enrollments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lp_address TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      enrolled_at INTEGER NOT NULL,
+      ledger INTEGER NOT NULL,
+      transaction_hash TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      UNIQUE(lp_address, contract_id, transaction_hash, event_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS insurance_pool_premiums (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lp_address TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      premium_at INTEGER NOT NULL,
+      ledger INTEGER NOT NULL,
+      transaction_hash TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      UNIQUE(lp_address, contract_id, transaction_hash, event_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS insurance_pool_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      lp_address TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      payout_amount TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      ledger INTEGER NOT NULL,
+      transaction_hash TEXT NOT NULL,
+      event_index INTEGER NOT NULL,
+      UNIQUE(invoice_id, contract_id, transaction_hash, event_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS insurance_pool_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contract_id TEXT NOT NULL UNIQUE,
+      pool_balance TEXT NOT NULL DEFAULT '0',
+      total_premiums_collected TEXT NOT NULL DEFAULT '0',
+      total_claims_paid TEXT NOT NULL DEFAULT '0',
+      enrolled_lp_count INTEGER NOT NULL DEFAULT 0,
+      total_enrollment_events INTEGER NOT NULL DEFAULT 0,
+      last_updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_insurance_enrollments_lp ON insurance_pool_enrollments(lp_address);
+    CREATE INDEX IF NOT EXISTS idx_insurance_enrollments_contract ON insurance_pool_enrollments(contract_id);
+    CREATE INDEX IF NOT EXISTS idx_insurance_enrollments_timestamp ON insurance_pool_enrollments(enrolled_at);
+    CREATE INDEX IF NOT EXISTS idx_insurance_premiums_lp ON insurance_pool_premiums(lp_address);
+    CREATE INDEX IF NOT EXISTS idx_insurance_premiums_contract ON insurance_pool_premiums(contract_id);
+    CREATE INDEX IF NOT EXISTS idx_insurance_premiums_timestamp ON insurance_pool_premiums(premium_at);
+    CREATE INDEX IF NOT EXISTS idx_insurance_claims_invoice ON insurance_pool_claims(invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_insurance_claims_lp ON insurance_pool_claims(lp_address);
+    CREATE INDEX IF NOT EXISTS idx_insurance_claims_contract ON insurance_pool_claims(contract_id);
+    CREATE INDEX IF NOT EXISTS idx_insurance_claims_timestamp ON insurance_pool_claims(claimed_at);
   `);
 }

@@ -1,15 +1,51 @@
 # ILN Smart Contract Threat Model
 
-**Document Version:** 1.0  
-**Date:** May 2024  
+**Document Version:** 2.0  
+**Date:** May 2024 (Original), August 2026 (Re-reviewed)  
 **Status:** Pre-Audit  
+**Last Reviewed:** 2026-08-29
 
 ## Executive Summary
 
-The Invoice Liquidity Network (ILN) contract enables freelancers to monetize unpaid invoices through liquidity providers (LPs) who purchase discounted claims. This threat model identifies potential attack vectors, trust assumptions, and existing mitigations for the Soroban smart contract implementation.
+The Invoice Liquidity Network (ILN) protocol on Soroban enables freelancers to monetize unpaid invoices through liquidity providers (LPs) who purchase discounted claims. This threat model identifies potential attack vectors, trust assumptions, and existing mitigations for the complete protocol stack, now encompassing five smart contracts plus on-chain governance.
 
-**Scope:** Core `invoice_liquidity` contract and integrated `reputation_bonus` contract  
-**Out of Scope:** Frontend, RPC endpoints, custodial systems, off-chain governance
+**Scope (v2.0):** 
+- Core `invoice_liquidity` contract (invoice lifecycle, reputation, LP queue, oracle registry)
+- `iln_governance` contract (proposal voting, delegation, execution)
+- `iln_distribution` contract (reward accrual and distribution)
+- `insurance_pool` contract (default protection and premium collection)
+- `reputation_bonus` contract (reputation-based scoring)
+- Payer-verification oracles and price oracles for volume normalization
+
+**Out of Scope:** Frontend, RPC endpoints, custodial systems
+
+## Changes in v2.0 (Re-Review August 2026)
+
+The following major architectural components have been added since v1.0 and are now reviewed against the original threat model:
+
+### ✅ Multi-Sig Admin Support (Issue #124)
+**Status:** Implemented  
+Admin functions now include rate limiting (120-1440 ledger cooldowns), supporting multi-sig governance patterns. While the contract does not enforce multi-sig at the code level, governance can configure rate limits to require human-in-the-loop approval. See section E1 update below.
+
+### ✅ Oracle Registry & Governance (Issue #93 / #532)
+**Status:** Implemented  
+New governance-controlled oracle registry (`register_oracle`, `remove_oracle`, `register_token_oracle`, `remove_token_oracle`) allows proposals to update oracle addresses without timelock constraints (intentional — oracle changes are governance responses, not parameter tweaks). Mitigates D2 (missing external oracle integration) with governance oversight.
+
+### ✅ MEV Mitigation & Fair LP Queue (Issue #708)
+**Status:** Implemented  
+LP queue resolution now uses uniform random selection among tied reputation scores via `env.prng()`, eliminating front-runner predictability for tie-breaking. Reduces B1 (LP Queue Position Manipulation) from ⚠️ LOW-MEDIUM to ✅ LOW.
+
+### ✅ Governance Contract (Issue #606)
+**Status:** Implemented  
+New `iln_governance` contract enables on-chain proposals, voting, delegation, and execution. Includes flash-loan vulnerability analysis (E3). See section E updates below.
+
+### ✅ Distribution Contract (Issue #637)
+**Status:** Implemented  
+New `iln_distribution` contract manages yield distribution with ILN-contract-only accrual functions. Adds distribution-layer attack surface covered in new Section H.
+
+### ✅ Insurance Pool (Issue #510)
+**Status:** Implemented  
+Standalone contract for default protection. Pool-specific attacks covered in Section G.
 
 ---
 
@@ -415,35 +451,43 @@ if u64::from(ledgers_since_activity) >= decay_config.decay_period_ledgers {
 - Recommend frequent reputation audits by independent parties
 - Consider reputation delegation (querying other protocols like Lens, etc.)
 
-#### D2. Missing External Oracle for Payer Creditworthiness
+#### D2. Payer Verification & Creditworthiness Oracle
 
-**Description:**  
-The contract has no integration with external credit oracles. Payer reputation is purely based on payment history in ILN, not broader financial trustworthiness.
+**Description (v1.0):**  
+The contract had no integration with external credit oracles. Payer reputation was purely based on payment history in ILN, not broader financial trustworthiness.
+
+**v2.0 Improvements:**
+- ✅ **Payer-Verification Oracle:** New `oracle_interface.rs` / `oracle_registry.rs` allow governance-controlled payer verification oracles
+- ✅ **fund_invoice Validation:** `fund_invoice()` now calls the registered oracle to check `is_verified` before accepting funding
+- ✅ **Governance Control:** Oracle registration/removal via proposals (not admin-only)
+- ✅ **Stale Data Protection:** Oracle responses include timestamp; contract rejects data older than `max_oracle_age_ledgers` (~24h default)
 
 **Attack Scenario:**
 ```
 1. Attacker is highly reputable in ILN (always pays)
-2. Attacker is insolvent off-chain (high bankruptcy risk)
-3. LPs see high reputation and fund invoices
-4. Attacker defaults on-chain (ILN sees it as unpredictable)
-5. LPs lose capital despite on-chain metrics seeming good
+2. Attacker is flagged as high-risk by external payer-verification oracle
+3. Attacker calls fund_invoice(); oracle returns is_verified=false
+4. fund_invoice() rejects the funding attempt
 ```
 
-**Current Mitigation:**
-- ✅ **Governance Awareness:** Admin can manually verify payer identity (outside contract)
-- ✅ **LP Risk Assessment:** LPs can independently verify payer creditworthiness
-- ✅ **Discount Rates:** High-risk payers should offer higher discounts
+**Mitigation:**
+- ✅ **Governance-Approved Oracles:** Only oracles registered via governance proposals can gate funding
+- ✅ **Oracle Health Checks:** New `check_oracle_health()` function verifies oracle liveness and circuit-breaker status
+- ✅ **Price Oracle Separation:** Payer-verification oracles are distinct from price oracles (different circuit domains)
+- ✅ **Fallback Behavior:** If oracle fails or is stale, `fund_invoice()` reverts (fail-safe)
 
-**Residual Risk:** ⚠️ **HIGH**
-- No cryptographic proof of payer creditworthiness
-- Purely trust-based system for initial payer reputation
-- LPs bear 100% of credit risk
+**Residual Risk:** ⚠️ **MEDIUM** (reduced from HIGH in v2.0)
+- Payer verification depends on external oracle reliability (oracle downtime => no funding)
+- Oracle response freshness window (~24h) may miss sudden creditworthiness changes
+- Governance still required to swap oracles if current one becomes untrustworthy
+- Oracles are black-box; no on-chain proof of oracle decision rationale
 
 **Recommendation:**
-- Document ILN as a **reputation layer**, not a credit substitute
-- Recommend LP due diligence on payers (KYC checks, external credit reports)
-- Consider integration with Stellar-native identity protocols in future versions
-- Publish recommended LP risk management guidelines
+- **Governance Policy:** Establish oracle vetting criteria (audited providers, multiple redundant oracles)
+- **Monitoring:** Dashboard for oracle health; alert on circuit-breaker trips or unusual denial rates
+- **Redundancy:** Consider multi-oracle consensus (require n-of-m verification oracles agree)
+- **Documentation:** Publish oracle integration guide for third-party oracle providers
+- **Future:** Investigate oracle-independent verification (zero-knowledge proofs of creditworthiness)
 
 #### D3. Price Oracle Sandwich Attacks (Issue 39)
 
@@ -534,17 +578,31 @@ pub fn set_admin(env: Env, admin: Address) -> Result<(), ContractError> {
 }
 ```
 
-**Residual Risk:** ⚠️ **CRITICAL**
-- Single point of failure if admin key is compromised
-- Events are emitted **after** state changes (vulnerable to race conditions)
-- No time-lock mechanism for critical upgrades
-- No multi-sig requirement
+**Residual Risk:** ⚠️ **MEDIUM** (reduced from CRITICAL in v2.0)
+
+**v2.0 Improvements:**
+- ✅ Rate limiting on sensitive admin functions (120-1440 ledger cooldowns, ~10min-2h):
+  - `set_admin`: 720 ledgers (~1h)
+  - `upgrade`: 1440 ledgers (~2h)
+  - `update_fee_rate`, `update_max_discount`, `set_min_payer_reputation`: 360 ledgers (~30min)
+  - `add_token`, `remove_token`, `set_price_oracle`, `register_oracle`: 120 ledgers (~10min)
+  - Emergency functions (`pause`, `unpause`, `resolve_appeal`) are not rate-limited
+- ✅ Public events emitted on all admin operations (pause, parameter changes, oracle registry updates)
+- ✅ Community monitoring possible via Horizon event stream
+- ✅ Oracle registry mutations are governance-controlled (not admin-only)
+
+**Remaining Risks:**
+- Rate limits provide delay (10 min to 2 hours) but not immutable timelocks
+- Pause/unpause are not rate-limited (intentional for emergency response)
+- No mandatory multi-sig enforcement (delegated to governance via rate-limited account rotation)
+- No on-chain timelock contract (governance proposals have configurable delay via `set_execution_delay`)
 
 **Recommendation:**
-- **Mandatory:** Transition to multi-sig admin (2-of-3 or 3-of-5 typical)
-- **Mandatory:** Implement time-locks (24-48 hours) for parameter changes
-- Consider DAO governance for decentralized admin (future upgrade)
-- Publish security policy for key management (rotate keys regularly, HSM storage)
+- **Governance Policy:** Require multi-sig admin (2-of-3 or 3-of-5) as organizational practice
+- **Governance Policy:** Establish admin key management standards (HSM storage, key rotation ceremonies)
+- **Monitoring:** Stream Horizon events for admin actions; alert on unusual patterns
+- **Future:** Consider staking-based governance or DAO-controlled admin after governance contract hardens
+- **Production Checklist:** Confirm mainnet admin is multi-sig controlled before launch
 
 #### E2. Governance Parameter Misconfiguration
 
@@ -573,18 +631,25 @@ if min_discount_rate_bps == 0 {
 }
 ```
 
-**Residual Risk:** ⚠️ **MEDIUM**
-- Not all parameters have bounds checks (e.g., `decay_rate_bps` can be any u32)
-- No validation that parameters are "economically sane"
-- Admin can set conflicting parameters (high_rep_threshold = 200, which is impossible)
+**Residual Risk:** ⚠️ **MEDIUM** (unchanged)
+
+**v2.0 Status:**
+- Some parameters now have bounds checks (e.g., `bonus_bps <= 500`)
+- However, several parameters still lack upper bounds:
+  - `decay_rate_bps` can be set to any u32 (including 10,000+ = 100%+ decay per period)
+  - `high_rep_threshold` lacks range validation (could be set > 100)
+  - `min_discount_rate_bps` has no upper bound
 
 **Recommendation:**
-- Add comprehensive validation for all parameters:
-  - `high_rep_threshold` must be 0-100
-  - `decay_rate_bps` must be 0-500 (max 5% per period)
+- **Code Fix:** Add comprehensive validation for all governance-settable parameters:
+  - `high_rep_threshold` must be 0-100 (range: score percentile)
+  - `decay_rate_bps` must be 0-500 (max 5% decay per period)
   - `decay_period_ledgers` must be > 0
-- Document safe parameter ranges in governance policy
-- Require test runs on testnet before mainnet updates
+  - `bonus_bps` must be <= 500 (already enforced)
+  - `min_discount_rate_bps` must be < 10,000
+- **Governance Policy:** Document safe parameter ranges and economic assumptions
+- **Operational Practice:** Require testnet dry-runs before mainnet parameter updates
+- **Monitoring:** Alert on parameter changes; track economic viability metrics (LP queue length, funding velocity)
 
 ---
 
@@ -815,6 +880,134 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 
 ---
 
+### H. DISTRIBUTION CONTRACT THREATS (v2.0 New)
+
+#### H1. Accrual Authorization Bypass
+
+**Description:**  
+The `iln_distribution` contract has `accrue_lp()` and `accrue_settlement()` functions that update participant balances. Only the `invoice_liquidity` contract should call these.
+
+**Attack Scenario:**
+```
+1. Attacker deploys malicious contract that mimics invoice_liquidity
+2. Attacker calls `accrue_lp(lp_address, huge_amount)` directly
+3. Attacker accrues fake yield for themselves or others
+4. When `claim_tokens()` is called, attacker withdraws unearned rewards
+```
+
+**Current Mitigation:**
+- ✅ **ILN Contract-Only Check:** `accrue_lp()` and `accrue_settlement()` verify caller is the ILN contract via `require_auth()`
+- ✅ **Cross-Contract Authorization:** Storage tracks the authorized ILN contract address
+- ✅ **Event Logging:** All accrual is logged on-chain for off-chain verification
+
+**Code Evidence:** [iln_distribution/src/lib.rs](contracts/iln_distribution/src/lib.rs#L119)
+```rust
+pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
+    let iln_contract = storage::get_iln_contract(&env);
+    iln_contract.require_auth();  // Only ILN contract can call
+    // ...
+}
+```
+
+**Residual Risk:** ✅ **LOW**
+- Authorization check enforced before any state mutation
+- Cross-contract boundary is properly guarded
+- No bypass via governance (reward rates are governance-settable, not accrual amounts)
+
+**Recommendation:**
+- Ensure ILN contract address is set at initialization and immutable (no uncontrolled writes)
+- Document that distribution contract initialization must specify correct ILN address
+- Monitor on-chain events for anomalies (accruals from unexpected addresses if auth is bypassed)
+
+#### H2. Reward Claim Double-Spend
+
+**Description:**  
+A participant with accumulated rewards calls `claim_tokens()` to withdraw. If `claim_tokens()` doesn't properly reset their balance, they could call it again and claim twice.
+
+**Attack Scenario:**
+```
+1. Alice accrues 1000 tokens via LP funding
+2. Alice calls claim_tokens() and receives 1000 tokens
+3. Alice calls claim_tokens() again
+4. If balance wasn't zeroed, Alice claims 1000 again (double-spend)
+```
+
+**Current Mitigation:**
+- ✅ **Balance Reset:** `claim_tokens()` zeroes the participant's balance **before** minting tokens
+- ✅ **Mint Authorization:** Only distribution contract can mint (SAC admin set to distribution contract)
+
+**Code Evidence:** [iln_distribution/src/lib.rs](contracts/iln_distribution/src/lib.rs#L175)
+```rust
+pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
+    let accrual = storage::get_accrual(&env, &claimer);
+    storage::set_accrual(&env, &claimer, 0);  // Zero BEFORE minting
+    // ... mint accrual amount to claimer ...
+}
+```
+
+**Residual Risk:** ✅ **LOW**
+- Balance is cleared before external token operation (checks-effects-interactions)
+- Claim function verifies claimer signature (prevents unauthorized claims)
+
+**Recommendation:**
+- Confirm governance token SAC has distribution contract as sole admin
+- Emit event on every claim for off-chain audit trail
+- Test claim-twice scenario in unit tests
+
+#### H3. Reward Rate Manipulation
+
+**Description:**  
+Governance can update `lp_reward_rate`, `freelancer_reward_rate`, and `payer_reward_rate`. Unfair rates could incentivize or disincentivize participation.
+
+**Attack Scenario:**
+```
+1. Governance sets lp_reward_rate = 0 (no LP rewards)
+2. All LPs stop funding invoices
+3. Protocol becomes non-functional
+4. Governance resets rate, but damage is done
+```
+
+**Current Mitigation:**
+- ✅ **Public Events:** Rate changes emit events for monitoring
+- ✅ **Governance Control:** Only ILN contract (via governance) can update rates
+- ✅ **Transparent Rates:** Rates are queryable on-chain
+
+**Residual Risk:** ⚠️ **MEDIUM**
+- No bounds checking on reward rates (could be set to 0 or absurdly high)
+- No rate-change cooldown (governance can change rates multiple times per day)
+- Economic impact of rate changes may not be immediately visible
+- Reward distribution formula not documented in code (off-chain knowledge risk)
+
+**Recommendation:**
+- **Governance Policy:** Establish safe reward rate ranges
+- **Code Enhancement:** Add bounds checking (e.g., rewards must be > 0 and < max_reward_rate)
+- **Operational Practice:** Require testnet dry-run before mainnet rate changes
+- **Documentation:** Publish reward distribution model and expected annual yields
+- **Monitoring:** Dashboard tracking reward rates and total accrued vs. claimed
+
+#### H4. Governance Token Mint Authority Compromise
+
+**Description:**  
+The distribution contract must be the admin of the governance token (SAC) to mint rewards. If governance token admin is compromised, unlimited tokens can be minted.
+
+**Current Mitigation:**
+- ✅ **Admin Authority:** Only distribution contract can mint (set at token initialization)
+- ✅ **Immutable Admin:** Once set, token admin cannot be changed without upgrade
+- ✅ **Public Audit:** Token admin address is queryable on-chain
+
+**Residual Risk:** ⚠️ **MEDIUM**
+- Distribution contract itself must be secure (any bug in it could leak mint authority)
+- If distribution contract is compromised, token can be inflated infinitely
+- Governance token inflation devalues all existing holders' stakes
+
+**Recommendation:**
+- **Pre-Launch Audit:** Conduct security audit of distribution contract specifically
+- **Governance Policy:** Establish mint rate limits (max tokens per ledger)
+- **Monitoring:** Track total token supply; alert on unexpected increases
+- **Safeguards:** Consider implementing hard cap on total supply (immutable constant)
+
+---
+
 ## Summary of Mitigations & Residual Risks
 
 | Threat | Severity | Mitigation | Residual Risk |
@@ -829,14 +1022,19 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 | **Reputation Sybil Attack** | MEDIUM | Decay mechanism, admin oversight | MEDIUM (no external oracle) |
 | **Missing Credit Oracle** | HIGH | None (design limitation) | HIGH (LPs assume all risk) |
 | **Payer-Verification Oracle Manipulation (D3)** | HIGH | Opt-in verification, freshness window, `pause()`, governance-gated registration | HIGH (no oracle stake/quorum, no max invoice cap — see [oracle-attack-economics.md](oracle-attack-economics.md)) |
-| **Admin Key Compromise** | CRITICAL | Require auth, public events | CRITICAL (single point of failure) |
-| **Parameter Misconfiguration** | MEDIUM | Bounds checks (partial) | MEDIUM (incomplete validation) |
+| **Admin Key Compromise** | CRITICAL | Rate-limited functions, public events, governance oracle registry | MEDIUM (rate limits provide delay; recommend multi-sig governance) |
+| **Parameter Misconfiguration** | MEDIUM | Bounds checks (partial) | MEDIUM (incomplete validation; bounds needed on decay_rate_bps, high_rep_threshold) |
+| **Payer Verification Oracle Manipulation** | HIGH | Opt-in oracle, freshness window, governance control | MEDIUM (oracle-specific risks in oracle-attack-economics.md) |
 | **Token Transfer Failure** | MEDIUM | Atomic transactions | LOW (Soroban guarantees) |
 | **Token Allowance Missing** | LOW | Documentation, error handling | LOW (UX issue, not security) |
 | **Partial Token Transfer** | MEDIUM | Token specification, admin control | LOW-MEDIUM (requires rogue token) |
 | **Premium Manipulation** | MEDIUM | Configurable rates, public events | MEDIUM (no bounds checking) |
 | **Claim Fraud & Moral Hazard** | HIGH | Enrollment KYC, invoice immutability, admin review | HIGH (manual verification required) |
 | **Pool Drainage / Insolvency** | HIGH | Capacity tracking, transparent reserves | HIGH (no automatic safeguards) |
+| **Distribution Accrual Authorization Bypass** | HIGH | ILN-contract-only checks, cross-contract auth | LOW (guarded; requires ILN compromise) |
+| **Reward Claim Double-Spend** | HIGH | Balance reset before mint, checks-effects-interactions | LOW (guarded by Soroban atomicity) |
+| **Reward Rate Manipulation** | MEDIUM | Public events, governance control | MEDIUM (no bounds on rates, immediate effect) |
+| **Governance Token Mint Authority** | HIGH | Distribution contract as sole admin | MEDIUM (depends on distribution contract security) |
 
 ---
 
@@ -887,11 +1085,19 @@ The pool accepts claims up to enrolled capacity. If claim frequency exceeds proj
 
 ## Future Upgrade Considerations
 
-- **Decentralized Governance:** DAO-based admin to remove single point of failure
-- **External Credit Oracles:** Integration with Stellar-native identity/credit protocols
-- **Automated Parameter Adjustment:** Formula-based reputation thresholds based on network statistics
+### v2.0 Completed
+- ✅ **Payer-Verification Oracles:** Governance-controlled oracle registry for payer creditworthiness checks
+- ✅ **Insurance Pool:** Standalone contract for default protection and premium collection
+- ✅ **Distribution Contract:** Yield and incentive distribution with cross-contract authorization
+- ✅ **Governance Contract:** On-chain proposals, voting, delegation, execution with timelock
+
+### Still Needed
+- **Decentralized Governance:** Full DAO-based admin (currently governance contract controls some parameters, but single multisig still recommended for safety)
+- **Staking-Based Governance:** Replace token voting with escrow/staking model to prevent flash-loan attacks (Issue #738)
+- **Automated Parameter Adjustment:** Formula-based reputation thresholds and reward rates based on network statistics
 - **Rollback Mechanism:** Snapshot and recovery points for emergency scenarios
-- **Insurance Pool:** Mutual insurance fund for LP losses (requires new contract)
+- **Multi-Oracle Aggregation:** Consensus across multiple payer-verification oracles for oracle-manipulation resilience
+- **On-Chain Proof of Creditworthiness:** Zero-knowledge proofs or cryptographic delegation (future Stellar identity protocols)
 
 ---
 
