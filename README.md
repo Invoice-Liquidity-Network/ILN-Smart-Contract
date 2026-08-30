@@ -215,6 +215,9 @@ start at the [Documentation Index](docs/index.md), or jump to:
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, changesets, PR size guidelines,
 code style, and the review process.
 
+For bug reports, integration questions, and feature requests, see
+[Support Channels](docs/support-channels.md).
+
 ---
 
 ## Security
