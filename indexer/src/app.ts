@@ -10,6 +10,13 @@ import { createApiKeyMiddleware } from './middleware/apiKey.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { createEventsRouter } from './api/routes/events.js';
 import { createHealthRouter, type HealthCheckDeps } from './api/routes/health.js';
+import { createProtocolStatusRouter } from './api/routes/protocolStatus.js';
+import {
+  createProtocolStatusService,
+  type ProtocolStatusService,
+} from './services/protocolStatusService.js';
+import type { ChainReader } from './reconciliation/chainReader.js';
+import { createRequestIdMiddleware } from './middleware/requestId.js';
 import { mountGraphQL } from './api/graphql/index.js';
 
 export interface CreateAppOptions {
@@ -22,6 +29,14 @@ export interface CreateAppOptions {
   graphqlMaxDepth?: number;
   graphqlMaxComplexity?: number;
   health?: HealthCheckDeps;
+  /**
+   * Optional on-chain reader for the public `/protocol-status` endpoint
+   * (Issue #775). When omitted, `/protocol-status` responds `503
+   * { configured: false }`.
+   */
+  chainReader?: Pick<ChainReader, 'getProtocolStatus'>;
+  /** Pre-built protocol-status service (overrides `chainReader`); for tests. */
+  protocolStatusService?: ProtocolStatusService;
 }
 
 export function createApp(
@@ -41,6 +56,9 @@ export function createApp(
       ? options.rateLimitMax * 10
       : config.rateLimitApiKeyMax);
 
+  // Correlation-ID first so every downstream log line for the request is
+  // tagged (Issue #776).
+  app.use(createRequestIdMiddleware());
   app.use(express.json());
   // API key auth must run before rate limiting so authenticated traffic gets
   // the higher tier and is keyed by API key rather than IP.
@@ -50,7 +68,9 @@ export function createApp(
       anonymousLimit: rateLimitAnonymousMax,
       apiKeyLimit: rateLimitApiKeyMax,
       windowMs: rateLimitWindowMs,
-      skipPaths: ['/health'],
+      // `/protocol-status` is a public incident endpoint external monitors
+      // poll frequently — exclude it from rate limiting like `/health`.
+      skipPaths: ['/health', '/protocol-status'],
     })
   );
 
@@ -70,6 +90,11 @@ export function createApp(
     healthDeps.getChainTipLedger = options.health.getChainTipLedger;
   }
   app.use(createHealthRouter(db, healthDeps));
+
+  const protocolStatusService =
+    options.protocolStatusService ??
+    createProtocolStatusService({ reader: options.chainReader });
+  app.use(createProtocolStatusRouter(protocolStatusService));
 
   app.use(createLeaderboardRouter(db));
   app.use(createReputationRouter(db));
