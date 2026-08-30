@@ -20,8 +20,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | Upgrade path tested | Test upload, deploy, migration, rollback decision points, and post-upgrade smoke checks. | Contracts lead | In progress | [Upgrade Guide](upgrade-guide.md) |
 | Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Not started | [Access Control](access-control.md) |
-| Multisig disaster-recovery plan rehearsed | Provision a recovery signer, diversify custody, and table-top the lost/compromised-majority runbook with the actual signer group before launch. | Governance lead | Not started | [Disaster Recovery](disaster-recovery-multisig-signers.md) |
-| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout](storage-layout.md) |
+| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout Freeze Sign-off](storage-layout.md#10-storage-layout-freeze--sign-off-gate-issue-651) |
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
 | Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | In progress | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) |
 | Contract IDs published | Publish verified mainnet contract IDs and SAC addresses after deployment. | Release lead | Not started | [README](../README.md) |
@@ -46,7 +45,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Glossary complete | Publish protocol terminology for DeFi, invoice factoring, Stellar, and ILN-specific terms. | Docs lead | Complete | [#301](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/301) |
 | SDK guide complete | Confirm SDK examples match current contract IDs, methods, and error handling. | SDK lead | In progress | [SDK Integration](sdk-integration.md) |
 | Security docs linked | Link security policy from root, docs index, and release checklist. | Docs lead | In progress | [Security Policy](security.md) |
-| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
+| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | In progress | [Mainnet Launch Notes](mainnet-launch-notes.md) |
 
 ## Community
 

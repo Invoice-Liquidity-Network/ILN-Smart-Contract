@@ -1,0 +1,26 @@
+name: Mainnet/Testnet Config Drift Check
+
+on:
+  pull_request:
+    paths:
+      - ".contracts-testnet.env"
+      - ".contracts-mainnet.env"
+      - "scripts/check-env-config-drift.ts"
+  schedule:
+    # Catches drift introduced without a PR touching a tracked env file,
+    # e.g. an env file edited directly on a branch that changed unrelated paths.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check-env-config-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check for mainnet/testnet config drift
+        run: npx tsx scripts/check-env-config-drift.ts

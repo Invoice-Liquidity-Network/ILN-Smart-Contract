@@ -19,7 +19,25 @@ procedure can — and must — be rehearsed before it is run for real.
 - [ ] `STELLAR_MAINNET_DEPLOYER_SECRET` available to whoever runs the deploy (not
       committed anywhere — pull from your secret manager for the duration of the run)
 - [ ] Mainnet USDC SAC contract address confirmed and exported as `MAINNET_USDC_SAC`
+- [ ] `.contracts-mainnet.env` passes the config drift check (see below) once it exists
 - [ ] Release lead and one additional maintainer both present for the live run
+
+## Config drift check (testnet vs. mainnet)
+
+Once `.contracts-mainnet.env` exists, run
+[`scripts/check-env-config-drift.ts`](../scripts/check-env-config-drift.ts) before
+deploying:
+
+```bash
+npx tsx scripts/check-env-config-drift.ts
+```
+
+This catches the class of bug where `.contracts-testnet.env` and
+`.contracts-mainnet.env` silently diverge — a missing key, a `NETWORK=` value that
+doesn't match the file it's in, or a value (contract ID, admin address, tunable
+constant) that was copy-pasted between networks and never updated for mainnet. It
+also runs in CI on every change to either env file — see
+[Env Config Drift Check](../.github/workflows/env-config-drift-check.yml).
 
 ## Step 1 — Dry run
 
