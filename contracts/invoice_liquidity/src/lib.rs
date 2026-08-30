@@ -223,6 +223,7 @@ impl InvoiceLiquidityContract {
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "set_admin");
         let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
@@ -240,6 +241,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_rate");
 
         let old_rate: u32 = env
             .storage()
@@ -269,6 +271,7 @@ impl InvoiceLiquidityContract {
     pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_max_discount");
 
         let old_rate: u32 = env
             .storage()
@@ -305,6 +308,7 @@ impl InvoiceLiquidityContract {
     ) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_decay_params", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_decay_params");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         let mut config = crate::storage::get_config(&env).ok_or(ContractError::Unauthorized)?;
@@ -359,6 +363,7 @@ impl InvoiceLiquidityContract {
             "set_distribution_contract",
             DEFAULT_RATE_LIMIT_LEDGERS,
         )?;
+        record_admin_action(&env, "set_distribution_contract");
 
         let old_distribution_contract: Option<Address> = env
             .storage()
@@ -387,6 +392,7 @@ impl InvoiceLiquidityContract {
     pub fn set_price_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_price_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_price_oracle");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_oracle = crate::storage::get_config(&env).and_then(|c| c.price_oracle);
         crate::config::set_price_oracle(&env, &admin, oracle.clone())
@@ -416,6 +422,7 @@ impl InvoiceLiquidityContract {
     pub fn set_max_oracle_age(env: Env, max_age_ledgers: u64) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_max_oracle_age", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_max_oracle_age");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_max_age = crate::storage::get_config(&env)
             .map(|c| c.max_oracle_age_ledgers)
@@ -623,6 +630,7 @@ impl InvoiceLiquidityContract {
     pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_insurance_pool", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_insurance_pool");
         crate::storage::set_insurance_pool(&env, &pool);
         Ok(())
     }
@@ -637,6 +645,7 @@ impl InvoiceLiquidityContract {
     pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "add_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "add_token");
 
         let token_client = token_client(&env, &token);
         let contract_address = env.current_contract_address();
@@ -697,6 +706,7 @@ impl InvoiceLiquidityContract {
     pub fn remove_token(env: Env, token: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "remove_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "remove_token");
 
         env.storage()
             .persistent()
@@ -745,6 +755,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn pause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "pause");
 
         set_paused(&env, true);
         env.events().publish(
@@ -759,6 +770,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn unpause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "unpause");
 
         set_paused(&env, false);
         env.events().publish(
@@ -791,6 +803,7 @@ impl InvoiceLiquidityContract {
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "upgrade", UPGRADE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "upgrade");
 
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
@@ -810,6 +823,15 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
+    /// Return up to `limit` most recent executed admin actions, newest
+    /// first, so admin activity can be reviewed on-chain (e.g. by SCF
+    /// reviewers or the community) without replaying the full event log
+    /// (Issue #645). Capped at `ADMIN_ACTION_LOG_CAPACITY` entries.
+    /// Access: Anyone
+    pub fn get_recent_admin_actions(env: Env, limit: u32) -> Vec<AdminActionRecord> {
+        access::get_recent_admin_actions(&env, limit)
+    }
+
     // Issue #539: Return the current on-chain storage schema version.
     pub fn get_storage_version(env: Env) -> u32 {
         env.storage()
@@ -823,6 +845,7 @@ impl InvoiceLiquidityContract {
     // layout changes to be applied atomically after an upgrade.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "migrate");
 
         let current: u32 = env
             .storage()
@@ -869,6 +892,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_tiers");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         env.storage().instance().set(&StorageKey::FeeTiers, &tiers);
@@ -2486,6 +2510,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_appeal");
 
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
@@ -2626,6 +2651,7 @@ impl InvoiceLiquidityContract {
         lock_reentrancy(&env)?;
 
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_dispute");
 
         if !invoice_exists(&env, invoice_id) {
             unlock_reentrancy(&env);
@@ -2860,6 +2886,7 @@ impl InvoiceLiquidityContract {
             "set_min_payer_reputation",
             ECONOMIC_PARAM_COOLDOWN_LEDGERS,
         )?;
+        record_admin_action(&env, "set_min_payer_reputation");
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_value = get_min_payer_reputation(&env);
         set_min_payer_reputation(&env, value);

@@ -18,6 +18,10 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
+    /// Issue #645: monotonically increasing count of admin actions ever
+    /// recorded in the admin action audit log (never decreases, even as
+    /// older ring-buffer entries are overwritten).
+    AdminActionCount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -42,6 +46,9 @@ pub enum DataKey {
     /// Used to enforce a minimum maturity delay before `resolve_fund_queue` may
     /// be called, preventing MEV / front-running (Issue #MEV-1).
     FundQueueOpenedAt(u64),
+    /// Issue #645: ring-buffer slot for the admin action audit log, indexed
+    /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
+    AdminActionLog(u32),
 
     // Stats (Persistent)
     TotalInvoices,
