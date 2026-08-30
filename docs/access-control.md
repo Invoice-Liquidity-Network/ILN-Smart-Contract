@@ -43,48 +43,104 @@ Authorized to process default claims against the insurance pool (typically the l
 Publicly accessible read or state-transition functions that do not require specific authorization.
 - **Can**: Read contract stats, query scores, resolve fund queues, and expire timed-out invoices.
 
-## 3. Instruction Permission Matrix
+## 3. Invoice Liquidity Contract — Permission Matrix
+
+### Core Invoice Operations
 
 | Instruction | Allowed Role(s) | Description |
 | ----------- | --------------- | ----------- |
 | `initialize` | Anyone | Initializes the contract once |
-| `set_admin` | Admin | Updates the contract administrator address |
-| `update_fee_rate` | Admin | Sets the protocol fee rate |
-| `update_max_discount` | Admin | Updates the maximum allowed discount rate |
-| `set_distribution_contract`| Admin | Updates the distribution contract address |
-| `add_token` | Admin | Adds a supported token to the protocol |
-| `remove_token` | Admin | Removes a supported token |
-| `pause` | Admin | Pauses the protocol for emergency |
-| `unpause` | Admin | Resumes protocol operations |
 | `get_contract_stats` | Anyone | Reads protocol statistics |
 | `submit_invoice` | Submitter | Submits a new invoice |
 | `update_invoice` | Submitter | Updates an existing un-funded invoice |
-| `submit_invoices_batch` | Submitter | Submits multiple invoices |
-| `join_fund_queue` | LP | Enqueues intent to fund an invoice |
-| `resolve_fund_queue` | Anyone | Selects the LP with highest reputation |
-| `fund_invoice` | LP | Funds a pending invoice |
+| `submit_invoices_batch` | Submitter | Submits multiple invoices at once |
+| `convert_invoice_token` | Submitter | Converts an invoice's token to another approved token |
 | `transfer_invoice` | Submitter | Transfers ownership of an invoice |
 | `cancel_invoice` | Submitter | Cancels an un-funded invoice |
+| `get_referral_stats` | Anyone | Reads referral code usage statistics |
+| `join_fund_queue` | LP | Enqueues intent to fund an invoice |
+| `resolve_fund_queue` | Anyone | Selects the LP with highest reputation from queue |
+| `fund_invoice` | LP | Funds a pending invoice (with oracle verification checks) |
 | `expire_invoice` | Anyone | Marks a pending expired invoice as Expired |
-| `mark_paid` | Payer | Pays off an invoice |
-| `claim_yield` | LP | Claims yield for a paid invoice |
+| `mark_paid` | Payer | Pays off a funded invoice |
+| `claim_yield` | LP | Claims yield earnings for a paid invoice |
 | `claim_default` | LP | Claims refund for a defaulted invoice |
 | `appeal_default` | Payer | Appeals an unfair default |
 | `resolve_appeal` | Admin | Approves or rejects a default appeal |
 | `payer_score` | Anyone | Reads a payer's reputation score |
 | `lp_score` | Anyone | Reads an LP's reputation score |
-| `suggested_discount_rate` | Anyone | Calculates discount rate based on score |
+| `suggested_discount_rate` | Anyone | Calculates discount rate based on payer score |
 | `get_invoice` | Anyone | Reads invoice details |
+| `list_invoices_by_submitter` | Anyone | Lists invoices submitted by a user (paginated) |
+| `list_invoices_by_lp` | Anyone | Lists invoices funded by an LP (paginated) |
 | `get_invoice_count` | Anyone | Reads total invoice count |
+
+### Admin Configuration
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `set_admin` | Admin | Updates the contract administrator address (rate-limited: ~1h) |
+| `update_fee_rate` | Admin | Sets the protocol fee rate (rate-limited: ~30min) |
+| `update_max_discount` | Admin | Updates the maximum allowed discount rate (rate-limited: ~30min) |
+| `update_decay_params` | Admin | Updates reputation decay rate and period |
+| `set_distribution_contract` | Admin | Updates the distribution contract address (rate-limited: ~10min) |
+| `update_fee_tiers` | Admin | Updates tiered fee structure for invoices by size |
+| `get_fee_tiers` | Anyone | Reads the current tiered fee configuration |
+| `set_min_payer_reputation` | Admin | Sets minimum payer reputation threshold (rate-limited: ~30min) |
+| `add_token` | Admin | Adds a supported token to the protocol (rate-limited: ~10min) |
+| `remove_token` | Admin | Removes a supported token (rate-limited: ~10min) |
+| `get_token_decimals` | Anyone | Reads decimal places for a supported token |
+| `pause` | Admin | Pauses the protocol for emergency (not rate-limited) |
+| `unpause` | Admin | Resumes protocol operations (not rate-limited) |
+| `upgrade` | Admin | Emits upgrade event for WASM hash change (rate-limited: ~2h) |
+| `get_version` | Anyone | Reads contract version string |
+| `get_storage_version` | Anyone | Reads storage schema version for migrations |
+| `migrate` | Admin | Executes storage migration logic for upgrades |
+
+### Oracle Registry & Price Oracle
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `set_price_oracle` | Admin | Updates the primary price oracle address (rate-limited: ~10min) |
+| `get_price_oracle` | Anyone | Reads the current price oracle address |
+| `set_max_oracle_age` | Admin | Updates the maximum acceptable oracle data age in ledgers (rate-limited: ~10min) |
+| `get_max_oracle_age` | Anyone | Reads the current max oracle age setting |
+| `register_oracle` | Admin | Registers an oracle for a specific feed type (not rate-limited; governance-critical) |
+| `remove_oracle` | Admin | Removes oracle registration for a feed type (not rate-limited; governance-critical) |
+| `register_token_oracle` | Admin | Registers an oracle for a specific token (not rate-limited; governance-critical) |
+| `remove_token_oracle` | Admin | Removes oracle registration for a token (not rate-limited; governance-critical) |
+| `get_oracle_for_token` | Anyone | Reads the registered oracle address for a given token |
+| `get_oracle_health` | Anyone | Reads cached oracle health status (accessible while contract is paused) |
+| `check_oracle_health` | Anyone | Performs live oracle health check and caches result (accessible while paused) |
+| `is_oracle_circuit_tripped` | Anyone | Checks if an oracle's circuit breaker is activated |
+| `reset_oracle_circuit` | Admin | Resets a circuit-tripped oracle's status |
+| `add_price_source` | Admin | Adds a price feed source for an oracle feed type |
+| `remove_price_source` | Admin | Removes a price feed source |
+| `get_price_sources` | Anyone | Reads all registered price sources for a feed type |
+| `set_max_price_deviation_bps` | Admin | Sets maximum acceptable price deviation in basis points |
+| `get_max_price_deviation_bps` | Anyone | Reads the max price deviation setting |
+| `get_verified_price` | Anyone | Queries and verifies price data from oracle (with deviation checks) |
+
+### Insurance Pool Integration
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `set_insurance_pool` | Admin | Updates the insurance pool contract address |
+| `get_insurance_pool` | Anyone | Reads the current insurance pool contract address |
+
+### Insurance Pool Contract
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `insurance_pool_claim` | Insurance Pool Admin (liquidity contract) | Files a claim for a defaulted invoice |
 | `insurance_pool_enroll` | LP | Opts into default-protection insurance |
 | `insurance_pool_deposit_premium` | LP | Pays premium to pool (auto-enrolls) |
-| `insurance_pool_claim` | Insurance Pool Admin | Files a claim for a defaulted invoice |
 | `insurance_pool_get_balance` | Anyone | Reads current pool balance |
 | `insurance_pool_get_coverage` | Anyone | Reads per-claim coverage cap |
 | `insurance_pool_is_enrolled` | Anyone | Checks LP enrollment status |
-| `insurance_pool_get_premiums_paid` | Anyone | Reads cumulative premiums by LP |
+| `insurance_pool_get_premiums_paid` | Anyone | Reads cumulative premiums paid by an LP |
 
-## 4. Insurance Pool Access Control
+## 7. Insurance Pool Access Control
 
 The insurance pool operates as a separate contract with its own authorization model:
 
@@ -108,23 +164,81 @@ This isolation ensures that the insurance pool cannot be drained except through 
 | `upgrade` | Admin | Emits upgrade event for WASM hash change |
 | `update_config` | Admin | Updates reputation and token configuration |
 
-### Governance Contract Admin Functions
+## 4. Governance Contract — Permission Matrix
+
+### Proposal & Voting Operations
 
 | Instruction | Allowed Role(s) | Description |
 | ----------- | --------------- | ----------- |
-| `set_execution_delay` | Admin | Sets timelock delay for proposal execution |
-| `veto_proposal` | Admin | Vetoes an active/passed proposal |
-| `set_min_quorum_bps` | ILN Contract | Updates quorum threshold |
-| `set_min_proposal_balance` | ILN Contract | Updates minimum proposer balance |
-| `disable_veto_power` | ILN Contract | Permanently disables admin veto |
+| `initialize` | Anyone | Initializes the governance contract once |
+| `create_proposal` | Anyone (min balance check) | Creates a new governance proposal |
+| `cast_vote` | Anyone (with voting power) | Casts a vote on an active proposal |
+| `delegate_votes` | Token Holder | Delegates voting power to another address |
+| `undelegate_votes` | Delegator | Revokes delegated voting power |
+| `get_delegate` | Anyone | Reads vote delegation target for an address |
+| `execute_proposal` | Anyone | Executes a passed proposal after timelock expires |
+| `veto_proposal` | Admin | Vetoes an active or passed proposal |
+| `disable_veto_power` | Admin | Permanently removes admin veto capability |
+| `is_veto_power_enabled` | Anyone | Checks if veto power is still active |
 
-### Insurance Pool Contract Admin Functions
+### Proposal Query & Status
 
 | Instruction | Allowed Role(s) | Description |
 | ----------- | --------------- | ----------- |
-| `claim` | Admin (liquidity contract) | Files a claim for defaulted invoice |
+| `get_proposal` | Anyone | Reads full proposal details by ID |
+| `list_proposals` | Anyone | Lists all proposals (paginated) |
+| `has_voted` | Anyone | Checks if a voter has already voted on a proposal |
+| `get_applied_vote_weight` | Anyone | Reads final voting weight applied by a voter on a proposal |
 
-## 5. Audit Findings (Issue #540)
+### Governance Configuration
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `set_min_quorum_bps` | Admin (ILN Contract) | Updates quorum threshold in basis points |
+| `get_min_quorum_bps` | Anyone | Reads current quorum threshold |
+| `set_min_proposal_balance` | Admin (ILN Contract) | Updates minimum balance required to create proposal |
+| `get_min_proposal_balance` | Anyone | Reads minimum proposer balance requirement |
+| `set_max_delegation_depth` | Admin | Updates maximum delegation chain depth |
+| `get_max_delegation_depth` | Anyone | Reads max delegation depth setting |
+| `set_gov_token_total_supply` | Admin (ILN Contract) | Updates total supply of governance token |
+| `get_gov_token_total_supply` | Anyone | Reads current governance token total supply |
+| `set_execution_delay` | Admin | Sets timelock delay before proposal execution (in ledgers) |
+| `get_execution_delay` | Anyone | Reads current execution delay setting |
+| `set_quadratic_voting_enabled` | Admin | Toggles quadratic voting mode on/off |
+| `is_quadratic_voting_enabled` | Anyone | Checks if quadratic voting is currently enabled |
+
+## 5. Distribution Contract (iln_distribution) — Permission Matrix
+
+### Reward Accrual & Claims
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `initialize` | Anyone | Initializes the distribution contract once (requires ILN contract & gov token) |
+| `accrue_lp` | ILN Contract Only | Accrues LP yield rewards (called internally by invoice_liquidity) |
+| `accrue_settlement` | ILN Contract Only | Accrues freelancer/payer settlement rewards (called internally) |
+| `claim_tokens` | Any Participant | Claims accumulated reward tokens (requires participant signature) |
+| `get_accrual` | Anyone | Reads accumulated rewards for a participant |
+
+### Reward Rate Configuration
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `set_lp_reward_rate` | Admin (ILN Contract) | Sets the LP reward rate in tokens per unit |
+| `get_lp_reward_rate` | Anyone | Reads current LP reward rate |
+| `set_freelancer_reward_rate` | Admin (ILN Contract) | Sets the freelancer reward rate |
+| `get_freelancer_reward_rate` | Anyone | Reads current freelancer reward rate |
+| `set_payer_reward_rate` | Admin (ILN Contract) | Sets the payer reward rate |
+| `get_payer_reward_rate` | Anyone | Reads current payer reward rate |
+
+## 6. Reputation Bonus Contract — Permission Matrix
+
+| Instruction | Allowed Role(s) | Description |
+| ----------- | --------------- | ----------- |
+| `initialize` | Anyone | Initializes the reputation bonus contract once |
+| `check_payer_reputation` | Anyone | Verifies a payer's reputation and returns applicable bonuses |
+| `check_lp_reputation` | Anyone | Verifies an LP's reputation and returns applicable bonuses |
+
+## 8. Audit Findings (Issue #540)
 
 The following findings were identified and resolved during the access control audit:
 
@@ -138,7 +252,7 @@ The following findings were identified and resolved during the access control au
 ### Finding AC-02: All other admin functions properly guarded
 - All admin-privileged functions in the Invoice Liquidity, Insurance Pool, and Governance contracts include explicit authorization checks at entry. No additional missing guards were found.
 
-## 6. Rate Limiting Design (Issue #541)
+## 9. Rate Limiting Design (Issue #541)
 
 ### Rationale
 
@@ -182,10 +296,151 @@ Rate limiting is implemented in `contracts/invoice_liquidity/src/access.rs`:
 - **Finding:** Several admin functions (`update_fee_rate`, `set_admin`, `upgrade`, etc.) lacked any rate-limiting mechanism, allowing rapid successive calls that could be used to grief the protocol or confuse indexers.
 - **Resolution:** Added `check_rate_limit` guard to all sensitive admin functions with appropriate cooldown periods.
 
-## 7. Security Notes
-## 5. Security Notes
+## 10. Pause Behavior & Cross-Contract Scope
+
+### Scope of `pause()`
+
+`pause()` sets a single `Paused` flag (see `docs/storage-layout.md`) read by the *invoice_liquidity* contract's own state-changing entry points — `submit_invoice`, `fund_invoice`, `mark_paid`, `claim_yield`, `claim_default`, `appeal_default`, `expire_invoice`, etc. Each checks `is_paused` and returns `ContractError::ContractPaused` before performing any state mutation.
+
+Two categories of operation are explicitly **not** affected by this flag:
+
+1. **Read-only views**, e.g. `get_contract_stats`, `get_invoice`, `payer_score`/`lp_score`, and — the subject of this section — the oracle registry's read surface: `get_oracle_for_token`, `get_oracle_health`, and `check_oracle_health`. These carry no `is_paused` guard by design, so monitoring/keeper tooling can keep observing protocol and oracle state throughout an incident. `check_oracle_health` in particular performs a live cross-contract call to the resolved oracle and persists a health snapshot — this succeeds identically whether the contract is paused or not.
+2. **Oracle registry governance mutations** — `register_oracle`, `remove_oracle`, `register_token_oracle`, `remove_token_oracle` (Issue #532). These are gated only by `require_admin`, not `is_paused`. This is intentional: repointing or clearing a misbehaving oracle is itself a common *response* to an incident, and gating it behind an unpause would create a chicken-and-egg problem for governance.
+
+### The cross-contract boundary
+
+The oracle registry tracked here is bookkeeping *inside* invoice_liquidity (which oracle address to query for a given feed type/token) — the oracles it points at are themselves separate deployed contracts, and governance itself typically operates through the separate Governance contract, executing proposals that call back into `register_oracle`/`remove_oracle`. Pausing invoice_liquidity has no effect on either:
+
+- The external oracle contracts continue to serve `get_payer_data` / price queries exactly as before — pausing the consumer does not pause the provider.
+- The Governance contract's own proposal lifecycle (`propose`, `vote`, `execute`) is entirely unaware of invoice_liquidity's `Paused` flag; only the *effect* of an executed oracle-config proposal (a call to `register_oracle`/`remove_oracle`) lands here, and, per above, that call itself is not blocked by pause.
+
+In short: **pause halts invoice_liquidity's own funding/settlement mutations only** — it is not a kill switch for oracle reads, oracle governance, or any other contract in the system. `fund_invoice` reflects this correctly: it checks `is_paused` as its very first step, so a paused call never reaches the oracle registry at all (no query, no health write) rather than querying it and silently discarding the result. See `contracts/invoice_liquidity/src/tests_oracle_registry.rs` (`test_get_oracle_for_token_readable_while_paused`, `test_check_oracle_health_readable_while_paused`, `test_fund_invoice_paused_never_reaches_oracle_registry`, `test_oracle_registry_mutations_unaffected_by_core_contract_pause`).
+
+## 11. CI Verification for Undocumented Functions
+
+To prevent function-documentation drift, a grep-based CI check should verify that no new public contract functions are added without corresponding documentation in this matrix.
+
+**Suggested implementation** (`.github/workflows/access-control-ci.yml`):
+
+```bash
+#!/bin/bash
+set -e
+
+# Extract all public function names from each contract
+for contract_dir in contracts/invoice_liquidity contracts/iln_governance contracts/iln_distribution contracts/insurance_pool contracts/reputation_bonus; do
+  if [ ! -f "$contract_dir/src/lib.rs" ]; then
+    continue
+  fi
+  
+  functions=$(grep -E '^\s+pub fn ' "$contract_dir/src/lib.rs" | \
+              sed 's/.*pub fn \([a-z_]*\).*/\1/' | \
+              sort | uniq)
+  
+  doc_file="docs/access-control.md"
+  for func in $functions; do
+    # Skip test functions and internal helpers
+    if [[ $func == *"test"* ]] || [[ $func == *"internal"* ]]; then
+      continue
+    fi
+    
+    # Check if function is documented in the matrix
+    if ! grep -q "\`$func\`" "$doc_file"; then
+      echo "ERROR: Public function '$func' in $contract_dir is not documented in access-control.md"
+      exit 1
+    fi
+  done
+done
+
+echo "✓ All public contract functions are documented in access-control.md"
+```
+
+This check should run on every PR to enforce that new functions and their access requirements are documented before merge.
+
+## 12. Re-Verification Log (Issue #676)
+
+**Date:** 2026-08-29  
+**Scope:** All five contract crates (`invoice_liquidity`, `iln_governance`, `iln_distribution`, `insurance_pool`, `reputation_bonus`) plus `fuzz`
+
+### Verification Summary
+
+- ✅ **invoice_liquidity**: All public functions verified against code. Added 20+ oracle registry and configuration functions.
+- ✅ **iln_governance**: All 21 public functions documented. Covers proposal lifecycle, voting, delegation, execution, veto, and configuration.
+- ✅ **iln_distribution**: All 9 public functions documented. Cross-contract authorization (ILN-only) for internal accrual functions verified.
+- ✅ **insurance_pool**: Confirmed 7 functions documented. Pool enrollment, premium deposits, claims, and queries included.
+- ✅ **reputation_bonus**: Confirmed 3 functions documented. Reputation checking functions included.
+- ✅ **No undocumented public functions found** across all crates.
+- ✅ **No unauthorized function access** — all admin paths properly guarded with `require_admin`.
+- ✅ **Rate limiting properly applied** to sensitive admin operations with documented cooldown periods.
+- ✅ **Cross-contract boundaries** clearly documented (distribution contract authorization, governance contract roles).
+
+### Access Control Gaps Found & Resolved
+
+1. ✅ **Oracle registry functions** were missing from the matrix — now fully documented with access levels.
+2. ✅ **Governance contract** was completely absent from previous version — now comprehensively added.
+3. ✅ **Distribution contract** reward rate management was undocumented — now fully added.
+4. ✅ **Rate-limiting annotations** on admin functions were missing from descriptions — now explicitly marked.
+5. ✅ **Pause behavior** documentation updated to clarify oracle registry exceptions.
+
+**Conclusion:** All public functions across all five contract crates are now documented with their access requirements, authorized roles, and rate-limiting status. The matrix is authoritative and CI-verifiable.
+
+## 13. Security Notes
 
 - **Principle of Least Privilege**: Each instruction relies only on the minimal authority required to execute.
 - **Centralized Verification**: Extracted inline logic ensures uniform verification logic and robust testing.
 - **Auditability Improvements**: Every guard clearly emits a deterministic `Unauthorized` error instead of panicking, enhancing tracing.
 - **Rejection Behavior**: If authorization fails, the protocol safely rejects the mutation without consuming extra gas or altering contract state.
+
+## 14. Mainnet Admin Signer Verification (Issue #647)
+
+Once the production admin is configured as a multi-sig account (see "Multi-sig admin
+configured" in the [Mainnet Launch Checklist](mainnet-launch-checklist.md)), the set of
+Stellar keys authorized to sign as that account must stay in sync with who
+[CODEOWNERS](../.github/CODEOWNERS) says is on the contracts team — otherwise a
+maintainer could retain signing power after leaving the team, or a key could be added
+on-chain that no one off-chain can account for, with no way to notice either.
+
+- **Mapping**: [`.github/mainnet-admin-signers.json`](../.github/mainnet-admin-signers.json)
+  records which GitHub identity controls each on-chain signer key, and which CODEOWNERS
+  team it should match (`@Keengfk/contracts-team`). It is itself CODEOWNERS-protected so
+  changes require contracts-team and security-lead review.
+- **Check**: [`scripts/verify-admin-signers.ts`](../scripts/verify-admin-signers.ts) fetches
+  the admin account's signers from Horizon and confirms every on-chain key has a mapping
+  entry (and vice versa), and — when a `GITHUB_TOKEN` is available — that every mapped
+  signer is still a current member of the CODEOWNERS team.
+- **CI**: [`.github/workflows/admin-signer-check.yml`](../.github/workflows/admin-signer-check.yml)
+  runs this on every change to CODEOWNERS or the signer mapping, plus a daily schedule to
+  catch drift introduced directly on-chain.
+- Before the multi-sig admin is configured, the check is a no-op (`ADMIN_ADDRESS` is
+  unset), so it does not block CI ahead of launch.
+
+## 15. On-Chain Admin Action Audit Log (Issue #645)
+
+For SCF review and community trust, every admin-gated call that actually executes in
+`invoice_liquidity` (`set_admin`, `pause`/`unpause`, `add_token`/`remove_token`,
+`update_fee_rate`, `update_max_discount`, `update_decay_params`, `update_fee_tiers`,
+`set_min_payer_reputation`, `set_price_oracle`, `set_max_oracle_age`,
+`set_distribution_contract`, `set_insurance_pool`, `upgrade`, `migrate`,
+`resolve_appeal`, `resolve_dispute`) is appended to a bounded on-chain ring buffer,
+independent of the per-action events (`AdminChanged`, `ParameterUpdated`, `TokenAdded`,
+...) that were already published.
+
+- **Query**: `get_recent_admin_actions(limit: u32) -> Vec<AdminActionRecord>` — a public,
+  unauthenticated view returning up to `limit` entries (capped at
+  `ADMIN_ACTION_LOG_CAPACITY = 50`), newest first. Each `AdminActionRecord` carries a
+  monotonic `seq`, the `action` name, the `admin` address that authorized it, and the
+  `ledger`/`timestamp` at which it executed.
+- **Why a view instead of replaying events**: reconstructing "what has the admin done
+  recently" from the Horizon event stream requires paging through the full history and
+  filtering by topic; this view answers the same question in a single contract call, with
+  no off-chain indexing dependency — useful for reviewers or dashboards that just need a
+  recent-activity snapshot.
+- **Recording point**: entries are written in `access::record_admin_action`, called
+  immediately after each function's `require_admin` check succeeds. Because Soroban
+  transactions are atomic, a log entry is rolled back along with the rest of the
+  transaction if the function later errors (e.g. `RateLimited`, `InvoiceNotFound`) — so
+  the log only ever reflects actions that actually took effect, not merely
+  authorized-but-failed attempts.
+- **Bounded, not a replacement**: the ring buffer only retains the most recent 50 entries
+  and is not a substitute for the unbounded event log — it is a cheap on-chain
+  "recent activity" view layered on top of it. Long-horizon audit trails should still be
+  built from indexed events (see [event-types.md](event-types.md)).

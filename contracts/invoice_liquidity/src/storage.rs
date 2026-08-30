@@ -18,6 +18,10 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
+    /// Issue #645: monotonically increasing count of admin actions ever
+    /// recorded in the admin action audit log (never decreases, even as
+    /// older ring-buffer entries are overwritten).
+    AdminActionCount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -42,6 +46,9 @@ pub enum DataKey {
     /// Used to enforce a minimum maturity delay before `resolve_fund_queue` may
     /// be called, preventing MEV / front-running (Issue #MEV-1).
     FundQueueOpenedAt(u64),
+    /// Issue #645: ring-buffer slot for the admin action audit log, indexed
+    /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
+    AdminActionLog(u32),
 
     // Stats (Persistent)
     TotalInvoices,
@@ -85,6 +92,21 @@ pub enum DataKey {
     /// Cached oracle interface version verified at register_oracle time,
     /// keyed by feed type.
     OracleInterfaceVersion(crate::oracle_registry::OracleFeedType),
+    /// Issue #circuit-breaker: whether the oracle circuit breaker for a
+    /// feed type + token resolution channel is tripped (sticky — cleared
+    /// only via governance-gated `reset_oracle_circuit`, never auto-cleared
+    /// by a fresh query, to avoid flapping).
+    OracleCircuitTripped(crate::oracle_registry::OracleFeedType, Address),
+    /// Issue #price-deviation: list of registered price-reporting oracle
+    /// sources for a feed type, consulted together for cross-source
+    /// deviation checking. Distinct from OracleRegistry/TokenOracle (the
+    /// single-oracle model used for boolean payer verification, where
+    /// deviation checking doesn't apply).
+    PriceSources(crate::oracle_registry::OracleFeedType),
+    /// Issue #price-deviation: governance-configurable maximum allowed
+    /// deviation (basis points) between a price source's reported price
+    /// and the cross-source median before it's rejected as an outlier.
+    MaxPriceDeviationBps,
 }
 
 // ----------------------------------------------------------------

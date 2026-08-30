@@ -46,8 +46,7 @@ use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
     DistributionContractUpdated, FundQueueResolutionAttempted, FundQueueResolved, FundRequested,
-    InsuranceClaimAttempted, InsuranceCompensationFailed, InvoiceCancelled, InvoiceDefaulted,
-    InvoiceDisputed, InvoiceExpired,
+    InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
     PriceOracleUpdated, TokenAdded, TokenRemoved,
@@ -224,6 +223,7 @@ impl InvoiceLiquidityContract {
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "set_admin");
         let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
@@ -241,6 +241,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_rate");
 
         let old_rate: u32 = env
             .storage()
@@ -270,6 +271,7 @@ impl InvoiceLiquidityContract {
     pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_max_discount");
 
         let old_rate: u32 = env
             .storage()
@@ -306,6 +308,7 @@ impl InvoiceLiquidityContract {
     ) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_decay_params", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_decay_params");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         let mut config = crate::storage::get_config(&env).ok_or(ContractError::Unauthorized)?;
@@ -360,6 +363,7 @@ impl InvoiceLiquidityContract {
             "set_distribution_contract",
             DEFAULT_RATE_LIMIT_LEDGERS,
         )?;
+        record_admin_action(&env, "set_distribution_contract");
 
         let old_distribution_contract: Option<Address> = env
             .storage()
@@ -388,6 +392,7 @@ impl InvoiceLiquidityContract {
     pub fn set_price_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_price_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_price_oracle");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_oracle = crate::storage::get_config(&env).and_then(|c| c.price_oracle);
         crate::config::set_price_oracle(&env, &admin, oracle.clone())
@@ -417,6 +422,7 @@ impl InvoiceLiquidityContract {
     pub fn set_max_oracle_age(env: Env, max_age_ledgers: u64) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_max_oracle_age", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_max_oracle_age");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_max_age = crate::storage::get_config(&env)
             .map(|c| c.max_oracle_age_ledgers)
@@ -528,25 +534,104 @@ impl InvoiceLiquidityContract {
         oracle_registry::check_oracle_health(env, feed_type, token, payer)
     }
 
+    /// Whether the oracle circuit breaker for `feed_type` + `token` is
+    /// currently tripped (from `MAX_CONSECUTIVE_STALE_QUERIES` consecutive
+    /// stale responses) and therefore excluded from `fund_invoice`'s
+    /// oracle-gated resolution until governance calls
+    /// `reset_oracle_circuit`.
+    /// Access: Anyone
+    pub fn is_oracle_circuit_tripped(env: Env, feed_type: OracleFeedType, token: Address) -> bool {
+        oracle_registry::is_oracle_circuit_tripped(&env, feed_type, &token)
+    }
+
+    /// Reset a tripped oracle circuit breaker for `feed_type` + `token`.
+    /// There is no automatic recovery on a single fresh query — this
+    /// explicit, governance-gated call is required, so a flapping oracle
+    /// can't quietly resume being trusted by the funding path.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle` / `remove_oracle`).
+    pub fn reset_oracle_circuit(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::reset_oracle_circuit(&env, feed_type, token)
+    }
+
+    // ── Issue #price-deviation: multi-source price deviation checking ──
+
+    /// Register `oracle` as an additional price source for `feed_type`.
+    /// Distinct from `register_oracle`/`register_token_oracle` (the
+    /// single-oracle model for boolean payer verification): multiple price
+    /// sources can be registered per feed type so `get_verified_price` can
+    /// cross-check them against each other.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle`).
+    pub fn add_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::add_price_source(&env, feed_type, oracle)
+    }
+
+    /// Remove `oracle` from `feed_type`'s price source list.
+    /// Access: Admin only.
+    pub fn remove_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::remove_price_source(&env, feed_type, oracle)
+    }
+
+    /// The currently registered price sources for `feed_type`.
+    /// Access: Anyone
+    pub fn get_price_sources(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Vec<Address> {
+        oracle_registry::get_price_sources(env, feed_type)
+    }
+
+    /// Update the governance-configurable maximum deviation (basis points)
+    /// a price source may differ from the cross-source median before being
+    /// rejected as an outlier. Default is
+    /// [`oracle_registry::DEFAULT_MAX_PRICE_DEVIATION_BPS`] (5%) until set.
+    /// Access: Admin only.
+    pub fn set_max_price_deviation_bps(env: Env, bps: u32) -> Result<(), ContractError> {
+        oracle_registry::set_max_price_deviation_bps(&env, bps)
+    }
+
+    /// The currently configured maximum price deviation, in basis points.
+    /// Access: Anyone
+    pub fn get_max_price_deviation_bps(env: Env) -> u32 {
+        oracle_registry::get_max_price_deviation_bps(env)
+    }
+
+    /// Query every registered price source for `feed_type` + `token` and
+    /// return a cross-validated price. With zero sources, errors; with
+    /// exactly one, returns it unchecked (documented single-source risk —
+    /// see `oracle_registry`'s module docs); with two or more, rejects any
+    /// source deviating from the cross-source median beyond
+    /// `get_max_price_deviation_bps()` and returns the median of the
+    /// survivors.
+    /// Access: Anyone
+    pub fn get_verified_price(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        oracle_registry::get_verified_price(env, feed_type, token)
+    }
+
     // ── Issue #529: insurance pool integration ────────────────────
 
     /// Configure the deployed insurance pool contract address consulted by
     /// `claim_default` to compensate enrolled LPs on a confirmed default.
-    /// Rejects pools that do not report a compatible [`INSURANCE_INTERFACE_VERSION`].
     /// Access: Admin only
     pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_insurance_pool", DEFAULT_RATE_LIMIT_LEDGERS)?;
-        let pool_client = InsurancePoolInterfaceClient::new(&env, &pool);
-        let version = match pool_client.try_interface_version() {
-            Ok(Ok(v)) => v,
-            _ => return Err(ContractError::IncompatibleInterfaceVersion),
-        };
-        if version != insurance_pool::INSURANCE_INTERFACE_VERSION {
-            return Err(ContractError::IncompatibleInterfaceVersion);
-        }
+        record_admin_action(&env, "set_insurance_pool");
         crate::storage::set_insurance_pool(&env, &pool);
-        crate::storage::set_insurance_pool_interface_version(&env, version);
         Ok(())
     }
 
@@ -560,6 +645,7 @@ impl InvoiceLiquidityContract {
     pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "add_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "add_token");
 
         let token_client = token_client(&env, &token);
         let contract_address = env.current_contract_address();
@@ -620,6 +706,7 @@ impl InvoiceLiquidityContract {
     pub fn remove_token(env: Env, token: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "remove_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "remove_token");
 
         env.storage()
             .persistent()
@@ -668,6 +755,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn pause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "pause");
 
         set_paused(&env, true);
         env.events().publish(
@@ -682,6 +770,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn unpause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "unpause");
 
         set_paused(&env, false);
         env.events().publish(
@@ -714,6 +803,7 @@ impl InvoiceLiquidityContract {
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "upgrade", UPGRADE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "upgrade");
 
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
@@ -733,6 +823,15 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
+    /// Return up to `limit` most recent executed admin actions, newest
+    /// first, so admin activity can be reviewed on-chain (e.g. by SCF
+    /// reviewers or the community) without replaying the full event log
+    /// (Issue #645). Capped at `ADMIN_ACTION_LOG_CAPACITY` entries.
+    /// Access: Anyone
+    pub fn get_recent_admin_actions(env: Env, limit: u32) -> Vec<AdminActionRecord> {
+        access::get_recent_admin_actions(&env, limit)
+    }
+
     // Issue #539: Return the current on-chain storage schema version.
     pub fn get_storage_version(env: Env) -> u32 {
         env.storage()
@@ -746,6 +845,7 @@ impl InvoiceLiquidityContract {
     // layout changes to be applied atomically after an upgrade.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "migrate");
 
         let current: u32 = env
             .storage()
@@ -792,6 +892,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_tiers");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         env.storage().instance().set(&StorageKey::FeeTiers, &tiers);
@@ -1507,16 +1608,26 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::PayerReputationTooLow);
         }
 
-        // Issues #92 + #93 + #532: optional oracle verification with a
-        // data-freshness guard. When require_oracle_verification is true,
-        // the oracle registry is queried for the Identity feed, resolved per
-        // the invoice's token (per-token override, then feed-type default,
-        // then the legacy price_oracle config field). If no oracle resolves,
-        // the flag is a no-op.
+        // Issues #92 + #93 + #532 + circuit-breaker: optional oracle
+        // verification with a data-freshness guard. When
+        // require_oracle_verification is true, the oracle registry is
+        // queried for the Identity feed, resolved per the invoice's token
+        // (per-token override, then feed-type default, then the legacy
+        // price_oracle config field) — skipping any level that's
+        // circuit-tripped from repeated staleness. If nothing was ever
+        // registered, the flag is a no-op (existing fail-open behavior). If
+        // everything registered is circuit-tripped, funding is rejected
+        // rather than silently proceeding as if no oracle existed.
         if require_oracle_verification {
-            if let Some(oracle_addr) =
-                oracle_registry::resolve_oracle(&env, OracleFeedType::Identity, &invoice.token)
-            {
+            let resolution = oracle_registry::resolve_oracle_for_verification(
+                &env,
+                OracleFeedType::Identity,
+                &invoice.token,
+            );
+            if resolution == oracle_registry::OracleResolution::CircuitOpen {
+                return Err(ContractError::OracleCircuitOpen);
+            }
+            if let oracle_registry::OracleResolution::Available(oracle_addr) = resolution {
                 let response: OracleVerificationResponse = env.invoke_contract(
                     &oracle_addr,
                     &Symbol::new(&env, "get_payer_data"),
@@ -2238,32 +2349,17 @@ impl InvoiceLiquidityContract {
         // own balance), so this contract only needs to trigger the claim and
         // report the outcome - it never holds or forwards the payout.
         //
-        // Handled via try_* so a paused/empty/unreachable/panicking pool
-        // degrades gracefully: claim_default still completes (refund + status
-        // update already happened above, in the same atomic invocation) rather
-        // than reverting the whole default over an optional insurance top-up.
-        // Failures emit InsuranceCompensationFailed for observability.
+        // Handled via try_* so a paused/empty/unreachable pool degrades
+        // gracefully: claim_default still completes (refund + status update
+        // already happened above, in the same atomic invocation) rather than
+        // reverting the whole default over an optional insurance top-up.
         if let Some(pool_addr) = crate::storage::get_insurance_pool(&env) {
             let pool_client = InsurancePoolInterfaceClient::new(&env, &pool_addr);
             let enrolled = matches!(pool_client.try_is_enrolled(&funder), Ok(Ok(true)));
             if enrolled {
                 let (compensated, payout) = match pool_client.try_claim(&invoice_id, &funder) {
                     Ok(Ok(payout)) => (true, payout),
-                    _ => {
-                        env.events().publish(
-                            (
-                                Symbol::new(&env, "insurance_compensation_failed"),
-                                invoice.id,
-                                funder.clone(),
-                            ),
-                            InsuranceCompensationFailed {
-                                invoice_id: invoice.id,
-                                lp: funder.clone(),
-                                pool: pool_addr.clone(),
-                            },
-                        );
-                        (false, 0)
-                    }
+                    _ => (false, 0),
                 };
                 env.events().publish(
                     (
@@ -2414,6 +2510,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_appeal");
 
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
@@ -2554,6 +2651,7 @@ impl InvoiceLiquidityContract {
         lock_reentrancy(&env)?;
 
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_dispute");
 
         if !invoice_exists(&env, invoice_id) {
             unlock_reentrancy(&env);
@@ -2788,6 +2886,7 @@ impl InvoiceLiquidityContract {
             "set_min_payer_reputation",
             ECONOMIC_PARAM_COOLDOWN_LEDGERS,
         )?;
+        record_admin_action(&env, "set_min_payer_reputation");
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_value = get_min_payer_reputation(&env);
         set_min_payer_reputation(&env, value);
@@ -3125,5 +3224,9 @@ mod tests_invoice_count;
 mod tests_batch_submit_reputation;
 // Issue #pause-checks: expire_invoice and appeal_default pause guards
 mod tests_pause_checks;
-// ADR-011: invoice_liquidity vs reputation_bonus reputation SoT isolation
-mod tests_reputation_state_isolation;
+// Economic security regression suite (threat-model B0/B1/D1) — declared here
+// so the consolidated `es_*` tests run in every required CI cargo test pass.
+mod tests_economic_security;
+// Issue #34 reputation-weighted queue was previously ORPHANED (file present
+// but never declared), so its queue-integrity/griefing guards never ran.
+mod tests_lp_priority_queue;

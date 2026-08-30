@@ -1,0 +1,31 @@
+name: Cargo Deny
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'contracts/**/Cargo.toml'
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'contracts/**/Cargo.toml'
+  schedule:
+    # Run weekly on Monday at 00:00 UTC
+    - cron: '0 0 * * MON'
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    name: Deny security checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          log-level: warn
+          command: check advisories licenses bans sources

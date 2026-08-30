@@ -31,6 +31,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Access Control](access-control.md) | Roles and authorization rules. |
 | [Upgrade Guide](upgrade-guide.md) | Contract upgrade procedure and safeguards. |
 | [Mainnet Launch Checklist](mainnet-launch-checklist.md) | Launch-readiness checklist with owners, statuses, and sign-off. |
+| [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) | Dry-run-verified procedure for deploying, verifying, and publishing mainnet contracts. |
 | [Pre-Audit Checklist](pre-audit-checklist.md) | Audit preparation tasks. |
 
 ## Integrations
@@ -41,6 +42,8 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [SDK README](../sdk/README.md) | Package usage for `@iln/sdk`. |
 | [Oracle Design](oracle-design.md) | Optional payer-verification oracle model. |
 | [Oracle Integration](oracle-integration.md) | Deploying and registering compatible oracles. |
+| [Oracle Provider Vetting](oracle-provider-vetting.md) | Governance vetting criteria and proposal template for approving oracle providers. |
+| [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model of oracle manipulation at current parameters, with recommendations. |
 
 ## Project Process
 

@@ -20,9 +20,10 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | Upgrade path tested | Test upload, deploy, migration, rollback decision points, and post-upgrade smoke checks. | Contracts lead | In progress | [Upgrade Guide](upgrade-guide.md) |
 | Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Not started | [Access Control](access-control.md) |
+| Multisig disaster-recovery plan rehearsed | Provision a recovery signer, diversify custody, and table-top the lost/compromised-majority runbook with the actual signer group before launch. | Governance lead | Not started | [Disaster Recovery](disaster-recovery-multisig-signers.md) |
 | Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout](storage-layout.md) |
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
-| Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | Not started | [Developer Quickstart](developer-quickstart.md) |
+| Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | In progress | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) |
 | Contract IDs published | Publish verified mainnet contract IDs and SAC addresses after deployment. | Release lead | Not started | [README](../README.md) |
 
 ## Infrastructure
@@ -52,7 +53,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | CONTRIBUTING up to date | Confirm contribution, review, testing, and local setup expectations are current. | Community lead | In progress | [CONTRIBUTING](../CONTRIBUTING.md) |
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
 | CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
-| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
+| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
 | Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Not started | [Issue templates](../.github/ISSUE_TEMPLATE) |
 
 ## Maintainer Sign-off
