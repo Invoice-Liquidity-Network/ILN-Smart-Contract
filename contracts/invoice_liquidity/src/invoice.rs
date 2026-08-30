@@ -663,6 +663,56 @@ pub fn set_min_payer_reputation(env: &Env, value: u32) {
 }
 
 // ----------------------------------------------------------------
+// Issue #655: staged mainnet rollout caps
+// ----------------------------------------------------------------
+//
+// Two governance-configurable caps, both `0` (uncapped) by default, that
+// can be raised over time as confidence in a fresh mainnet deployment
+// grows: a per-invoice size cap, and a per-token cumulative funded-volume
+// cap checked against the same `TokenVolume` counter `add_volume` already
+// maintains for stats — no new hot-path dependency (e.g. an oracle call)
+// is introduced to enforce it.
+
+/// Maximum `amount` allowed for a single invoice. Defaults to 0 (uncapped).
+pub fn get_max_invoice_amount(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::MaxInvoiceAmount)
+        .unwrap_or(0)
+}
+
+/// Set the maximum single-invoice amount.
+pub fn set_max_invoice_amount(env: &Env, value: i128) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::MaxInvoiceAmount, &value);
+}
+
+/// Cumulative funded-volume cap for `token`. Defaults to 0 (uncapped).
+pub fn get_token_volume_cap(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::TokenVolumeCap(token.clone()))
+        .unwrap_or(0)
+}
+
+/// Set the cumulative funded-volume cap for `token`.
+pub fn set_token_volume_cap(env: &Env, token: &Address, value: i128) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::TokenVolumeCap(token.clone()), &value);
+}
+
+/// Current cumulative funded volume recorded for `token` (the same counter
+/// `add_volume` increments on every `fund_invoice` call).
+pub fn get_token_volume(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::TokenVolume(token.clone()))
+        .unwrap_or(0)
+}
+
+// ----------------------------------------------------------------
 // Funder list helpers
 // ----------------------------------------------------------------
 

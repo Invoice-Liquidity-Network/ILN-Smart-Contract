@@ -79,39 +79,10 @@ pub enum ContractError {
     /// deviated beyond the configured threshold from every other — no
     /// source survived to produce a validated price.
     AllPriceSourcesRejected = 43,
-    // ── Issue #124 / #641 / #640 / #639: multisig admin ────────────
-    /// Signer list/threshold combination is invalid (empty signer set,
-    /// duplicate signer, or threshold outside `1..=signers.len()`).
-    InvalidMultisigConfig = 44,
-    /// Caller is not a configured multisig signer.
-    NotAuthorizedSigner = 45,
-    /// This signer has already approved the given proposal.
-    AlreadySigned = 46,
-    /// No multisig proposal exists with the given id.
-    ProposalNotFound = 47,
-    /// The proposal has already been executed and cannot be executed again.
-    ProposalAlreadyExecuted = 48,
-    /// The proposal's approval window (`MULTISIG_WINDOW_LEDGERS`) has
-    /// elapsed; it can no longer be signed or executed.
-    ProposalExpired = 49,
-    /// The proposal has not yet collected enough signer approvals to be executed.
-    ThresholdNotReached = 50,
-    /// `initialize_multisig_admin` was called before any multisig admin
-    /// scheme exists — no signer set has been bootstrapped yet.
-    MultisigNotConfigured = 51,
-    /// `initialize_multisig_admin` was called again after the multisig
-    /// admin scheme was already bootstrapped; reconfiguration must go
-    /// through the `UpdateMultisig` proposal flow instead.
-    MultisigAlreadyConfigured = 52,
-    /// Issue #641: a Pending, non-expired proposal already exists for this
-    /// exact admin action — reject the duplicate instead of allowing two
-    /// concurrent proposals for the same logical action.
-    DuplicateProposal = 53,
-    /// Issue #640: no pending signer rotation exists to finalize or cancel.
-    RotationNotFound = 54,
-    /// Issue #640: the rotation's timelock has not yet elapsed.
-    RotationTimelockNotExpired = 55,
-    /// Issue #640: a signer rotation is already pending; only one may be
-    /// in flight at a time.
-    RotationAlreadyPending = 56,
+    /// Issue #655: invoice `amount` exceeds the governance-configured
+    /// staged-rollout per-invoice cap.
+    MaxInvoiceAmountExceeded = 44,
+    /// Issue #655: funding this amount would push the token's cumulative
+    /// funded volume past the governance-configured staged-rollout cap.
+    GlobalVolumeCapExceeded = 45,
 }
