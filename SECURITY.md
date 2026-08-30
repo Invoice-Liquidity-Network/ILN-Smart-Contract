@@ -1,8 +1,8 @@
 # Security Policy
 
-ILN is in experimental/testnet phase. Do not use current deployments as mainnet-secure infrastructure until the mainnet checklist, audits, and maintainer sign-off are complete.
+ILN spans Soroban smart contracts, a TypeScript SDK, a CLI, an indexer, and a notifications service. ILN is in experimental/testnet phase — do not use current deployments as mainnet-secure infrastructure until the mainnet checklist, audits, and maintainer sign-off are complete.
 
-For the complete policy, including component-specific vulnerability classes, severity definitions, response timelines, reporting instructions, and safe harbor, see [docs/security.md](docs/security.md).
+For the full policy — including component-specific vulnerability classes, detailed severity definitions, response timelines, reporting instructions, safe harbor, and maintainer handling procedures — see [docs/security.md](docs/security.md).
 
 ## Responsible Disclosure
 
@@ -13,7 +13,27 @@ Report issues by either:
 - Emailing `security@invoice-liquidity-network.local`
 - Opening a private GitHub Security Advisory for this repository
 
-We aim to acknowledge security reports within 48 hours.
+## Severity Levels
+
+| Severity | Description |
+|----------|-------------|
+| Critical | Direct loss or theft of user funds, permanent protocol insolvency, or unauthenticated upgrade/admin takeover |
+| High | Material fund risk, broad data integrity failure, secret exposure, or reliable service compromise |
+| Medium | Limited financial or operational impact, denial of service with recovery path, or scoped data exposure |
+| Low | Defense-in-depth issue, documentation security gap, low-impact information exposure |
+| Informational | No immediate exploit path but useful for hardening |
+
+## Response Commitments
+
+| Stage | Timeline |
+|-------|----------|
+| Acknowledgment | Within 48 hours |
+| Initial severity assessment | Within 5 business days |
+| Critical fix | Begin mitigation immediately; target patch within 7 days |
+| High fix | Target patch within 14 days |
+| Medium fix | Target patch within 30 days |
+
+See [docs/security.md](docs/security.md) for full details including safe harbor, maintainer handling procedures, and the security checklist for releases.
 
 ## Supported Versions
 
