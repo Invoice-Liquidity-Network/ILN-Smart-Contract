@@ -31,6 +31,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Access Control](access-control.md) | Roles and authorization rules. |
 | [Upgrade Guide](upgrade-guide.md) | Contract upgrade procedure and safeguards. |
 | [Mainnet Launch Checklist](mainnet-launch-checklist.md) | Launch-readiness checklist with owners, statuses, and sign-off. |
+| [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) | Dry-run-verified procedure for deploying, verifying, and publishing mainnet contracts. |
 | [Pre-Audit Checklist](pre-audit-checklist.md) | Audit preparation tasks. |
 
 ## Integrations
@@ -52,3 +53,4 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [CI/CD](ci-cd.md) | Continuous integration and deployment workflows. |
 | [Code Freeze Procedure](code-freeze-procedure.md) | Release freeze process. |
 | [Benchmarks](benchmarks.md) | Gas and resource usage tracking. |
+| [Support Channels](support-channels.md) | Where to report bugs, ask questions, and request features. |

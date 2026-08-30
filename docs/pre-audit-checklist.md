@@ -28,7 +28,7 @@ Goal: ≥ 95% line coverage on `invoice_liquidity` (the primary audit target), m
 | 1.1 | `cargo tarpaulin -p invoice_liquidity --fail-under 95` passes in CI | ⚠️ Partial | CI job exists (`coverage` job in `.github/workflows/ci.yml`) but `continue-on-error` is not set — verify it is actually blocking merges |
 | 1.2 | `iln_distribution` unit tests cover LP double-claim, freelancer+payer earn, late settlement | ✅ Pass | `lp_earns_on_funding_and_cannot_double_claim`, `freelancer_and_payer_earn_on_settlement`, `late_settlement_does_not_reward_payer` |
 | 1.3 | `iln_governance` has integration tests covering proposal lifecycle, quorum, veto, timelock | ⚠️ Partial | `governance_main_integration_test.rs` exists; verify all proposal states are exercised |
-| 1.4 | Multi-sig admin paths covered: `initialize_multisig_admin`, `propose_pause/unpause`, `sign_proposal`, `execute_proposal`, expiry, threshold-not-reached | ❌ Open | `tests_multisig_admin` module exists; confirm all error variants (`AlreadySigned`, `ProposalExpired`, `ThresholdNotReached`) have dedicated test cases |
+| 1.4 | Multi-sig admin paths covered: `initialize_multisig_admin`, `propose_pause/unpause`, `sign_proposal`, `execute_proposal`, expiry, threshold-not-reached | ✅ Pass | Issue #639: `tests_multisig_admin` is now declared as a compiled test module (was previously orphaned and referenced a not-yet-wired API — see Issue #641); `AlreadySigned` (`test_prevent_duplicate_signature`), `ProposalExpired` (`test_proposal_expires_after_window`), and `ThresholdNotReached` (`test_sign_proposal_threshold_not_met`, `test_single_signature_insufficient`, `test_3of3_threshold_all_signers_required`) each assert the exact error variant |
 | 1.5 | Oracle integration tests cover: verified payer, unverified payer, stale data rejection | ⚠️ Partial | `oracle_integration_test.rs` exists; confirm stale-data path (`max_oracle_age_ledgers`) is tested |
 | 1.6 | Error-case tests cover every `ContractError` variant | ❌ Open | `tests_error_cases` module exists; audit that no variant is untested |
 | 1.7 | Fuzz suite (`iln_fuzz`) has been run for ≥ 1000 cases and all snapshots committed | ✅ Pass | 1000 snapshot JSON files present in `contracts/fuzz/test_snapshots/tests/` |
@@ -213,7 +213,6 @@ The following items are ❌ as of this document's creation. Each must be resolve
 
 | Item | Description | Suggested Issue Label |
 |------|-------------|----------------------|
-| 1.4 | Multi-sig admin error variant test coverage | `audit-prep`, `testing` |
 | 1.6 | All `ContractError` variants have dedicated test cases | `audit-prep`, `testing` |
 | 2.4 | Verify zero `unsafe` blocks across all contract crates | `audit-prep`, `security` |
 | 3.2 | Doc comments for all `iln_distribution` public functions | `audit-prep`, `docs` |

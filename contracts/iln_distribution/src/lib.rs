@@ -613,4 +613,167 @@ mod test {
             expected_units.saturating_mul(DEFAULT_LP_REWARD_RATE)
         );
     }
+
+    /// Issue #660 / #661 — property-based tests for the reward-conservation
+    /// invariant documented in `docs/formal-verification-distribution.md`.
+    /// Randomized sequences of accrual, reward-rate updates, and claims
+    /// replace the fixed-scenario tests above to check the invariant holds
+    /// under arbitrary interleavings, not just scripted rate-change cases.
+    mod proptest_invariants {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Clone, Debug)]
+        enum Op {
+            AccrueLp(i128),
+            AccrueSettlement(bool),
+            SetLpRate(i128),
+            SetFreelancerRate(i128),
+            SetPayerRate(i128),
+            Claim,
+        }
+
+        fn op_strategy() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (1i128..=1_000_000_000).prop_map(Op::AccrueLp),
+                any::<bool>().prop_map(Op::AccrueSettlement),
+                (0i128..=50_000_000).prop_map(Op::SetLpRate),
+                (0i128..=50_000_000).prop_map(Op::SetFreelancerRate),
+                (0i128..=50_000_000).prop_map(Op::SetPayerRate),
+                Just(Op::Claim),
+            ]
+        }
+
+        struct DistEnv {
+            dist: IlnDistributionClient<'static>,
+            iln: MockIlnClient<'static>,
+            dist_id: Address,
+            token: TokenClient<'static>,
+            participant: Address,
+        }
+
+        fn setup_dist() -> DistEnv {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let iln_id = env.register_contract(None, MockIln);
+            let dist_id = env.register_contract(None, IlnDistribution);
+            let dist = IlnDistributionClient::new(&env, &dist_id);
+            let iln = MockIlnClient::new(&env, &iln_id);
+
+            let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+            let token = TokenClient::new(&env, &gov_token_id.address());
+
+            dist.initialize(&iln_id, &gov_token_id.address());
+
+            let participant = Address::generate(&env);
+
+            DistEnv {
+                dist,
+                iln,
+                dist_id,
+                token,
+                participant,
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(200))]
+
+            /// Invariant D1 (docs/formal-verification-distribution.md § 2):
+            /// cumulative tokens minted to a participant never exceeds the
+            /// *highest* total_earned() value ever observed up to that
+            /// point, for any interleaving of accrual, rate updates, and
+            /// claims.
+            ///
+            /// This is a high-water-mark bound, not a live one: total_earned
+            /// is recomputed from the *current* reward rate against
+            /// cumulative historical volume/settlement counts, so a rate cut
+            /// can transiently drop the live total_earned below an amount
+            /// already claimed at a higher historical rate (see the
+            /// documented residual risk) — that's expected, and is exactly
+            /// why this test tracks the running maximum rather than
+            /// asserting against the live value at every step.
+            #[test]
+            fn prop_cumulative_claims_never_exceed_earned(
+                ops in proptest::collection::vec(op_strategy(), 1..40),
+            ) {
+                let t = setup_dist();
+                let mut high_water_earned: i128 = 0;
+                for op in ops {
+                    match op {
+                        Op::AccrueLp(amount) => {
+                            t.iln.accrue_lp(&t.dist_id, &t.participant, &amount);
+                        }
+                        Op::AccrueSettlement(on_time) => {
+                            t.iln.accrue_settlement(
+                                &t.dist_id,
+                                &t.participant,
+                                &t.participant,
+                                &on_time,
+                            );
+                        }
+                        Op::SetLpRate(rate) => {
+                            t.dist.set_lp_reward_rate(&rate);
+                        }
+                        Op::SetFreelancerRate(rate) => {
+                            t.dist.set_freelancer_reward_rate(&rate);
+                        }
+                        Op::SetPayerRate(rate) => {
+                            t.dist.set_payer_reward_rate(&rate);
+                        }
+                        Op::Claim => {
+                            t.dist.claim_tokens(&t.participant);
+                        }
+                    }
+                    let cumulative_claimed = t.token.balance(&t.participant);
+                    let total_earned = t.dist.get_accrual(&t.participant);
+                    high_water_earned = high_water_earned.max(total_earned);
+                    prop_assert!(cumulative_claimed <= high_water_earned);
+                }
+            }
+
+            /// The cumulative amount minted to a participant (their gov-token
+            /// balance) never decreases across a randomized operation
+            /// sequence, including across rate cuts — claim_tokens only ever
+            /// mints, it never burns or claws back a prior payout.
+            #[test]
+            fn prop_claimed_high_water_mark_is_monotonic(
+                ops in proptest::collection::vec(op_strategy(), 1..40),
+            ) {
+                let t = setup_dist();
+                let mut prev_balance: i128 = 0;
+                for op in ops {
+                    match op {
+                        Op::AccrueLp(amount) => {
+                            t.iln.accrue_lp(&t.dist_id, &t.participant, &amount);
+                        }
+                        Op::AccrueSettlement(on_time) => {
+                            t.iln.accrue_settlement(
+                                &t.dist_id,
+                                &t.participant,
+                                &t.participant,
+                                &on_time,
+                            );
+                        }
+                        Op::SetLpRate(rate) => {
+                            t.dist.set_lp_reward_rate(&rate);
+                        }
+                        Op::SetFreelancerRate(rate) => {
+                            t.dist.set_freelancer_reward_rate(&rate);
+                        }
+                        Op::SetPayerRate(rate) => {
+                            t.dist.set_payer_reward_rate(&rate);
+                        }
+                        Op::Claim => {
+                            t.dist.claim_tokens(&t.participant);
+                        }
+                    }
+                    let balance = t.token.balance(&t.participant);
+                    prop_assert!(balance >= prev_balance);
+                    prev_balance = balance;
+                }
+            }
+        }
+    }
 }

@@ -46,6 +46,14 @@ skip = [
   { name = "darling", version = "=0.20.11" },
   { name = "darling_core", version = "=0.20.11" },
   { name = "darling_macro", version = "=0.20.11" },
+  # The following are duplicated inside the soroban-sdk dependency tree and
+  # cannot be deduplicated from here — the older version in each pair is
+  # pinned by a transitive dependency we do not control.
+  { name = "syn", version = "=2.0.117" },
+  { name = "stellar-strkey", version = "=0.0.13" },
+  { name = "hashbrown", version = "=0.12.3" },
+  { name = "hashbrown", version = "=0.15.5" },
+  { name = "crate-git-revision", version = "=0.0.6" },
 ]
 
 [sources]
