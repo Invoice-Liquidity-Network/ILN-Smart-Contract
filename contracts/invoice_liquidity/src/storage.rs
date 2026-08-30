@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::invoice::{
     AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
 };
+use crate::multisig::AdminAction;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +19,10 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
+    /// Issue #645: monotonically increasing count of admin actions ever
+    /// recorded in the admin action audit log (never decreases, even as
+    /// older ring-buffer entries are overwritten).
+    AdminActionCount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -42,6 +47,9 @@ pub enum DataKey {
     /// Used to enforce a minimum maturity delay before `resolve_fund_queue` may
     /// be called, preventing MEV / front-running (Issue #MEV-1).
     FundQueueOpenedAt(u64),
+    /// Issue #645: ring-buffer slot for the admin action audit log, indexed
+    /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
+    AdminActionLog(u32),
 
     // Stats (Persistent)
     TotalInvoices,
@@ -100,6 +108,24 @@ pub enum DataKey {
     /// deviation (basis points) between a price source's reported price
     /// and the cross-source median before it's rejected as an outlier.
     MaxPriceDeviationBps,
+
+    // ── Issue #124 / #641: multisig admin ───────────────────────────
+    /// The multisig admin signer set + approval threshold, once bootstrapped
+    /// via `initialize_multisig_admin`.
+    MultisigAdmin,
+    /// A pending/executed/expired multisig proposal, keyed by its id.
+    MultisigProposal(u64),
+    /// Monotonically increasing multisig proposal id counter.
+    NextProposalId,
+    /// Issue #641: the id of the currently in-flight (Pending,
+    /// non-expired) proposal for a given `AdminAction`, if any — used to
+    /// reject a second concurrent proposal for the same logical action
+    /// instead of allowing duplicates to race each other.
+    PendingActionProposal(AdminAction),
+    /// Issue #640: the currently scheduled signer rotation (old signer ->
+    /// new signer + timelock expiry), if any. Only one rotation may be
+    /// pending at a time.
+    PendingSignerRotation,
 }
 
 // ----------------------------------------------------------------

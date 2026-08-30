@@ -1092,7 +1092,7 @@ The distribution contract must be the admin of the governance token (SAC) to min
 - ✅ **Governance Contract:** On-chain proposals, voting, delegation, execution with timelock
 
 ### Still Needed
-- **Decentralized Governance:** Full DAO-based admin (currently governance contract controls some parameters, but single multisig still recommended for safety)
+- **Decentralized Governance:** Full DAO-based admin (currently governance contract controls some parameters, but single multisig still recommended for safety). See [ADR-012](adr/ADR-012-governance-multisig-handoff.md) for the phased handoff plan and trigger criteria for this transition.
 - **Staking-Based Governance:** Replace token voting with escrow/staking model to prevent flash-loan attacks (Issue #738)
 - **Automated Parameter Adjustment:** Formula-based reputation thresholds and reward rates based on network statistics
 - **Rollback Mechanism:** Snapshot and recovery points for emergency scenarios
@@ -1105,7 +1105,11 @@ The distribution contract must be the admin of the governance token (SAC) to min
 
 The ILN contract has **sound architectural foundations** with proper state management (checks-effects-interactions) and access control. However, **critical risks remain**:
 
-1. **Admin single point of failure** – must be mitigated before mainnet
+1. **Admin single point of failure** – must be mitigated before mainnet. See
+   [disaster-recovery-multisig-signers.md](disaster-recovery-multisig-signers.md) for
+   the recovery runbook covering a lost or compromised signer majority, and
+   [ADR-012](adr/ADR-012-governance-multisig-handoff.md) for the longer-term plan to
+   move final authority to governance.
 2. **No external credit oracle** – by design, but LPs must understand full risk
 3. **Parameter misconfiguration possible** – needs tighter validation
 4. **Reentrancy guards incomplete** – consider state flags for defense-in-depth

@@ -19,6 +19,7 @@ design choices so that future contributors understand *why* the system is built 
 | [ADR-009](ADR-009-quadratic-voting.md) | Quadratic Voting | Accepted |
 | [ADR-010](ADR-010-oracle-registry.md) | Oracle Registry | Accepted |
 | [ADR-011](ADR-011-reputation-state-source-of-truth.md) | Reputation State Source of Truth | Accepted |
+| [ADR-012](ADR-012-governance-multisig-handoff.md) | Governance-to-Multisig Authority Handoff Plan | Accepted |
 
 ## Template
 

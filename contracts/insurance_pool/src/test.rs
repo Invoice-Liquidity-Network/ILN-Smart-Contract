@@ -432,12 +432,18 @@ fn premium_rate_change_does_not_retroactively_affect_enrolled_lp_coverage() {
     // 4. Verify the new rate affects calculations for future deposits
     let rate_for_lp = s.client.calculate_premium_rate_bps(&lp);
     // The rate calculation should reflect the new base rate
-    assert!(rate_for_lp >= new_rate, "New base rate should apply to rate calculations");
+    assert!(
+        rate_for_lp >= new_rate,
+        "New base rate should apply to rate calculations"
+    );
 
     // 5. A new LP or new deposits should use the new rate
     let other_lp = Address::generate(&s.env);
     let rate_for_other = s.client.calculate_premium_rate_bps(&other_lp);
-    assert_eq!(rate_for_other, new_rate, "New LP should use the new base rate");
+    assert_eq!(
+        rate_for_other, new_rate,
+        "New LP should use the new base rate"
+    );
 }
 
 #[test]
@@ -799,6 +805,128 @@ fn tiered_coverage_overflows_past_the_i128_safe_bound() {
     );
 }
 
+/// Issue #659 — property-based tests for the solvency invariants documented
+/// in `docs/formal-verification-insurance.md`. Randomized sequences of
+/// deposit/claim operations replace the fixed scenarios above to check the
+/// invariants hold generally, not just for the scripted cases.
+mod proptest_invariants {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One randomized operation against the pool: a premium deposit or a
+    /// claim attempt, each targeting one of a small fixed set of LPs so
+    /// repeated ops can collide (deposit twice, claim twice) the way a real
+    /// operation sequence would.
+    #[derive(Clone, Debug)]
+    enum Op {
+        Deposit { lp: u8, amount: i128 },
+        Claim { lp: u8, invoice_id: u64 },
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0u8..4, 1i128..=1_000_000).prop_map(|(lp, amount)| Op::Deposit { lp, amount }),
+            (0u8..4, 0u64..20).prop_map(|(lp, invoice_id)| Op::Claim { lp, invoice_id }),
+        ]
+    }
+
+    /// Deploys a fresh pool and mints a large token balance to a fixed set
+    /// of LPs so randomized deposit amounts (bounded above at 1_000_000)
+    /// never fail for insufficient token balance — only for pool-level
+    /// invariants (e.g. `BalanceCap`, which isn't set here).
+    fn setup_with_lps(count: usize) -> (Setup, soroban_sdk::Vec<Address>) {
+        let s = setup();
+        let mut lps = soroban_sdk::Vec::new(&s.env);
+        for _ in 0..count {
+            let lp = Address::generate(&s.env);
+            s.token_admin.mint(&lp, &100_000_000);
+            lps.push_back(lp);
+        }
+        (s, lps)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Invariant S1 (docs/formal-verification-insurance.md § 2):
+        /// pool_balance >= 0 after every operation in a randomized
+        /// deposit/claim sequence.
+        #[test]
+        fn prop_pool_balance_never_negative(ops in proptest::collection::vec(op_strategy(), 1..40)) {
+            let (s, lps) = setup_with_lps(4);
+            for op in ops {
+                match op {
+                    Op::Deposit { lp, amount } => {
+                        let lp_addr = lps.get((lp as u32) % lps.len()).unwrap();
+                        let _ = s.client.try_deposit_premium(&lp_addr, &amount);
+                    }
+                    Op::Claim { lp, invoice_id } => {
+                        let lp_addr = lps.get((lp as u32) % lps.len()).unwrap();
+                        let _ = s.client.try_claim(&invoice_id, &lp_addr);
+                    }
+                }
+                prop_assert!(s.client.get_pool_balance() >= 0);
+            }
+        }
+
+        /// Invariant S2 (docs/formal-verification-insurance.md § 3):
+        /// sum(claims_paid) <= sum(premiums_deposited) after every operation,
+        /// tracked independently in the test harness as a cross-check against
+        /// the contract's own Balance accounting.
+        #[test]
+        fn prop_claims_never_exceed_deposits(ops in proptest::collection::vec(op_strategy(), 1..40)) {
+            let (s, lps) = setup_with_lps(4);
+            let mut total_deposited: i128 = 0;
+            let mut total_claimed: i128 = 0;
+            for op in ops {
+                match op {
+                    Op::Deposit { lp, amount } => {
+                        let lp_addr = lps.get((lp as u32) % lps.len()).unwrap();
+                        if s.client.try_deposit_premium(&lp_addr, &amount).is_ok() {
+                            total_deposited += amount;
+                        }
+                    }
+                    Op::Claim { lp, invoice_id } => {
+                        let lp_addr = lps.get((lp as u32) % lps.len()).unwrap();
+                        if let Ok(Ok(payout)) = s.client.try_claim(&invoice_id, &lp_addr) {
+                            total_claimed += payout;
+                        }
+                    }
+                }
+                prop_assert!(total_claimed <= total_deposited);
+            }
+        }
+
+        /// Invariant S3 (docs/formal-verification-insurance.md § 4): however
+        /// many times claim() is attempted for the same invoice_id, exactly
+        /// one succeeds and the pool balance moves by exactly that one
+        /// payout.
+        #[test]
+        fn prop_claim_idempotent_per_invoice(
+            attempts in 2usize..10,
+            amount in 100i128..=1_000_000,
+        ) {
+            let s = setup();
+            let lp = Address::generate(&s.env);
+            s.token_admin.mint(&lp, &amount);
+            s.client.deposit_premium(&lp, &amount);
+
+            let invoice_id: u64 = 7;
+            let balance_before = s.client.get_pool_balance();
+            let mut successes = 0u32;
+            let mut total_payout: i128 = 0;
+            for _ in 0..attempts {
+                if let Ok(Ok(payout)) = s.client.try_claim(&invoice_id, &lp) {
+                    successes += 1;
+                    total_payout += payout;
+                }
+            }
+            prop_assert_eq!(successes, 1);
+            prop_assert_eq!(s.client.get_pool_balance(), balance_before - total_payout);
+        }
+    }
+}
+
 // ── Issue #696: Timelock cancel-race safety tests ───────────────────────
 //
 // Verify that cancelling and resubmitting coverage/admin proposals cannot
@@ -982,7 +1110,7 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
     s.env.ledger().set_timestamp(0);
 
     // Create and enroll 100 "latecomer" LPs with minimal premiums
-    let mut latecomers = Vec::new();
+    let mut latecomers = std::vec::Vec::new();
     for i in 0..NUM_LATECOMERS {
         let lp = Address::generate(&s.env);
         s.token_admin.mint(&lp, &MINIMAL_PREMIUM);
@@ -1045,7 +1173,7 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
         "pool should retain positive balance after bounded defaults"
     );
 
-    println!(
+    std::println!(
         "Adverse selection stress test results:\n  Initial balance: {}\n  After enrollments: {}\n  After {} claims: {}\n  Total paid out: {}\n  Remaining runway: {:?} months",
         initial_pool_balance,
         balance_after_enrollments,
@@ -1065,12 +1193,14 @@ fn insurance_pool_handles_sequential_mass_enrollment_and_claims() {
     const NUM_WAVES: usize = 5;
     const PREMIUM_PER_LP: i128 = COVERAGE / 500;
 
+    let mut enrolled_lps = std::vec::Vec::new();
     for wave in 0..NUM_WAVES {
         // Enroll a wave of LPs
         for lp_idx in 0..WAVE_SIZE {
             let lp = Address::generate(&s.env);
             s.token_admin.mint(&lp, &PREMIUM_PER_LP);
             s.client.deposit_premium(&lp, &PREMIUM_PER_LP);
+            enrolled_lps.push(lp);
         }
 
         // Advance time between waves to simulate real scenario
@@ -1092,8 +1222,8 @@ fn insurance_pool_handles_sequential_mass_enrollment_and_claims() {
     for claim_idx in 0..3 {
         let invoice_id = (claim_idx as u64) + 100001;
         // For testing, we'll use one of the enrolled LPs
-        if claim_idx < NUM_LATECOMERS {
-            let claiming_lp = &latecomers[claim_idx];
+        if claim_idx < enrolled_lps.len() {
+            let claiming_lp = &enrolled_lps[claim_idx];
             let payout = s.client.claim(&invoice_id, claiming_lp);
             claims_succeeded += 1;
             assert!(payout >= 0, "payout must be non-negative");

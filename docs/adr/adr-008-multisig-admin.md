@@ -108,25 +108,34 @@ call, not by an active sweep, so no background job is required.
   override.
 
 **Negative / Trade-offs:**
-- **This module is not currently wired into the contract's public API.**
-  `contracts/invoice_liquidity/src/multisig.rs` defines the data structures
-  and pure helper functions (`is_signer`, `has_signed`, `threshold_reached`,
-  `is_expired`) but `lib.rs` does not declare `pub mod multisig;`, and none
-  of `initialize_multisig_admin`, `propose_pause`, `sign_proposal`, or
-  `execute_proposal` exist as contract entry points today — `pause`/`unpause`
-  are still callable directly by the single admin address
-  (`require_admin`). A full lib.rs/storage.rs/errors.rs integration was
-  implemented in commit `d267e36` (`feat: implement 2-of-3 multi-sig admin
-  for high-security operations`) but was lost from `lib.rs` in a later merge
-  conflict resolution (`9e94e45`, "Replace local lib.rs with upstream/main
-  version to resolve merge markers"); `contracts/invoice_liquidity/src/
-  tests_multisig_admin.rs` still contains the corresponding test suite but
-  is not declared as a module and does not compile against current `lib.rs`.
-  This ADR documents the design as built; re-wiring the integration
-  (`pub mod multisig;`, the five contract functions, the `DataKey` storage
-  variants, and the seven `ContractError` variants listed in
-  `MULTISIG_IMPLEMENTATION.md`) is tracked as follow-up work, not assumed
-  complete.
+- **Update (Issue #641): this module is now wired into the contract's
+  public API.** `lib.rs` declares `pub mod multisig;` and exposes
+  `initialize_multisig_admin`, `propose_pause`, `propose_unpause`,
+  `propose_remove_token`, `propose_set_fee_rate`, `propose_set_max_discount`,
+  `propose_update_multisig`, `sign_proposal`, and `execute_proposal` as
+  contract entry points, backed by the `DataKey::MultisigAdmin` /
+  `MultisigProposal` / `NextProposalId` storage variants and the
+  `ContractError` variants listed in `MULTISIG_IMPLEMENTATION.md`
+  (`InvalidMultisigConfig`, `NotAuthorizedSigner`, `AlreadySigned`,
+  `ProposalNotFound`, `ProposalAlreadyExecuted`, `ProposalExpired`,
+  `ThresholdNotReached`). `pause`/`unpause` (etc.) remain directly callable
+  by the single admin (`require_admin`) as an unaffected, additive path —
+  the multisig flow is an alternative, not a replacement, pending a
+  decision on deprecating direct admin calls. Issue #641 also closed the
+  duplicate-proposal gap: `propose_*` now rejects a second concurrent
+  proposal for the same exact `AdminAction` (`DuplicateProposal`) via a
+  `DataKey::PendingActionProposal(AdminAction)` index, cleared once the
+  in-flight proposal executes or a fresh one is proposed after expiry.
+  Signature replay across proposals is structurally prevented — each
+  signer's approval is recorded on the specific `MultisigProposal` it was
+  submitted against, and Soroban's `Address::require_auth()` binds the
+  authorization to that exact invocation (contract, function, and
+  arguments) at the host level. The below history is preserved for
+  context: the original integration was implemented in commit `d267e36`
+  (`feat: implement 2-of-3 multi-sig admin for high-security operations`)
+  but was lost from `lib.rs` in a later merge conflict resolution
+  (`9e94e45`, "Replace local lib.rs with upstream/main version to resolve
+  merge markers").
 - `MULTISIG_WINDOW_LEDGERS` is a compile-time constant; changing the
   expiration window requires a contract upgrade rather than a governance
   parameter change.
@@ -139,17 +148,21 @@ call, not by an active sweep, so no background job is required.
 
 ## Follow-up work
 
-- Re-add `pub mod multisig;` and the five contract entry points
-  (`initialize_multisig_admin`, `propose_pause`, `propose_unpause`,
-  `sign_proposal`, `execute_proposal`) to `lib.rs`, the storage helpers to
-  `storage.rs`, and the error variants (`NotAuthorizedSigner`,
-  `ProposalNotFound`, `AlreadySigned`, `ProposalExpired`,
-  `ThresholdNotReached`, `ProposalAlreadyExecuted`, `InvalidMultisigConfig`)
-  to `errors.rs`, per `MULTISIG_IMPLEMENTATION.md`.
-- Re-enable `tests_multisig_admin.rs` as a compiled test module once the
-  integration lands, and confirm it still passes against current `lib.rs`.
-- Route `pause`/`unpause` (and eventually token removal / fee / discount
-  changes) through the multisig proposal flow instead of direct
-  `require_admin` calls, once re-wired.
+- ~~Re-add `pub mod multisig;` and the five contract entry points...~~ Done
+  (Issue #641) — see the updated "Negative / Trade-offs" note above.
+- Re-enable `tests_multisig_admin.rs` as a compiled test module, and add the
+  missing dedicated `AlreadySigned` / `ProposalExpired` / `ThresholdNotReached`
+  cases flagged by `docs/pre-audit-checklist.md` item 1.4 (Issue #639).
+- Decide whether to route `pause`/`unpause` (and eventually token removal /
+  fee / discount changes) through the multisig proposal flow *exclusively*,
+  deprecating the direct `require_admin` path, or keep both permanently.
 - Consider signature revocation and weighted voting as documented future
   enhancements.
+- ~~Add a first-class signer rotation instruction with a post-approval
+  timelock...~~ Done (Issue #640) — `AdminAction::RotateSigner` executes
+  through the normal propose/sign/execute flow, but `execute_proposal`
+  only *schedules* the swap (`multisig::schedule_rotation`); it takes
+  effect only after `finalize_signer_rotation` is called following a
+  `ROTATION_TIMELOCK_LEDGERS` (~48h) delay, and can be cancelled first via
+  `cancel_signer_rotation` if the rotation looks malicious or mistaken.
+  No contract upgrade or re-initialization is required.
