@@ -126,3 +126,109 @@ observations and resets on a fresh one.
   tokens each needing a distinct oracle would accumulate persistent
   entries proportional to registrations, though this mirrors how
   `TokenDecimals(Address)` and `ApprovedToken(Address)` already scale.
+
+## Oracle Swap Semantics for In-Flight Invoices
+
+**Explicit design decision:** replacing a registered oracle (`register_oracle`
+/ `register_token_oracle` pointed at a new address — e.g. swapping in a
+Reflector-style oracle's upgraded contract) applies **immediately and
+retroactively** to every invoice already submitted, including one that has
+already received partial funding. There is no grandfathering, no per-invoice
+pinning of "the oracle that was current when this invoice was submitted," and
+no transition window.
+
+This isn't an accident of implementation to be fixed later — it's the direct
+and correct consequence of two things already decided elsewhere in this ADR:
+
+1. `require_oracle_verification` is a **per-call argument to `fund_invoice`**,
+   not a field stored on `Invoice` at `submit_invoice` time. There is nothing
+   on the invoice itself that could be "broken" by a swap, because the
+   invoice never recorded which oracle (or even whether oracle verification)
+   would apply — that choice is made fresh by whoever calls `fund_invoice`,
+   for that specific call.
+2. `resolve_oracle` reads the registry's **current** storage state on every
+   call — it has no snapshot, cache, or invoice-scoped memory of a prior
+   resolution. Two `fund_invoice` calls against the *same* invoice (e.g. two
+   partial-funding tranches from the same or different LPs) can therefore
+   resolve to two *different* oracle addresses if a swap happened in between,
+   each call correctly reflecting whatever was registered at the moment it
+   ran.
+
+**Alternative considered and rejected:** snapshot the resolved oracle address
+onto the `Invoice` struct the first time `fund_invoice` is called with
+`require_oracle_verification=true`, so every subsequent funding call against
+that invoice keeps using the same oracle even after a later swap. Rejected
+because:
+- It adds a new persisted field to every invoice for a feature most invoices
+  never use (oracle verification is opt-in per call).
+- It would mean a *known-compromised* oracle (see
+  [oracle-attack-economics.md](../oracle-attack-economics.md)) keeps being
+  trusted for every invoice that happened to touch it before removal —
+  exactly backwards from the intent of being able to swap out a bad oracle.
+- Nothing in the codebase's existing conventions snapshots *any* other
+  governance-controlled parameter onto an invoice (fee rate, discount cap,
+  etc. are also always read live) — a special case here would be
+  inconsistent with the rest of the contract.
+
+**Practical implication for operators:** a registered oracle can be swapped
+mid-lifecycle, including while invoices are actively being funded against it,
+without any special procedure or invoice-side migration — the very next
+`fund_invoice` call simply resolves against whatever is registered at that
+moment. See [oracle-integration.md](../oracle-integration.md#replacing-an-already-registered-oracle)
+for the operational swap procedure, and
+`contracts/invoice_liquidity/src/tests_oracle_registry.rs`'s
+`test_oracle_swap_mid_lifecycle_*` tests for the behavior verified end-to-end.
+
+## Oracle State Snapshotting for Disputes
+
+**Explicit design decision:** the opposite of the swap semantics above
+applies once a dispute is filed. `dispute_invoice()` calls
+`oracle_registry::snapshot_oracle_state_for_dispute` and freezes the
+result — the `Identity`-feed oracle's resolved address, its `is_verified`
+answer and timestamp for this invoice's payer, whether that data was
+already stale, and any cross-validated `Price`-feed reading for this
+invoice's token — onto the `DisputeRecord` (`DisputeOracleSnapshot`,
+`contracts/invoice_liquidity/src/invoice.rs`), exposed via
+`get_dispute_details()`. Unlike oracle resolution for funding, **this value
+never changes again after it's written**, no matter how the live oracle
+moves before governance gets to `resolve_dispute`/`auto_resolve_dispute`.
+
+**Rationale:** disputes reference an off-chain `reason_hash` — the actual
+evidence discussion happens off-chain, in governance forums, over a period
+that can span the full dispute-resolution timeline. Without a frozen
+on-chain anchor, "what did the oracle say" is answerable only by whoever
+happens to query it and when, with no guarantee two reviewers looking at
+the same dispute on different days see the same answer, and no way to
+prove after the fact what the oracle reported at the moment that actually
+mattered (when the payer disputed). Freezing the snapshot at filing time
+makes the oracle's state at that moment as immutable and independently
+verifiable as the `reason_hash` it sits alongside.
+
+**Why filing time, not resolution time:** the dispute is *about* the state
+of the world when the payer decided to raise it — freezing at resolution
+time would still leave a gap between "what the payer saw when they
+disputed" and "what governance reviews," just moved to a different point,
+and would make the snapshot dependent on whenever an admin happens to call
+`resolve_dispute`, which is an arbitrary, ungoverned delay from the payer's
+perspective.
+
+**Never blocks filing:** `snapshot_oracle_state_for_dispute` uses
+`try_invoke_contract` rather than the panicking `env.invoke_contract` that
+`fund_invoice`/`check_oracle_health` use internally — a misbehaving or
+unreachable oracle degrades every affected snapshot field to `None` rather
+than aborting `dispute_invoice` itself. A payer's ability to file a dispute
+must not depend on the oracle currently working; "the oracle was
+unreachable at filing time" (an all-`None` identity snapshot despite
+`identity_oracle_gated: true`) is itself meaningful evidence, not a reason
+to fail the dispute.
+
+**Not itself oracle-gated:** the snapshot is captured unconditionally,
+regardless of whether the invoice's actual funding history ever used
+`require_oracle_verification=true`. `identity_oracle_gated` records whether
+an oracle is currently registered for this token, independent of whether
+any particular funder chose to check it.
+
+See `contracts/invoice_liquidity/src/tests_dispute_oracle_snapshot.rs` for
+the behavior verified end-to-end, in particular
+`test_dispute_snapshot_frozen_after_live_oracle_value_changes` and
+`test_dispute_snapshot_includes_and_freezes_price_feed_reading`.

@@ -13,7 +13,7 @@ use crate::oracle_registry::OracleFeedType;
 use crate::test::setup;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     Address, Env, IntoVal,
 };
 
@@ -71,6 +71,22 @@ fn advance_past_rate_limit_cooldown(env: &Env) {
     let mut info = env.ledger().get();
     info.sequence_number += 150;
     info.timestamp += 150 * 5;
+    env.ledger().set(info);
+}
+
+/// register_oracle/remove_oracle/register_token_oracle/remove_token_oracle
+/// are now cooldown-gated per resolution channel
+/// (`DEFAULT_ORACLE_REGISTRY_COOLDOWN_LEDGERS` = 720 ledgers — see Issue
+/// #oracle-registry-cooldown). A test that mutates the *same* channel
+/// (same feed type for register_oracle/remove_oracle; same feed type +
+/// token for register_token_oracle/remove_token_oracle) more than once
+/// must advance the ledger past this cooldown in between, or the second
+/// mutation is rejected with `OracleRegistryCooldownActive`. 800 ledgers
+/// clears the 720-ledger default with margin.
+fn advance_past_oracle_registry_cooldown(env: &Env) {
+    let mut info = env.ledger().get();
+    info.sequence_number += 800;
+    info.timestamp += 800 * 5;
     env.ledger().set(info);
 }
 
@@ -158,6 +174,7 @@ fn test_remove_oracle_clears_feed_type_default() {
     let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
     t.contract
         .register_oracle(&OracleFeedType::Identity, &oracle);
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract.remove_oracle(&OracleFeedType::Identity);
 
     assert_eq!(
@@ -195,6 +212,7 @@ fn test_remove_token_oracle_falls_back_to_feed_type_default() {
         .register_oracle(&OracleFeedType::Identity, &default_oracle);
     t.contract
         .register_token_oracle(&OracleFeedType::Identity, &t.token.address, &token_oracle);
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract
         .remove_token_oracle(&OracleFeedType::Identity, &t.token.address);
 
@@ -217,6 +235,190 @@ fn test_legacy_price_oracle_used_as_fallback_for_identity_feed() {
         t.contract
             .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
         Some(legacy_oracle)
+    );
+}
+
+// ── Legacy oracle fallback: visibility + disable flag (Issue
+// #legacy-oracle-fallback) ─────────────────────────────────────────────────
+//
+// Falling back to the legacy Config.price_oracle field is convenient for
+// migration, but silently masks the fact that the new registry was never
+// properly configured for a given token/feed — an operator relying on
+// oracle_registry monitoring could easily miss it. These tests cover the
+// LegacyOracleFallbackUsed event and the governance-settable flag that lets
+// the fallback be disabled entirely once migration is confirmed complete.
+
+#[test]
+fn test_legacy_fallback_emits_event() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    let resolved = t
+        .contract
+        .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address);
+    assert_eq!(resolved, Some(legacy_oracle));
+
+    let events = t.env.events().all();
+    let saw_fallback_event = events.events().iter().any(|e| {
+        let s = std::format!("{:?}", e);
+        s.contains("legacy_oracle_fallback_used") || s.contains("LegacyOracleFallbackUsed")
+    });
+    assert!(
+        saw_fallback_event,
+        "resolving through the legacy price_oracle field must emit LegacyOracleFallbackUsed \
+         so it's visible in monitoring/indexer data, not silently invisible"
+    );
+}
+
+#[test]
+fn test_registry_default_does_not_emit_legacy_fallback_event() {
+    // Precision check: the event must fire only when the fallback path is
+    // actually taken, not on every oracle resolution regardless of source.
+    let t = setup();
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &oracle);
+
+    let resolved = t
+        .contract
+        .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address);
+    assert_eq!(resolved, Some(oracle));
+
+    let events = t.env.events().all();
+    let saw_fallback_event = events.events().iter().any(|e| {
+        let s = std::format!("{:?}", e);
+        s.contains("legacy_oracle_fallback_used") || s.contains("LegacyOracleFallbackUsed")
+    });
+    assert!(
+        !saw_fallback_event,
+        "resolving through an explicitly registered oracle must not emit \
+         LegacyOracleFallbackUsed — that event is specifically for the legacy path"
+    );
+}
+
+#[test]
+fn test_legacy_fallback_enabled_by_default() {
+    let t = setup();
+    assert!(t.contract.is_legacy_oracle_fallback_enabled());
+}
+
+#[test]
+fn test_disabling_legacy_fallback_forces_none_when_unconfigured() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(legacy_oracle),
+        "sanity check: the fallback resolves normally before being disabled"
+    );
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+    assert!(!t.contract.is_legacy_oracle_fallback_enabled());
+
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None,
+        "with the fallback disabled and no explicit registry entry, resolution must \
+         return None (forcing explicit configuration) rather than silently falling \
+         back to Config.price_oracle"
+    );
+}
+
+#[test]
+fn test_disabling_legacy_fallback_does_not_affect_explicit_registry_entries() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    let registry_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &registry_oracle);
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+
+    // Resolution never reaches the legacy-fallback step at all here — an
+    // explicit feed-type default is registered — so disabling the fallback
+    // must have no effect on this outcome.
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(registry_oracle)
+    );
+}
+
+#[test]
+fn test_legacy_fallback_can_be_re_enabled() {
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    t.contract.set_price_oracle(&legacy_oracle);
+
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        None
+    );
+
+    // Not a one-way switch: governance can restore the previous behavior.
+    t.contract.set_legacy_oracle_fallback_enabled(&true);
+    assert_eq!(
+        t.contract
+            .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
+        Some(legacy_oracle)
+    );
+}
+
+#[test]
+fn test_fund_invoice_oracle_verification_is_no_op_when_legacy_fallback_disabled_and_unconfigured() {
+    // With the fallback disabled and no explicit registry entry, an invoice
+    // requesting oracle verification must degrade to the same fail-open
+    // behavior as "no oracle configured at all" — not silently fall back,
+    // and not reject funding just because there's nothing left to consult.
+    let t = setup();
+    advance_past_rate_limit_cooldown(&t.env);
+    let legacy_oracle = deploy_mock_oracle(&t, false, t.env.ledger().sequence()); // unverified
+    t.contract.set_price_oracle(&legacy_oracle);
+    t.contract.set_legacy_oracle_fallback_enabled(&false);
+
+    let invoice_id = make_invoice(&t);
+    let result =
+        t.contract
+            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert!(
+        result.is_ok(),
+        "with the legacy fallback disabled and no registry entry, oracle verification \
+         must be a no-op (fail-open) rather than resolving to the disabled legacy \
+         oracle or rejecting funding outright"
+    );
+}
+
+#[test]
+fn test_set_legacy_oracle_fallback_enabled_requires_admin() {
+    let (env, _admin, _, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_legacy_oracle_fallback_enabled",
+            args: (false,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_set_legacy_oracle_fallback_enabled(&false);
+    assert!(
+        res.is_err(),
+        "set_legacy_oracle_fallback_enabled should fail for non-admin caller"
     );
 }
 
@@ -677,6 +879,11 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
         Some(token_oracle)
     );
 
+    // Advance past the per-channel mutation cooldown before the next
+    // mutation to each of these same two channels below — unrelated to,
+    // and unaffected by, the contract's own pause state (pause and this
+    // cooldown are independent mechanisms).
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract
         .remove_token_oracle(&OracleFeedType::Identity, &t.token.address);
     assert_eq!(
@@ -686,6 +893,7 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
         "removing the per-token override must succeed while paused, falling back to the default"
     );
 
+    advance_past_oracle_registry_cooldown(&t.env);
     t.contract.remove_oracle(&OracleFeedType::Identity);
     assert_eq!(
         t.contract

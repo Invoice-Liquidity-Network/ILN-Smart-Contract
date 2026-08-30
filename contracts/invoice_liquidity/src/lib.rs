@@ -29,8 +29,8 @@ use insurance_pool::InsurancePoolInterfaceClient;
 use oracle_registry::OracleFeedType;
 
 pub use crate::invoice::{
-    AppealRecord, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode,
-    ReputationProfile, ReputationScore, TopPayerEntry,
+    AppealRecord, DisputeOracleSnapshot, DisputeRecord, Invoice, InvoiceParams, InvoiceStatus,
+    LpFundRequest, ReferralCode, ReputationProfile, ReputationScore, TopPayerEntry,
 };
 pub use crate::nft::InvoiceNftMetadata;
 pub use crate::storage::DataKey;
@@ -62,7 +62,7 @@ use invoice::{
     save_dispute, save_fund_queue, save_invoice, save_invoice_funders,
     save_pre_default_payer_score, save_queue_resolution, set_lp_score, set_min_payer_reputation,
     set_paused, set_payer_score, set_reputation, try_load_invoice, try_set_fund_queue_opened_at,
-    ContractStats, DisputeRecord, StorageKey,
+    ContractStats, StorageKey,
 };
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -2608,12 +2608,26 @@ impl InvoiceLiquidityContract {
         let now_ts = env.ledger().timestamp();
         let now_ledger = env.ledger().sequence();
 
+        // Issue #dispute-oracle-snapshot: freeze the oracle-sourced state
+        // for this invoice's token/payer right now, at filing time, so
+        // governance resolving the dispute later reviews what was true
+        // when the dispute was raised — not whatever the oracle has since
+        // moved to. Computed even if funding never actually required
+        // oracle verification; `identity_oracle_gated` records whether it
+        // would have mattered.
+        let oracle_snapshot = oracle_registry::snapshot_oracle_state_for_dispute(
+            &env,
+            &invoice.token,
+            &invoice.payer,
+        );
+
         save_dispute(
             &env,
             invoice_id,
             &DisputeRecord {
                 reason_hash: reason_hash.clone(),
                 disputed_at: now_ledger,
+                oracle_snapshot,
             },
         );
 
@@ -2635,6 +2649,17 @@ impl InvoiceLiquidityContract {
         );
 
         Ok(())
+    }
+
+    /// Return the dispute record for `invoice_id`, if one has been filed —
+    /// including the oracle-sourced state snapshotted at the moment the
+    /// dispute was raised (`DisputeOracleSnapshot`). Governance resolving
+    /// the dispute should read this rather than querying the oracle
+    /// directly, since the live oracle may have moved on since filing;
+    /// this view always returns the frozen-at-filing-time value.
+    /// Access: Anyone
+    pub fn get_dispute_details(env: Env, invoice_id: u64) -> Option<DisputeRecord> {
+        get_dispute(&env, invoice_id)
     }
 
     /// Resolve a dispute (admin / governance only).
