@@ -286,6 +286,38 @@ fn test_update_fee_rate_via_governance_takes_effect() {
 
 // ── Test 3 ────────────────────────────────────────────────────────────────────
 
+/// A proposal progress through the live governance lifecycle and explicitly lands
+/// in `Passed` before the final `Executed` transition.
+#[test]
+fn test_proposal_status_transitions_are_exercised() {
+    let t = setup();
+
+    let proposal_id = t.governance.create_proposal(
+        &t.voter,
+        &ProposalAction::UpdateFeeRate(250),
+        &dummy_hash(&t.env),
+        &250_i128,
+    );
+
+    let initial = t.governance.get_proposal(&proposal_id);
+    assert_eq!(initial.status, ProposalStatus::Active);
+
+    t.governance.cast_vote(&t.voter, &proposal_id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    ledger.sequence_number += invoice_liquidity::constants::ECONOMIC_PARAM_COOLDOWN_LEDGERS as u32;
+    t.env.ledger().set(ledger);
+
+    assert_eq!(t.governance.try_execute_proposal(&proposal_id), Ok(Ok(())));
+    let passed = t.governance.get_proposal(&proposal_id);
+    assert_eq!(passed.status, ProposalStatus::Passed);
+
+    assert_eq!(t.governance.try_execute_proposal(&proposal_id), Ok(Ok(())));
+    let executed = t.governance.get_proposal(&proposal_id);
+    assert_eq!(executed.status, ProposalStatus::Executed);
+}
+
 /// A vetoed proposal cannot be executed; the target parameter is unchanged.
 #[test]
 fn test_veto_proposal_prevents_execution() {
@@ -344,4 +376,64 @@ fn test_veto_proposal_prevents_execution() {
         admin_balance, 0,
         "admin balance must be 0 — the vetoed fee-rate change must not have taken effect"
     );
+}
+
+// ── Additional Transition Coverage Tests ───────────────────────────────────
+
+/// A proposal with no votes should be rejected due to quorum not reached,
+/// and subsequent execute attempts must return AlreadyResolved.
+#[test]
+fn test_proposal_rejected_on_quorum_not_reached_and_cannot_execute_after() {
+    let t = setup();
+
+    let proposal_id = t.governance.create_proposal(
+        &t.voter,
+        &ProposalAction::UpdateFeeRate(123),
+        &dummy_hash(&t.env),
+        &123_i128,
+    );
+
+    // Advance past the voting window so execute_proposal runs quorum checks.
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+
+    // First execute call should return QuorumNotReached and mark the proposal Rejected.
+    let first = t.governance.try_execute_proposal(&proposal_id);
+    assert_eq!(first, Err(Ok(GovernanceError::QuorumNotReached)));
+
+    let p = t.governance.get_proposal(&proposal_id);
+    assert_eq!(p.status, ProposalStatus::Rejected);
+
+    // Subsequent execute attempts must return AlreadyResolved.
+    let second = t.governance.try_execute_proposal(&proposal_id);
+    assert_eq!(second, Err(Ok(GovernanceError::AlreadyResolved)));
+}
+
+/// Illegal actions on an already-executed proposal are rejected: voting
+/// attempts fail (voting window ended) and re-execution returns AlreadyResolved.
+#[test]
+fn test_illegal_actions_on_executed_proposal() {
+    let t = setup();
+
+    let proposal_id = t.governance.create_proposal(
+        &t.voter,
+        &ProposalAction::UpdateFeeRate(250),
+        &dummy_hash(&t.env),
+        &250_i128,
+    );
+
+    // Move the proposal through Passed -> Executed.
+    pass_and_execute(&t, proposal_id);
+
+    let executed = t.governance.get_proposal(&proposal_id);
+    assert_eq!(executed.status, ProposalStatus::Executed);
+
+    // Attempting to cast a vote after execution must fail due to voting ended.
+    let vote_attempt = t.governance.try_cast_vote(&t.voter, &proposal_id, &true);
+    assert_eq!(vote_attempt, Err(Ok(GovernanceError::VotingEnded)));
+
+    // Re-executing must return AlreadyResolved.
+    let exec_again = t.governance.try_execute_proposal(&proposal_id);
+    assert_eq!(exec_again, Err(Ok(GovernanceError::AlreadyResolved)));
 }
