@@ -1,5 +1,7 @@
 # ILN Security Policy
 
+> This is the detailed security policy. For a summary, see [SECURITY.md](../SECURITY.md) in the repository root.
+
 ILN spans Soroban smart contracts, a TypeScript SDK, a CLI, an indexer, and a notifications service. This policy explains what to report, how to report it, and how maintainers triage and respond.
 
 ## Scope
