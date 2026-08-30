@@ -38,7 +38,8 @@ only one, but anything user-facing usually spans two.
 ### TypeScript package development
 
 The TypeScript packages in this repo (`sdk/`, `indexer/`, `notifications/`,
-`tests/e2e/`) are independent npm packages. They are intended to be driven
+`tests/e2e/`) are independent npm packages. The `frontend/` directory is a
+Storybook workspace for the ILN component library. They are intended to be driven
 through the root [`Makefile`](Makefile), which prefers `pnpm` when available and
 falls back to `npm`:
 
@@ -100,7 +101,7 @@ the package directory name:
 
 | Scope | Area |
 |-------|------|
-| `contracts` *(or a crate name: `invoice_liquidity`, `iln_governance`, `iln_distribution`, `reputation_bonus`)* | Soroban contract code |
+| `contracts` *(or a crate name: `invoice_liquidity`, `iln_governance`, `iln_distribution`, `reputation_bonus`, `insurance_pool`)* | Soroban contract code |
 | `sdk` | The `@iln/sdk` TypeScript package |
 | `indexer` | The event indexer service |
 | `notifications` | The notification service |
