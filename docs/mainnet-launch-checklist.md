@@ -33,7 +33,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Indexer deployed | Deploy production indexer with backup, restore, and replay procedures. | Infrastructure lead | In progress | [indexer](../indexer) |
 | Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | In progress | [monitoring-runbook.md](monitoring-runbook.md) |
 | Notifications deployed | Deploy webhook/email notifications with HMAC signing, rate limiting, and SSRF controls verified. | Infrastructure lead | In progress | [notifications](../notifications) |
-| Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | Not started | [Security Policy](security.md) |
+| Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | In progress | [Incident Response Runbook](incident-response-runbook.md) |
 | Deployment secrets reviewed | Confirm production secrets follow an approved, reviewed custody path distinct from testnet's GitHub Actions secret. | Release lead | In progress | [Deployment Secret Management](deployment-secrets.md) |
 | Mainnet rollback runbook rehearsed | Publish and rehearse the early-launch rollback decision procedure (pause, veto, in-place rollback, full redeploy) before mainnet launch. | Release lead | In progress | [#657](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/657) |
 
