@@ -65,8 +65,9 @@ use invoice::{
     save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
     save_queue_resolution, set_lp_score, set_max_invoice_amount, set_min_payer_reputation,
     set_paused, set_payer_score, set_reputation, set_token_volume_cap, try_load_invoice,
-    try_set_fund_queue_opened_at, ContractStats, DisputeRecord, StorageKey,
+    try_set_fund_queue_opened_at, ContractStats, DisputeRecord, ProtocolStatus, StorageKey,
 };
+use invoice::get_last_pause_timestamp;
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
 
@@ -1215,6 +1216,59 @@ impl InvoiceLiquidityContract {
     /// Access: Anyone
     pub fn get_contract_stats(env: Env) -> ContractStats {
         get_contract_stats(&env)
+    }
+
+    // ------------------------------------------------------------
+    // get_protocol_status (read-only view — Issue #775)
+    // ------------------------------------------------------------
+    /// Operationally-relevant protocol state in one call, for public
+    /// incident transparency ("is it paused, and why"). Safe to expose
+    /// publicly; the indexer mirrors this at `GET /protocol-status`.
+    ///
+    /// Access: Anyone
+    pub fn get_protocol_status(env: Env) -> ProtocolStatus {
+        let admin =
+            get_admin(&env).unwrap_or_else(|| env.current_contract_address());
+
+        let multisig: Option<multisig::MultisigAdmin> =
+            env.storage().instance().get(&DataKey::MultisigAdmin);
+        let (multisig_configured, multisig_threshold, multisig_signer_count) = match multisig {
+            Some(m) => (true, m.threshold, m.signers.len()),
+            None => (false, 0u32, 0u32),
+        };
+
+        // Count tripped oracle circuit breakers across every feed type and
+        // every allowlisted token. `is_oracle_circuit_tripped` is a plain
+        // storage read (sticky flag), so this stays a cheap, non-erroring view.
+        let tokens: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TokenList)
+            .unwrap_or_else(|| Vec::new(&env));
+        let feed_types = [
+            OracleFeedType::Price,
+            OracleFeedType::Identity,
+            OracleFeedType::Credit,
+        ];
+        let mut oracle_circuits_tripped: u32 = 0;
+        for feed_type in feed_types.iter() {
+            for token in tokens.iter() {
+                if oracle_registry::is_oracle_circuit_tripped(&env, *feed_type, &token) {
+                    oracle_circuits_tripped += 1;
+                }
+            }
+        }
+
+        ProtocolStatus {
+            paused: is_paused(&env),
+            last_pause_timestamp: get_last_pause_timestamp(&env),
+            admin,
+            multisig_configured,
+            multisig_threshold,
+            multisig_signer_count,
+            oracle_circuit_tripped: oracle_circuits_tripped > 0,
+            oracle_circuits_tripped,
+        }
     }
 
     // ------------------------------------------------------------
