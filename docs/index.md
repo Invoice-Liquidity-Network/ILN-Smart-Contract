@@ -53,3 +53,4 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [CI/CD](ci-cd.md) | Continuous integration and deployment workflows. |
 | [Code Freeze Procedure](code-freeze-procedure.md) | Release freeze process. |
 | [Benchmarks](benchmarks.md) | Gas and resource usage tracking. |
+| [Support Channels](support-channels.md) | Where to report bugs, ask questions, and request features. |
