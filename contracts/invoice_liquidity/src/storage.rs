@@ -130,6 +130,12 @@ pub enum DataKey {
     /// new signer + timelock expiry), if any. Only one rotation may be
     /// pending at a time.
     PendingSignerRotation,
+    /// Issue #775: ledger timestamp of the most recent `pause()` (single-admin
+    /// or multisig path). Absent until the contract has been paused at least
+    /// once. Read via `get_protocol_status()` for the public status view;
+    /// never cleared on `unpause()` so operators keep a "last halted at"
+    /// reference.
+    LastPauseTimestamp,
 }
 
 // ----------------------------------------------------------------

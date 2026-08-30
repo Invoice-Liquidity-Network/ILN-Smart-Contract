@@ -195,6 +195,38 @@ pub struct ContractStats {
     pub total_volume_usd_normalized: i128,
 }
 
+/// Issue #775: operationally-relevant protocol state in a single read, for a
+/// public "is the protocol paused, and why" status view (contract-side) and
+/// the indexer's public `/protocol-status` endpoint (off-chain).
+///
+/// This is deliberately distinct from the admin-only dashboard data — every
+/// field here is safe to expose publicly and is what a user or an on-call
+/// responder needs during an incident.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProtocolStatus {
+    /// Whether all mutating entry points are currently halted (`pause()`).
+    pub paused: bool,
+    /// Ledger timestamp of the most recent `pause()`; `0` if never paused.
+    pub last_pause_timestamp: u64,
+    /// The address `require_admin` authorizes against today (may itself be a
+    /// Stellar account-level multisig — the contract cannot tell).
+    pub admin: Address,
+    /// Whether the contract-level multisig admin has been bootstrapped
+    /// (`initialize_multisig_admin`).
+    pub multisig_configured: bool,
+    /// Signatures required to execute a multisig admin action; `0` when the
+    /// multisig is not configured.
+    pub multisig_threshold: u32,
+    /// Number of authorized multisig signers; `0` when not configured.
+    pub multisig_signer_count: u32,
+    /// Whether at least one oracle circuit breaker (feed type + token) is
+    /// currently tripped, halting oracle-gated funding on that channel.
+    pub oracle_circuit_tripped: bool,
+    /// How many (feed type, token) oracle circuit breakers are tripped.
+    pub oracle_circuits_tripped: u32,
+}
+
 // ----------------------------------------------------------------
 // Issue #36: Appeal record stored per invoice
 // ----------------------------------------------------------------
@@ -1022,4 +1054,21 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&StorageKey::Paused, &paused);
+    // Issue #775: record when the protocol was last halted so the public
+    // status view can answer "paused since when". Only advanced on a
+    // pause; `unpause()` leaves the last value in place as a reference.
+    if paused {
+        env.storage()
+            .instance()
+            .set(&StorageKey::LastPauseTimestamp, &env.ledger().timestamp());
+    }
+}
+
+/// Ledger timestamp of the most recent `pause()`, or `0` if the contract
+/// has never been paused (Issue #775).
+pub fn get_last_pause_timestamp(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::LastPauseTimestamp)
+        .unwrap_or(0)
 }
