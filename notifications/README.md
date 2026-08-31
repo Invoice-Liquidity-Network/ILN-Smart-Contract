@@ -25,7 +25,9 @@ languages, and email delivery setup.
   - [Go](#go)
 - [Reliability: circuit breaker & rate limiting](#reliability-circuit-breaker--rate-limiting)
 - [Slack notifications](#slack-notifications)
+- [Telegram notifications](#telegram-notifications)
 - [Email delivery](#email-delivery)
+- [Credential rotation & operations](#credential-rotation--operations)
 - [Docker](#docker)
 
 ---
@@ -405,6 +407,31 @@ Only these event types are accepted for Slack: `invoice.submitted`,
 `invoice.funded`, `invoice.paid`, `invoice.expiring_soon` (anything else returns
 `400 unsupported_event_types`). Messages are colour-coded per event and include
 token, amount, parties, and due date.
+
+---
+
+## Telegram notifications
+
+Register a Telegram bot token and chat ID to receive Markdown-formatted invoice events:
+
+```bash
+curl -X POST http://localhost:3001/subscriptions/telegram \
+  -H "content-type: application/json" \
+  -d '{
+    "botToken": "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ",
+    "chatId": "-1001234567890",
+    "eventTypes": ["invoice.submitted", "invoice.funded", "invoice.paid", "invoice.expiring_soon", "invoice.disputed"]
+  }'
+```
+
+---
+
+## Credential rotation & operations
+
+Slack Incoming Webhook URLs and Telegram Bot Tokens can be rotated dynamically via the API (`POST /subscriptions/...` and `DELETE /subscriptions/.../:id`) with zero downtime.
+
+For full step-by-step procedures, incident response checklists, and static vs dynamic configuration lifecycle analysis, refer to the operations runbook:
+👉 **[docs/notifications-operations.md](../docs/notifications-operations.md)**.
 
 ---
 

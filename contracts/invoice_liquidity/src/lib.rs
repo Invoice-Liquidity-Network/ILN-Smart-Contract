@@ -12,6 +12,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod invoice;
+pub mod multisig;
 pub mod nft;
 pub mod rate_logic;
 pub mod storage;
@@ -49,21 +50,24 @@ use events::{
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
-    PriceOracleUpdated, TokenAdded, TokenRemoved,
+    PriceOracleUpdated, SignerRotationCancelled, SignerRotationFinalized,
+    SignerRotationScheduled, TokenAdded, TokenRemoved,
 };
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
     get_dispute, get_fund_queue, get_fund_queue_opened_at, get_invoice_funders, get_lp_invoices,
-    get_lp_score, get_min_payer_reputation, get_payer_score, get_pre_default_payer_score,
-    get_queue_resolution, get_reputation, get_submitter_invoices, increment_invoices_defaulted,
-    increment_invoices_paid, increment_invoices_submitted, increment_total_funded,
-    increment_total_invoices, increment_total_paid, invoice_exists, is_paused, load_invoice,
-    next_invoice_id, remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal,
-    save_dispute, save_fund_queue, save_invoice, save_invoice_funders,
-    save_pre_default_payer_score, save_queue_resolution, set_lp_score, set_min_payer_reputation,
-    set_paused, set_payer_score, set_reputation, try_load_invoice, try_set_fund_queue_opened_at,
-    ContractStats, DisputeRecord, StorageKey,
+    get_lp_score, get_max_invoice_amount, get_min_payer_reputation, get_payer_score,
+    get_pre_default_payer_score, get_queue_resolution, get_reputation, get_submitter_invoices,
+    get_token_volume, get_token_volume_cap, increment_invoices_defaulted, increment_invoices_paid,
+    increment_invoices_submitted, increment_total_funded, increment_total_invoices,
+    increment_total_paid, invoice_exists, is_paused, load_invoice, next_invoice_id,
+    remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal, save_dispute,
+    save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
+    save_queue_resolution, set_lp_score, set_max_invoice_amount, set_min_payer_reputation,
+    set_paused, set_payer_score, set_reputation, set_token_volume_cap, try_load_invoice,
+    try_set_fund_queue_opened_at, ContractStats, DisputeRecord, ProtocolStatus, StorageKey,
 };
+use invoice::get_last_pause_timestamp;
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
 
@@ -223,6 +227,7 @@ impl InvoiceLiquidityContract {
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "set_admin");
         let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
@@ -240,6 +245,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_rate");
 
         let old_rate: u32 = env
             .storage()
@@ -269,6 +275,7 @@ impl InvoiceLiquidityContract {
     pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_max_discount");
 
         let old_rate: u32 = env
             .storage()
@@ -305,6 +312,7 @@ impl InvoiceLiquidityContract {
     ) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_decay_params", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_decay_params");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         let mut config = crate::storage::get_config(&env).ok_or(ContractError::Unauthorized)?;
@@ -359,6 +367,7 @@ impl InvoiceLiquidityContract {
             "set_distribution_contract",
             DEFAULT_RATE_LIMIT_LEDGERS,
         )?;
+        record_admin_action(&env, "set_distribution_contract");
 
         let old_distribution_contract: Option<Address> = env
             .storage()
@@ -387,6 +396,7 @@ impl InvoiceLiquidityContract {
     pub fn set_price_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_price_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_price_oracle");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_oracle = crate::storage::get_config(&env).and_then(|c| c.price_oracle);
         crate::config::set_price_oracle(&env, &admin, oracle.clone())
@@ -416,6 +426,7 @@ impl InvoiceLiquidityContract {
     pub fn set_max_oracle_age(env: Env, max_age_ledgers: u64) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_max_oracle_age", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_max_oracle_age");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_max_age = crate::storage::get_config(&env)
             .map(|c| c.max_oracle_age_ledgers)
@@ -527,6 +538,94 @@ impl InvoiceLiquidityContract {
         oracle_registry::check_oracle_health(env, feed_type, token, payer)
     }
 
+    /// Whether the oracle circuit breaker for `feed_type` + `token` is
+    /// currently tripped (from `MAX_CONSECUTIVE_STALE_QUERIES` consecutive
+    /// stale responses) and therefore excluded from `fund_invoice`'s
+    /// oracle-gated resolution until governance calls
+    /// `reset_oracle_circuit`.
+    /// Access: Anyone
+    pub fn is_oracle_circuit_tripped(env: Env, feed_type: OracleFeedType, token: Address) -> bool {
+        oracle_registry::is_oracle_circuit_tripped(&env, feed_type, &token)
+    }
+
+    /// Reset a tripped oracle circuit breaker for `feed_type` + `token`.
+    /// There is no automatic recovery on a single fresh query — this
+    /// explicit, governance-gated call is required, so a flapping oracle
+    /// can't quietly resume being trusted by the funding path.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle` / `remove_oracle`).
+    pub fn reset_oracle_circuit(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::reset_oracle_circuit(&env, feed_type, token)
+    }
+
+    // ── Issue #price-deviation: multi-source price deviation checking ──
+
+    /// Register `oracle` as an additional price source for `feed_type`.
+    /// Distinct from `register_oracle`/`register_token_oracle` (the
+    /// single-oracle model for boolean payer verification): multiple price
+    /// sources can be registered per feed type so `get_verified_price` can
+    /// cross-check them against each other.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle`).
+    pub fn add_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::add_price_source(&env, feed_type, oracle)
+    }
+
+    /// Remove `oracle` from `feed_type`'s price source list.
+    /// Access: Admin only.
+    pub fn remove_price_source(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::remove_price_source(&env, feed_type, oracle)
+    }
+
+    /// The currently registered price sources for `feed_type`.
+    /// Access: Anyone
+    pub fn get_price_sources(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Vec<Address> {
+        oracle_registry::get_price_sources(env, feed_type)
+    }
+
+    /// Update the governance-configurable maximum deviation (basis points)
+    /// a price source may differ from the cross-source median before being
+    /// rejected as an outlier. Default is
+    /// [`oracle_registry::DEFAULT_MAX_PRICE_DEVIATION_BPS`] (5%) until set.
+    /// Access: Admin only.
+    pub fn set_max_price_deviation_bps(env: Env, bps: u32) -> Result<(), ContractError> {
+        oracle_registry::set_max_price_deviation_bps(&env, bps)
+    }
+
+    /// The currently configured maximum price deviation, in basis points.
+    /// Access: Anyone
+    pub fn get_max_price_deviation_bps(env: Env) -> u32 {
+        oracle_registry::get_max_price_deviation_bps(env)
+    }
+
+    /// Query every registered price source for `feed_type` + `token` and
+    /// return a cross-validated price. With zero sources, errors; with
+    /// exactly one, returns it unchecked (documented single-source risk —
+    /// see `oracle_registry`'s module docs); with two or more, rejects any
+    /// source deviating from the cross-source median beyond
+    /// `get_max_price_deviation_bps()` and returns the median of the
+    /// survivors.
+    /// Access: Anyone
+    pub fn get_verified_price(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        oracle_registry::get_verified_price(env, feed_type, token)
+    }
+
     // ── Issue #529: insurance pool integration ────────────────────
 
     /// Configure the deployed insurance pool contract address consulted by
@@ -535,6 +634,7 @@ impl InvoiceLiquidityContract {
     pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_insurance_pool", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_insurance_pool");
         crate::storage::set_insurance_pool(&env, &pool);
         Ok(())
     }
@@ -549,6 +649,7 @@ impl InvoiceLiquidityContract {
     pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "add_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "add_token");
 
         let token_client = token_client(&env, &token);
         let contract_address = env.current_contract_address();
@@ -609,6 +710,7 @@ impl InvoiceLiquidityContract {
     pub fn remove_token(env: Env, token: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "remove_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "remove_token");
 
         env.storage()
             .persistent()
@@ -657,6 +759,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn pause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "pause");
 
         set_paused(&env, true);
         env.events().publish(
@@ -671,6 +774,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn unpause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "unpause");
 
         set_paused(&env, false);
         env.events().publish(
@@ -679,6 +783,270 @@ impl InvoiceLiquidityContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+        Ok(())
+    }
+
+    // ------------------------------------------------------------
+    // Multi-sig admin (Issue #124 / #641)
+    // ------------------------------------------------------------
+    // Threshold-gated alternative to the single-admin pause/unpause/
+    // remove_token/update_fee_rate/update_max_discount calls above: once
+    // bootstrapped, critical admin actions can instead be routed through
+    // propose_*/sign_proposal/execute_proposal, requiring `threshold`
+    // distinct signers to agree. The existing single-admin entry points
+    // above are unaffected — this is an additive authorization path.
+
+    /// Bootstrap the multisig admin signer set and approval threshold.
+    /// Access: Admin only (one-time; see `multisig::initialize`)
+    pub fn initialize_multisig_admin(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ContractError> {
+        multisig::initialize(&env, signers, threshold)
+    }
+
+    /// Returns the configured multisig admin signer set / threshold, if bootstrapped.
+    /// Access: Anyone
+    pub fn get_multisig_admin(env: Env) -> Option<multisig::MultisigAdmin> {
+        env.storage().instance().get(&DataKey::MultisigAdmin)
+    }
+
+    /// Returns a stored multisig proposal by id, if any.
+    /// Access: Anyone
+    pub fn get_multisig_proposal(env: Env, proposal_id: u64) -> Option<multisig::MultisigProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MultisigProposal(proposal_id))
+    }
+
+    /// Propose pausing the contract via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_pause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::Pause)
+    }
+
+    /// Propose unpausing the contract via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_unpause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::Unpause)
+    }
+
+    /// Propose removing a token from the approved-token allowlist via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_remove_token(
+        env: Env,
+        proposer: Address,
+        token: Address,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::RemoveToken(token))
+    }
+
+    /// Propose a new protocol fee rate via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_set_fee_rate(env: Env, proposer: Address, rate: u32) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::SetFeeRate(rate))
+    }
+
+    /// Propose a new maximum discount rate via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_set_max_discount(
+        env: Env,
+        proposer: Address,
+        rate: u32,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(&env, &proposer, multisig::AdminAction::SetMaxDiscount(rate))
+    }
+
+    /// Propose replacing the multisig signer set / threshold via the multisig flow.
+    /// Access: configured multisig signer only
+    pub fn propose_update_multisig(
+        env: Env,
+        proposer: Address,
+        new_signers: Vec<Address>,
+        new_threshold: u32,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(
+            &env,
+            &proposer,
+            multisig::AdminAction::UpdateMultisig {
+                new_signers,
+                new_threshold,
+            },
+        )
+    }
+
+    /// Propose rotating `old_signer` out for `new_signer` via the multisig
+    /// flow. Executing this proposal schedules the swap behind a timelock
+    /// (see `finalize_signer_rotation`) rather than applying it
+    /// immediately (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn propose_rotate_signer(
+        env: Env,
+        proposer: Address,
+        old_signer: Address,
+        new_signer: Address,
+    ) -> Result<u64, ContractError> {
+        multisig::propose(
+            &env,
+            &proposer,
+            multisig::AdminAction::RotateSigner {
+                old_signer,
+                new_signer,
+            },
+        )
+    }
+
+    /// Returns the currently scheduled signer rotation, if any (Issue #640).
+    /// Access: Anyone
+    pub fn get_pending_signer_rotation(env: Env) -> Option<multisig::PendingRotation> {
+        env.storage().instance().get(&DataKey::PendingSignerRotation)
+    }
+
+    /// Finalize a scheduled signer rotation once its timelock has elapsed,
+    /// swapping a compromised or departing signer's key in the multisig
+    /// signer set without a contract upgrade (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn finalize_signer_rotation(env: Env, caller: Address) -> Result<(), ContractError> {
+        let rotation = multisig::finalize_rotation(&env, &caller)?;
+        env.events().publish(
+            (Symbol::new(&env, "signer_rotation_finalized"),),
+            SignerRotationFinalized {
+                old_signer: rotation.old_signer,
+                new_signer: rotation.new_signer,
+            },
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending signer rotation before it takes effect — the
+    /// reaction mechanism the timelock exists to enable if a scheduled
+    /// rotation looks malicious or mistaken (Issue #640).
+    /// Access: configured multisig signer only
+    pub fn cancel_signer_rotation(env: Env, caller: Address) -> Result<(), ContractError> {
+        let rotation = multisig::cancel_rotation(&env, &caller)?;
+        env.events().publish(
+            (Symbol::new(&env, "signer_rotation_cancelled"),),
+            SignerRotationCancelled {
+                old_signer: rotation.old_signer,
+                new_signer: rotation.new_signer,
+            },
+        );
+        Ok(())
+    }
+
+    /// Approve a pending multisig proposal.
+    /// Access: configured multisig signer only
+    pub fn sign_proposal(env: Env, signer: Address, proposal_id: u64) -> Result<(), ContractError> {
+        multisig::sign(&env, &signer, proposal_id)
+    }
+
+    /// Execute a multisig proposal once its approval threshold has been
+    /// met, applying the action it authorized.
+    /// Access: configured multisig signer only
+    pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), ContractError> {
+        let action = multisig::execute(&env, &caller, proposal_id)?;
+        match action {
+            multisig::AdminAction::Pause => {
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "paused"),),
+                    ContractPaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            multisig::AdminAction::Unpause => {
+                set_paused(&env, false);
+                env.events().publish(
+                    (Symbol::new(&env, "unpaused"),),
+                    ContractUnpaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            multisig::AdminAction::RemoveToken(token) => {
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::ApprovedToken(token.clone()), &false);
+                let list: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::TokenList)
+                    .unwrap_or(Vec::new(&env));
+                let mut pruned: Vec<Address> = Vec::new(&env);
+                for t in list.iter() {
+                    if t != token {
+                        pruned.push_back(t);
+                    }
+                }
+                env.storage().persistent().set(&DataKey::TokenList, &pruned);
+                env.events().publish(
+                    (Symbol::new(&env, "token_removed"), token.clone()),
+                    TokenRemoved { token },
+                );
+            }
+            multisig::AdminAction::SetFeeRate(rate) => {
+                let old_rate: u32 = env.storage().instance().get(&StorageKey::FeeRate).unwrap_or(0);
+                env.storage().instance().set(&StorageKey::FeeRate, &rate);
+                let pn = Symbol::new(&env, "protocol_fee_rate_bps");
+                env.events().publish(
+                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    ParameterUpdated {
+                        param_name: pn,
+                        old_value: old_rate as i128,
+                        new_value: rate as i128,
+                        updated_by: caller.clone(),
+                    },
+                );
+            }
+            multisig::AdminAction::SetMaxDiscount(rate) => {
+                let old_rate: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&StorageKey::MaxDiscountRate)
+                    .unwrap_or(0);
+                env.storage().instance().set(&StorageKey::MaxDiscountRate, &rate);
+                let pn = Symbol::new(&env, "max_discount_rate_bps");
+                env.events().publish(
+                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    ParameterUpdated {
+                        param_name: pn,
+                        old_value: old_rate as i128,
+                        new_value: rate as i128,
+                        updated_by: caller.clone(),
+                    },
+                );
+            }
+            multisig::AdminAction::UpdateMultisig {
+                new_signers,
+                new_threshold,
+            } => {
+                if !multisig::is_valid_config(&new_signers, new_threshold) {
+                    return Err(ContractError::InvalidMultisigConfig);
+                }
+                let updated = multisig::MultisigAdmin {
+                    signers: new_signers,
+                    threshold: new_threshold,
+                };
+                env.storage().instance().set(&DataKey::MultisigAdmin, &updated);
+            }
+            multisig::AdminAction::RotateSigner {
+                old_signer,
+                new_signer,
+            } => {
+                let rotation =
+                    multisig::schedule_rotation(&env, old_signer.clone(), new_signer.clone())?;
+                env.events().publish(
+                    (Symbol::new(&env, "signer_rotation_scheduled"),),
+                    SignerRotationScheduled {
+                        old_signer,
+                        new_signer,
+                        effective_at: rotation.effective_at,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
@@ -703,6 +1071,7 @@ impl InvoiceLiquidityContract {
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "upgrade", UPGRADE_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "upgrade");
 
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
@@ -722,6 +1091,15 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
+    /// Return up to `limit` most recent executed admin actions, newest
+    /// first, so admin activity can be reviewed on-chain (e.g. by SCF
+    /// reviewers or the community) without replaying the full event log
+    /// (Issue #645). Capped at `ADMIN_ACTION_LOG_CAPACITY` entries.
+    /// Access: Anyone
+    pub fn get_recent_admin_actions(env: Env, limit: u32) -> Vec<AdminActionRecord> {
+        access::get_recent_admin_actions(&env, limit)
+    }
+
     // Issue #539: Return the current on-chain storage schema version.
     pub fn get_storage_version(env: Env) -> u32 {
         env.storage()
@@ -735,6 +1113,7 @@ impl InvoiceLiquidityContract {
     // layout changes to be applied atomically after an upgrade.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "migrate");
 
         let current: u32 = env
             .storage()
@@ -781,6 +1160,7 @@ impl InvoiceLiquidityContract {
     pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        record_admin_action(&env, "update_fee_tiers");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         env.storage().instance().set(&StorageKey::FeeTiers, &tiers);
@@ -836,6 +1216,59 @@ impl InvoiceLiquidityContract {
     /// Access: Anyone
     pub fn get_contract_stats(env: Env) -> ContractStats {
         get_contract_stats(&env)
+    }
+
+    // ------------------------------------------------------------
+    // get_protocol_status (read-only view — Issue #775)
+    // ------------------------------------------------------------
+    /// Operationally-relevant protocol state in one call, for public
+    /// incident transparency ("is it paused, and why"). Safe to expose
+    /// publicly; the indexer mirrors this at `GET /protocol-status`.
+    ///
+    /// Access: Anyone
+    pub fn get_protocol_status(env: Env) -> ProtocolStatus {
+        let admin =
+            get_admin(&env).unwrap_or_else(|| env.current_contract_address());
+
+        let multisig: Option<multisig::MultisigAdmin> =
+            env.storage().instance().get(&DataKey::MultisigAdmin);
+        let (multisig_configured, multisig_threshold, multisig_signer_count) = match multisig {
+            Some(m) => (true, m.threshold, m.signers.len()),
+            None => (false, 0u32, 0u32),
+        };
+
+        // Count tripped oracle circuit breakers across every feed type and
+        // every allowlisted token. `is_oracle_circuit_tripped` is a plain
+        // storage read (sticky flag), so this stays a cheap, non-erroring view.
+        let tokens: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TokenList)
+            .unwrap_or_else(|| Vec::new(&env));
+        let feed_types = [
+            OracleFeedType::Price,
+            OracleFeedType::Identity,
+            OracleFeedType::Credit,
+        ];
+        let mut oracle_circuits_tripped: u32 = 0;
+        for feed_type in feed_types.iter() {
+            for token in tokens.iter() {
+                if oracle_registry::is_oracle_circuit_tripped(&env, *feed_type, &token) {
+                    oracle_circuits_tripped += 1;
+                }
+            }
+        }
+
+        ProtocolStatus {
+            paused: is_paused(&env),
+            last_pause_timestamp: get_last_pause_timestamp(&env),
+            admin,
+            multisig_configured,
+            multisig_threshold,
+            multisig_signer_count,
+            oracle_circuit_tripped: oracle_circuits_tripped > 0,
+            oracle_circuits_tripped,
+        }
     }
 
     // ------------------------------------------------------------
@@ -921,6 +1354,13 @@ impl InvoiceLiquidityContract {
 
         if discount_rate == 0 || discount_rate > crate::constants::MAX_DISCOUNT_RATE {
             return Err(ContractError::InvalidDiscountRate);
+        }
+
+        // Issue #655: staged mainnet rollout — reject invoices above the
+        // governance-configured per-invoice cap. 0 = uncapped (default).
+        let max_invoice_amount = get_max_invoice_amount(&env);
+        if max_invoice_amount > 0 && amount > max_invoice_amount {
+            return Err(ContractError::MaxInvoiceAmountExceeded);
         }
 
         validate_invoice_terms(&env, amount, due_date, discount_rate)?;
@@ -1496,16 +1936,26 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::PayerReputationTooLow);
         }
 
-        // Issues #92 + #93 + #532: optional oracle verification with a
-        // data-freshness guard. When require_oracle_verification is true,
-        // the oracle registry is queried for the Identity feed, resolved per
-        // the invoice's token (per-token override, then feed-type default,
-        // then the legacy price_oracle config field). If no oracle resolves,
-        // the flag is a no-op.
+        // Issues #92 + #93 + #532 + circuit-breaker: optional oracle
+        // verification with a data-freshness guard. When
+        // require_oracle_verification is true, the oracle registry is
+        // queried for the Identity feed, resolved per the invoice's token
+        // (per-token override, then feed-type default, then the legacy
+        // price_oracle config field) — skipping any level that's
+        // circuit-tripped from repeated staleness. If nothing was ever
+        // registered, the flag is a no-op (existing fail-open behavior). If
+        // everything registered is circuit-tripped, funding is rejected
+        // rather than silently proceeding as if no oracle existed.
         if require_oracle_verification {
-            if let Some(oracle_addr) =
-                oracle_registry::resolve_oracle(&env, OracleFeedType::Identity, &invoice.token)
-            {
+            let resolution = oracle_registry::resolve_oracle_for_verification(
+                &env,
+                OracleFeedType::Identity,
+                &invoice.token,
+            );
+            if resolution == oracle_registry::OracleResolution::CircuitOpen {
+                return Err(ContractError::OracleCircuitOpen);
+            }
+            if let oracle_registry::OracleResolution::Available(oracle_addr) = resolution {
                 let response: OracleVerificationResponse = env.invoke_contract(
                     &oracle_addr,
                     &Symbol::new(&env, "get_payer_data"),
@@ -1578,6 +2028,22 @@ impl InvoiceLiquidityContract {
             .ok_or(ContractError::ArithmeticOverflow)?;
         if prospective_funded > invoice.amount {
             return Err(ContractError::OverfundingRejected);
+        }
+
+        // Issue #655: staged mainnet rollout — reject funding that would
+        // push this token's cumulative funded volume past the
+        // governance-configured cap (0 = uncapped). Checked against the
+        // same `TokenVolume` counter `add_volume` maintains below, so
+        // raising the cap via governance takes effect immediately without
+        // any separate migration.
+        let token_volume_cap = get_token_volume_cap(&env, &invoice.token);
+        if token_volume_cap > 0 {
+            let prospective_volume = get_token_volume(&env, &invoice.token)
+                .checked_add(fund_amount)
+                .ok_or(ContractError::ArithmeticOverflow)?;
+            if prospective_volume > token_volume_cap {
+                return Err(ContractError::GlobalVolumeCapExceeded);
+            }
         }
 
         // --- Execute transfer ---
@@ -2395,6 +2861,7 @@ impl InvoiceLiquidityContract {
     /// Access: Admin only
     pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_appeal");
 
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
@@ -2537,6 +3004,7 @@ impl InvoiceLiquidityContract {
         lock_reentrancy(&env)?;
 
         require_admin(&env)?;
+        record_admin_action(&env, "resolve_dispute");
 
         if !invoice_exists(&env, invoice_id) {
             unlock_reentrancy(&env);
@@ -2773,6 +3241,7 @@ impl InvoiceLiquidityContract {
             "set_min_payer_reputation",
             ECONOMIC_PARAM_COOLDOWN_LEDGERS,
         )?;
+        record_admin_action(&env, "set_min_payer_reputation");
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_value = get_min_payer_reputation(&env);
         set_min_payer_reputation(&env, value);
@@ -2787,6 +3256,86 @@ impl InvoiceLiquidityContract {
                 param_name: pn,
                 old_value: old_value as i128,
                 new_value: value as i128,
+                updated_by,
+            },
+        );
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #655: staged mainnet rollout caps
+    // ----------------------------------------------------------------
+    /// Current per-invoice amount cap (0 = uncapped).
+    /// Access: Anyone
+    pub fn max_invoice_amount(env: Env) -> i128 {
+        get_max_invoice_amount(&env)
+    }
+
+    /// Update the maximum single-invoice amount. Intended to be raised over
+    /// time via governance as a staged mainnet rollout progresses.
+    /// Access: Admin only (routed through governance once `admin` is set to
+    /// the governance contract's address — see `iln_governance`).
+    pub fn set_max_invoice_amount(env: Env, value: i128) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        check_rate_limit(&env, "set_max_invoice_amount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        let old_value = get_max_invoice_amount(&env);
+        set_max_invoice_amount(&env, value);
+        let pn = Symbol::new(&env, "max_invoice_amount");
+        env.events().publish(
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value,
+                new_value: value,
+                updated_by,
+            },
+        );
+        Ok(())
+    }
+
+    /// Current cumulative funded-volume cap for `token` (0 = uncapped).
+    /// Access: Anyone
+    pub fn token_volume_cap(env: Env, token: Address) -> i128 {
+        get_token_volume_cap(&env, &token)
+    }
+
+    /// Update the cumulative funded-volume cap for `token`. Intended to be
+    /// raised over time via governance as a staged mainnet rollout
+    /// progresses — checked against the same cumulative counter used for
+    /// `get_contract_stats` reporting.
+    /// Access: Admin only (routed through governance once `admin` is set to
+    /// the governance contract's address — see `iln_governance`).
+    pub fn set_token_volume_cap(
+        env: Env,
+        token: Address,
+        value: i128,
+    ) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        check_rate_limit(&env, "set_token_volume_cap", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        let old_value = get_token_volume_cap(&env, &token);
+        set_token_volume_cap(&env, &token, value);
+        // Note: the target token is not carried in the event topics (kept at
+        // 3, matching every other parameter_updated event in this contract)
+        // — it is visible in the `set_token_volume_cap` call's own arguments
+        // on-chain, and callers needing it per-event should track via
+        // `token_volume_cap(token)` reads rather than topic filtering.
+        let pn = Symbol::new(&env, "token_volume_cap");
+        env.events().publish(
+            (
+                Symbol::new(&env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value,
+                new_value: value,
                 updated_by,
             },
         );
@@ -3095,6 +3644,9 @@ fn notify_distribution_settlement(
 // ----------------------------------------------------------------
 
 pub(crate) mod test;
+// Issue #124 / #641 / #639: multisig admin module + error-path coverage
+// (AlreadySigned / ProposalExpired / ThresholdNotReached).
+mod tests_multisig_admin;
 mod tests_insurance_integration;
 mod tests_lifecycle_integration;
 mod tests_min_invoice_amount;

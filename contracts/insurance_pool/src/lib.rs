@@ -17,6 +17,9 @@
 //! See `docs/insurance-pool-design.md` for the integration design and the
 //! follow-up work needed before mainnet.
 
+#[cfg(test)]
+extern crate std;
+
 mod insurance_interface;
 #[cfg(test)]
 mod test;

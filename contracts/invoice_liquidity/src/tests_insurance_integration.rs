@@ -311,3 +311,101 @@ fn test_set_insurance_pool_rejects_incompatible_interface_version() {
     );
     assert_eq!(t.contract.get_insurance_pool(), None);
 }
+
+/// Issue #662 — aggregate exposure stress test. Four LPs each pay enough
+/// premium to land in the top (150%) coverage tier (see
+/// `docs/insurance-pool-design.md` § Tiered coverage boundaries), so their
+/// combined *nominal* tiered coverage (4 * 1_500 = 6_000) exceeds the pool's
+/// actual balance (4 * 600 = 2_400) by a wide margin. All four then default
+/// "simultaneously" (same ledger tick, no timing gap between claims) —
+/// exercising exactly the scenario `docs/insurance-pool-design.md` § Aggregate
+/// exposure invariant (Issue #662) documents: the pool has no enrollment-time
+/// cap on aggregate exposure, so it must degrade gracefully (no panics,
+/// no overpayment, balance never negative) rather than either panicking or
+/// paying out more than it holds.
+#[test]
+fn test_insurance_pool_degrades_gracefully_under_simultaneous_default_stress() {
+    let t = setup();
+    const COVERAGE_CAP_STRESS: i128 = 1_000;
+    const PREMIUM_EACH: i128 = 600; // >= 50% of COVERAGE_CAP_STRESS -> top (150%) tier
+    const NUM_LPS: usize = 4;
+
+    let pool = deploy_pool(&t, COVERAGE_CAP_STRESS);
+    let asset_admin = soroban_sdk::token::StellarAssetClient::new(&t.env, &t.token.address);
+
+    let mut lps: std::vec::Vec<Address> = std::vec::Vec::new();
+    for _ in 0..NUM_LPS {
+        let lp = Address::generate(&t.env);
+        asset_admin.mint(&lp, &(INVOICE_AMOUNT * 2 + PREMIUM_EACH));
+        pool.deposit_premium(&lp, &PREMIUM_EACH);
+        lps.push(lp);
+    }
+
+    let pool_balance_start = pool.get_pool_balance();
+    assert_eq!(pool_balance_start, (PREMIUM_EACH * NUM_LPS as i128));
+
+    // Every LP funds its own invoice, all sharing the same due date so a
+    // single ledger advance pushes all of them past due at once.
+    let now = t.env.ledger().timestamp();
+    let due_date = now + DUE_DATE_OFFSET;
+    let mut invoice_ids: std::vec::Vec<u64> = std::vec::Vec::new();
+    for lp in &lps {
+        let id = t.contract.submit_invoice(
+            &t.freelancer,
+            &t.payer,
+            &INVOICE_AMOUNT,
+            &due_date,
+            &DISCOUNT_RATE,
+            &t.token.address,
+            &ReferralCode::None,
+        );
+        t.contract.fund_invoice(lp, &id, &INVOICE_AMOUNT, &false);
+        invoice_ids.push(id);
+    }
+
+    let mut info = t.env.ledger().get();
+    info.timestamp = due_date + 1;
+    t.env.ledger().set(info);
+
+    // Confirmed defaults, processed one after another with no intervening
+    // deposits — simulating simultaneous defaults exceeding pool balance.
+    let mut total_payout: i128 = 0;
+    let mut saw_less_than_full_tier_payout = false;
+    for (lp, id) in lps.iter().zip(invoice_ids.iter()) {
+        let full_tiered_coverage = pool.get_tiered_coverage(lp);
+        let balance_before = pool.get_pool_balance();
+
+        // Must never panic, however depleted the pool already is.
+        t.contract.claim_default(lp, id);
+
+        let balance_after = pool.get_pool_balance();
+        assert!(
+            balance_after >= 0,
+            "pool balance must never go negative under simultaneous-default stress"
+        );
+
+        let payout = balance_before - balance_after;
+        total_payout += payout;
+        if payout < full_tiered_coverage {
+            saw_less_than_full_tier_payout = true;
+        }
+
+        let invoice = t.contract.get_invoice(id);
+        assert_eq!(invoice.status, InvoiceStatus::Defaulted);
+    }
+
+    // The pool never pays out more than it ever held, and ends up fully
+    // (not over-) drained once aggregate nominal exposure outran balance.
+    assert!(total_payout <= pool_balance_start);
+    assert_eq!(pool.get_pool_balance(), 0);
+    assert_eq!(total_payout, pool_balance_start);
+
+    // Graceful pro-rata-by-claim-order degradation: at least one claim in
+    // the batch received less than its full tiered coverage (some may
+    // receive 0 once the balance is exhausted) rather than every claim
+    // somehow being paid in full despite insufficient balance.
+    assert!(
+        saw_less_than_full_tier_payout,
+        "expected at least one claim to be short-paid once aggregate exposure exceeded pool balance"
+    );
+}

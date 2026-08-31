@@ -67,4 +67,22 @@ pub enum ContractError {
     /// Cross-contract dependency reported an incompatible interface version
     /// (or the version query failed) during configuration.
     IncompatibleInterfaceVersion = 40,
+    /// Issue #circuit-breaker: every oracle in the priority chain for this
+    /// feed type + token is circuit-tripped (or absent after excluding a
+    /// tripped one) — oracle-gated funding must be rejected rather than
+    /// silently proceeding as if no oracle were configured.
+    OracleCircuitOpen = 41,
+    /// Issue #price-deviation: no price source is registered for the
+    /// requested feed type, or every registered source failed to respond.
+    NoPriceSource = 42,
+    /// Issue #price-deviation: every registered price source's report
+    /// deviated beyond the configured threshold from every other — no
+    /// source survived to produce a validated price.
+    AllPriceSourcesRejected = 43,
+    /// Issue #655: invoice `amount` exceeds the governance-configured
+    /// staged-rollout per-invoice cap.
+    MaxInvoiceAmountExceeded = 44,
+    /// Issue #655: funding this amount would push the token's cumulative
+    /// funded volume past the governance-configured staged-rollout cap.
+    GlobalVolumeCapExceeded = 45,
 }

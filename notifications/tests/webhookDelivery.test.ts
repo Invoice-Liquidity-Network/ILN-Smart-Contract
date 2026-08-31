@@ -7,7 +7,7 @@ function makeService(http: HttpClient, now?: () => number) {
 }
 
 describe('WebhookDeliveryService', () => {
-  const endpoint = { id: 'e1', url: 'https://hook.example/abc', secret: 's' };
+  const endpoint = { id: 'e1', url: 'http://8.8.8.8/abc', secret: 's' };
 
   it('signs and delivers on success', async () => {
     const http = vi.fn(async () => ({ status: 200 }));
@@ -41,6 +41,31 @@ describe('WebhookDeliveryService', () => {
     const blocked = await svc.deliver(endpoint, { i: 'over' });
     expect(blocked.skippedReason).toBe('rate_limited');
     expect(blocked.status).toBe(429);
+  });
+
+  it('scopes rate limits per endpoint: one exhausted recipient does not affect another', async () => {
+    const http = vi.fn(async () => ({ status: 200 }));
+    let t = 0;
+    const svc = new WebhookDeliveryService({
+      http,
+      now: () => t,
+      limiterOptions: { maxRequests: 2, windowMs: 1000 },
+    });
+    const noisy = { id: 'noisy', url: 'https://hook.example/noisy', secret: 's' };
+    const quiet = { id: 'quiet', url: 'https://hook.example/quiet', secret: 's' };
+
+    // The noisy endpoint exhausts its own budget...
+    expect((await svc.deliver(noisy, {})).ok).toBe(true);
+    expect((await svc.deliver(noisy, {})).ok).toBe(true);
+    expect((await svc.deliver(noisy, {})).skippedReason).toBe('rate_limited');
+
+    // ...while a different endpoint is unaffected.
+    expect((await svc.deliver(quiet, {})).ok).toBe(true);
+    expect((await svc.deliver(quiet, {})).ok).toBe(true);
+    expect((await svc.deliver(quiet, {})).skippedReason).toBe('rate_limited');
+
+    // Both endpoints delivered only within their own budgets.
+    expect(http).toHaveBeenCalledTimes(4);
   });
 
   it('treats http errors as failures', async () => {
@@ -147,5 +172,18 @@ describe('WebhookDeliveryService', () => {
     }, 'invoice.paid');
 
     expect(addSpy).toHaveBeenCalled();
+  });
+
+  it('rejects delivery to private IP addresses (SSRF hardening)', async () => {
+    const http = vi.fn(async () => ({ status: 200 }));
+    const svc = makeService(http);
+    
+    const resLocalhost = await svc.deliver({ id: 'e2', url: 'http://localhost/test', secret: 's' }, {});
+    expect(resLocalhost.ok).toBe(false);
+    
+    const resPrivate = await svc.deliver({ id: 'e3', url: 'http://10.0.0.1/test', secret: 's' }, {});
+    expect(resPrivate.ok).toBe(false);
+    
+    expect(http).not.toHaveBeenCalled();
   });
 });

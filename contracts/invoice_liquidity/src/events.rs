@@ -3,6 +3,34 @@ use soroban_sdk::{contracttype, Address, BytesN, Symbol};
 use crate::invoice::{InvoiceStatus, ReferralCode};
 use crate::oracle_registry::OracleFeedType;
 
+/// Issue #640: emitted when a multisig-approved `RotateSigner` proposal
+/// executes, scheduling (but not yet applying) the signer swap.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationScheduled {
+    pub old_signer: Address,
+    pub new_signer: Address,
+    pub effective_at: u64,
+}
+
+/// Issue #640: emitted once a scheduled rotation's timelock has elapsed
+/// and the signer swap has actually been applied.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationFinalized {
+    pub old_signer: Address,
+    pub new_signer: Address,
+}
+
+/// Issue #640: emitted when a pending signer rotation is cancelled before
+/// it takes effect.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignerRotationCancelled {
+    pub old_signer: Address,
+    pub new_signer: Address,
+}
+
 /// Emitted when an oracle is registered for a feed type, either as the
 /// feed-type-wide default (`token: None`) or a per-token override
 /// (`token: Some(..)`) (Issue #532).
@@ -32,6 +60,59 @@ pub struct OracleHealthRecorded {
     pub is_stale: bool,
     pub last_data_age_ledgers: u64,
     pub consecutive_stale_count: u32,
+}
+
+/// Emitted once when a feed type + token's oracle resolution channel is
+/// automatically circuit-tripped after `MAX_CONSECUTIVE_STALE_QUERIES`
+/// consecutive stale responses from the same oracle. `token` is included
+/// alongside the task-specified `feed_type`/`consecutive_stale_count`
+/// fields — matching `OracleHealthRecorded`'s shape — since a bare
+/// feed-type-only event wouldn't identify which resolution channel tripped
+/// in a deployment with multiple per-token overrides.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleCircuitTripped {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub consecutive_stale_count: u32,
+}
+
+/// Emitted when governance resets a tripped oracle circuit breaker.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleCircuitReset {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+}
+
+/// Emitted when a price source is added to a feed type's multi-source list
+/// (Issue #price-deviation).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceSourceAdded {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Emitted when a price source is removed from a feed type's multi-source list.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceSourceRemoved {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Emitted when a registered price source's reported price is rejected as
+/// an outlier relative to the cross-source median (Issue #price-deviation).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriceOutlierRejected {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub oracle: Address,
+    pub reported_price: i128,
+    pub median_price: i128,
+    pub deviation_bps: u32,
 }
 
 /// Emitted after `claim_default` attempts to compensate the claiming LP from

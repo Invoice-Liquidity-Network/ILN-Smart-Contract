@@ -69,6 +69,15 @@ pub enum GovernanceError {
     ExecutionFailed = 20,
     /// Delegation chain exceeds the maximum depth cap.
     MaxDelegationDepthExceeded = 21,
+    /// Issue #642: veto multisig has not been configured yet.
+    VetoMultisigNotConfigured = 22,
+    /// Issue #642: caller is not a configured veto signer.
+    NotVetoSigner = 23,
+    /// Issue #642: this signer has already approved the veto for this proposal.
+    VetoAlreadyApproved = 24,
+    /// Issue #642: signer list/threshold combination is invalid (empty
+    /// signer set, duplicate signer, or threshold outside `1..=signers.len()`).
+    InvalidVetoMultisigConfig = 25,
 }
 
 // ================================================================
@@ -111,10 +120,24 @@ pub enum ProposalAction {
     /// Issue #532: remove the default oracle for a feed type from the ILN
     /// contract's oracle registry.
     RemoveOracle(OracleFeedType),
+    /// Issue #532: register (or update) a per-token override oracle for a
+    /// feed type on the ILN contract's oracle registry. Tuple: (feed_type,
+    /// token, oracle) — takes priority over the feed-type-wide default
+    /// registered via `RegisterOracle` when resolving the oracle for this
+    /// exact token.
+    RegisterTokenOracle(OracleFeedType, Address, Address),
     /// Issue #704: update reputation_bonus contract parameters.
     /// Tuple: (high_rep_threshold, bonus_bps, min_discount_rate_bps) —
     /// mirrors reputation_bonus::config::Config's fields.
     UpdateReputationBonusParams(u32, u32, u32),
+    /// Issue #655: update the ILN contract's per-invoice size cap for a
+    /// staged mainnet rollout (0 = uncapped). Raised over time as
+    /// confidence in the deployment grows.
+    UpdateMaxInvoiceAmount(i128),
+    /// Issue #655: update the ILN contract's cumulative funded-volume cap
+    /// for a given token, for a staged mainnet rollout (0 = uncapped).
+    /// Tuple: (token, cap).
+    UpdateTokenVolumeCap(Address, i128),
 }
 
 /// Issue #532: mirrors `invoice_liquidity::oracle_registry::OracleFeedType`.
@@ -269,6 +292,26 @@ pub struct VetoPowerDisabled {
     pub disabled_by: Address,
 }
 
+/// Issue #642: emitted when the veto multisig signer set / threshold is
+/// (re)configured.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VetoMultisigConfigured {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// Issue #642: emitted each time a configured veto signer approves a
+/// pending veto that has not yet reached threshold.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VetoApproved {
+    pub proposal_id: u64,
+    pub signer: Address,
+    pub approvals: u32,
+    pub threshold: u32,
+}
+
 // ================================================================
 // Storage keys
 // ================================================================
@@ -314,6 +357,14 @@ pub enum StorageKey {
     /// Issue #704: reputation_bonus contract address for
     /// UpdateReputationBonusParams execution.
     ReputationBonusContract,
+    /// Issue #642: veto multisig signer set (replaces single-admin veto).
+    VetoSigners,
+    /// Issue #642: number of `VetoSigners` approvals required before a veto
+    /// actually takes effect.
+    VetoThreshold,
+    /// Issue #642: signers who have already approved the pending veto of a
+    /// given proposal (cleared once the veto executes).
+    VetoApprovals(u64),
 }
 
 // ================================================================
@@ -1171,6 +1222,24 @@ impl GovContract {
                     let args: Vec<soroban_sdk::Val> = vec![&env, feed_type.into_val(&env)];
                     Self::invoke_and_check(&env, &iln_contract, "remove_oracle", args)
                 }
+                ProposalAction::RegisterTokenOracle(feed_type, token, oracle) => {
+                    let args: Vec<soroban_sdk::Val> = vec![
+                        &env,
+                        feed_type.into_val(&env),
+                        token.into_val(&env),
+                        oracle.into_val(&env),
+                    ];
+                    Self::invoke_and_check(&env, &iln_contract, "register_token_oracle", args)
+                }
+                ProposalAction::UpdateMaxInvoiceAmount(cap) => {
+                    let args: Vec<soroban_sdk::Val> = vec![&env, cap.into_val(&env)];
+                    Self::invoke_and_check(&env, &iln_contract, "set_max_invoice_amount", args)
+                }
+                ProposalAction::UpdateTokenVolumeCap(token, cap) => {
+                    let args: Vec<soroban_sdk::Val> =
+                        vec![&env, token.into_val(&env), cap.into_val(&env)];
+                    Self::invoke_and_check(&env, &iln_contract, "set_token_volume_cap", args)
+                }
             };
 
             if !succeeded {
@@ -1209,25 +1278,120 @@ impl GovContract {
         Err(GovernanceError::AlreadyResolved)
     }
 
-    // ── Issue #68: veto_proposal ──────────────────────────────────
+    // ── Issue #642: configure_veto_multisig ───────────────────────
 
-    /// Veto an active (or passed) proposal, transitioning it to `Vetoed` status.
+    /// Configure (or reconfigure) the veto multisig signer set and the
+    /// number of signer approvals required to actually execute a veto.
     ///
-    /// * Only the stored admin may call this function.
-    /// * The admin veto power must still be enabled; it cannot be used after
+    /// This replaces the single-admin veto with a multisig-gated one
+    /// (Issue #642 / threat model "admin single point of failure" finding):
+    /// once configured, no single key — including the stored `Admin` — can
+    /// unilaterally block a governance proposal via `veto_proposal`.
+    ///
+    /// Authorization:
+    /// * First call (bootstrap): the stored `Admin` address must authorize,
+    ///   since no multisig authority exists yet to gate it instead.
+    /// * Subsequent calls (reconfiguration): the configured `IlnContract`
+    ///   address must authorize — the same governance-vote-gated pattern
+    ///   used by `set_min_quorum_bps` / `disable_veto_power`. This closes
+    ///   the loop: after bootstrap, the admin alone can no longer change
+    ///   who holds veto power either.
+    ///
+    /// Emits `VetoMultisigConfigured { signers, threshold }`.
+    pub fn configure_veto_multisig(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), GovernanceError> {
+        if signers.is_empty() || threshold == 0 || threshold > signers.len() {
+            return Err(GovernanceError::InvalidVetoMultisigConfig);
+        }
+        for i in 0..signers.len() {
+            for j in (i + 1)..signers.len() {
+                if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                    return Err(GovernanceError::InvalidVetoMultisigConfig);
+                }
+            }
+        }
+
+        if env.storage().instance().has(&StorageKey::VetoSigners) {
+            let iln_contract: Address = env
+                .storage()
+                .instance()
+                .get(&StorageKey::IlnContract)
+                .unwrap();
+            iln_contract.require_auth();
+        } else {
+            let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+            admin.require_auth();
+        }
+
+        env.storage()
+            .instance()
+            .set(&StorageKey::VetoSigners, &signers);
+        env.storage()
+            .instance()
+            .set(&StorageKey::VetoThreshold, &threshold);
+
+        env.events().publish(
+            (Symbol::new(&env, "veto_multisig_configured"),),
+            VetoMultisigConfigured { signers, threshold },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the configured veto multisig signer set (empty if unconfigured).
+    pub fn get_veto_signers(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&StorageKey::VetoSigners)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns the configured veto multisig approval threshold (0 if unconfigured).
+    pub fn get_veto_threshold(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::VetoThreshold)
+            .unwrap_or(0)
+    }
+
+    /// Returns the veto signers who have already approved vetoing
+    /// `proposal_id`, if a veto is currently pending on it.
+    pub fn get_veto_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
+        env.storage()
+            .temporary()
+            .get(&StorageKey::VetoApprovals(proposal_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    // ── Issue #68 / #642: veto_proposal ───────────────────────────
+
+    /// Approve vetoing an active (or passed) proposal. Once `threshold`
+    /// distinct configured veto signers have approved, the proposal
+    /// transitions to `Vetoed` status; until then the approval is simply
+    /// recorded.
+    ///
+    /// * `signer` must be one of the configured `VetoSigners` (Issue #642 —
+    ///   no single admin key can veto unilaterally; a threshold of signers
+    ///   must agree, mirroring the multisig authority used for core
+    ///   contract admin actions).
+    /// * The veto power must still be enabled; it cannot be used after
     ///   governance has called `disable_veto_power()`.
     /// * Only proposals in `Active` or `Passed` status can be vetoed — an
     ///   already-executed or already-vetoed proposal is not vetoable.
     ///
-    /// Emits `ProposalVetoed { proposal_id, admin, reason_hash }`.
+    /// Emits `VetoApproved` while approvals are accumulating, then
+    /// `ProposalVetoed { proposal_id, admin: signer, reason_hash }` once the
+    /// threshold is reached and the veto executes.
     pub fn veto_proposal(
         env: Env,
+        signer: Address,
         proposal_id: u64,
         reason_hash: BytesN<32>,
     ) -> Result<(), GovernanceError> {
-        // ── Auth: only admin ──────────────────────────────────────
-        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
-        admin.require_auth();
+        signer.require_auth();
 
         // ── Guard: veto power must still be enabled ───────────────
         let enabled: bool = env
@@ -1238,6 +1402,21 @@ impl GovContract {
         if !enabled {
             return Err(GovernanceError::VetoPowerDisabled);
         }
+
+        // ── Auth: signer must be a configured veto multisig signer ─
+        let signers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::VetoSigners)
+            .ok_or(GovernanceError::VetoMultisigNotConfigured)?;
+        if !signers.contains(&signer) {
+            return Err(GovernanceError::NotVetoSigner);
+        }
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::VetoThreshold)
+            .unwrap_or(0);
 
         // ── Load proposal ─────────────────────────────────────────
         let mut proposal: GovernanceProposal = env
@@ -1252,6 +1431,45 @@ impl GovContract {
             _ => return Err(GovernanceError::NotVetoable),
         }
 
+        // ── Record this signer's approval ─────────────────────────
+        let approvals_key = StorageKey::VetoApprovals(proposal_id);
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .temporary()
+            .get(&approvals_key)
+            .unwrap_or(Vec::new(&env));
+        if approvals.contains(&signer) {
+            return Err(GovernanceError::VetoAlreadyApproved);
+        }
+        approvals.push_back(signer.clone());
+
+        if approvals.len() < threshold {
+            env.storage().temporary().set(&approvals_key, &approvals);
+            env.storage().temporary().extend_ttl(
+                &approvals_key,
+                VOTE_RECEIPT_TTL_THRESHOLD_LEDGERS,
+                VOTE_RECEIPT_TTL_LEDGERS,
+            );
+
+            env.events().publish(
+                (
+                    Symbol::new(&env, "veto_approved"),
+                    proposal_id,
+                    signer.clone(),
+                ),
+                VetoApproved {
+                    proposal_id,
+                    signer,
+                    approvals: approvals.len(),
+                    threshold,
+                },
+            );
+            return Ok(());
+        }
+
+        // ── Threshold reached: execute the veto ───────────────────
+        env.storage().temporary().remove(&approvals_key);
+
         proposal.status = ProposalStatus::Vetoed;
         env.storage()
             .persistent()
@@ -1261,11 +1479,11 @@ impl GovContract {
             (
                 Symbol::new(&env, "proposal_vetoed"),
                 proposal_id,
-                admin.clone(),
+                signer.clone(),
             ),
             ProposalVetoed {
                 proposal_id,
-                admin,
+                admin: signer,
                 reason_hash,
             },
         );

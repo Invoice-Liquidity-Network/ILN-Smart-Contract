@@ -35,6 +35,36 @@ export interface ReputationUpdateRecord {
   topics_json: string;
 }
 
+export interface InsurancePoolEnrollmentRecord {
+  lp_address: string;
+  contract_id: string;
+  enrolled_at: number;
+  ledger: number;
+  transaction_hash: string;
+  event_index: number;
+}
+
+export interface InsurancePoolPremiumRecord {
+  lp_address: string;
+  contract_id: string;
+  amount: string;
+  premium_at: number;
+  ledger: number;
+  transaction_hash: string;
+  event_index: number;
+}
+
+export interface InsurancePoolClaimRecord {
+  invoice_id: number;
+  lp_address: string;
+  contract_id: string;
+  payout_amount: string;
+  claimed_at: number;
+  ledger: number;
+  transaction_hash: string;
+  event_index: number;
+}
+
 export interface IngestedEventRecord {
   invoice_id: number | null;
   event_type: string;
@@ -56,6 +86,11 @@ export interface EventRepository {
   upsertInvoice(invoice: InvoiceRecord): void;
   insertEvent(event: IngestedEventRecord): void;
   insertReputationUpdate(update: ReputationUpdateRecord): void;
+  insertInsuranceEnrollment(enrollment: InsurancePoolEnrollmentRecord): void;
+  insertInsurancePremium(premium: InsurancePoolPremiumRecord): void;
+  insertInsuranceClaim(claim: InsurancePoolClaimRecord): void;
+  getInsurancePoolStats(contractId: string): { pool_balance: string; total_premiums_collected: string; total_claims_paid: string; enrolled_lp_count: number } | undefined;
+  upsertInsurancePoolStats(contractId: string, balance: string, premiums: string, claims: string, enrolledCount: number): void;
 }
 
 export function createSqlEventRepository(db: Database.Database): EventRepository {
@@ -141,6 +176,61 @@ export function createSqlEventRepository(db: Database.Database): EventRepository
         ON CONFLICT(transaction_hash, event_index) DO NOTHING
       `
       ).run(update);
+    },
+    insertInsuranceEnrollment(enrollment) {
+      db.prepare(
+        `
+        INSERT INTO insurance_pool_enrollments (
+          lp_address, contract_id, enrolled_at, ledger, transaction_hash, event_index
+        ) VALUES (
+          @lp_address, @contract_id, @enrolled_at, @ledger, @transaction_hash, @event_index
+        )
+        ON CONFLICT(lp_address, contract_id, transaction_hash, event_index) DO NOTHING
+      `
+      ).run(enrollment);
+    },
+    insertInsurancePremium(premium) {
+      db.prepare(
+        `
+        INSERT INTO insurance_pool_premiums (
+          lp_address, contract_id, amount, premium_at, ledger, transaction_hash, event_index
+        ) VALUES (
+          @lp_address, @contract_id, @amount, @premium_at, @ledger, @transaction_hash, @event_index
+        )
+        ON CONFLICT(lp_address, contract_id, transaction_hash, event_index) DO NOTHING
+      `
+      ).run(premium);
+    },
+    insertInsuranceClaim(claim) {
+      db.prepare(
+        `
+        INSERT INTO insurance_pool_claims (
+          invoice_id, lp_address, contract_id, payout_amount, claimed_at, ledger, transaction_hash, event_index
+        ) VALUES (
+          @invoice_id, @lp_address, @contract_id, @payout_amount, @claimed_at, @ledger, @transaction_hash, @event_index
+        )
+        ON CONFLICT(invoice_id, contract_id, transaction_hash, event_index) DO NOTHING
+      `
+      ).run(claim);
+    },
+    getInsurancePoolStats(contractId) {
+      return db
+        .prepare('SELECT pool_balance, total_premiums_collected, total_claims_paid, enrolled_lp_count FROM insurance_pool_stats WHERE contract_id = ?')
+        .get(contractId) as { pool_balance: string; total_premiums_collected: string; total_claims_paid: string; enrolled_lp_count: number } | undefined;
+    },
+    upsertInsurancePoolStats(contractId, balance, premiums, claims, enrolledCount) {
+      db.prepare(
+        `
+        INSERT INTO insurance_pool_stats (contract_id, pool_balance, total_premiums_collected, total_claims_paid, enrolled_lp_count, last_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(contract_id) DO UPDATE SET
+          pool_balance = excluded.pool_balance,
+          total_premiums_collected = excluded.total_premiums_collected,
+          total_claims_paid = excluded.total_claims_paid,
+          enrolled_lp_count = excluded.enrolled_lp_count,
+          last_updated_at = excluded.last_updated_at
+      `
+      ).run(contractId, balance, premiums, claims, enrolledCount, Math.floor(Date.now() / 1000));
     },
   };
 }

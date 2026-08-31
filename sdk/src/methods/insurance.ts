@@ -807,3 +807,35 @@ export async function setBasePremiumRateViaGovernance(
   );
   return { txHash };
 }
+
+/**
+ * Get the pool health snapshot including solvency metrics.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns Pool health information including balance, enrolled count, and coverage runway
+ */
+export async function getPoolHealth(
+  server: SorobanRpc.Server,
+  contractId: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<{ balance: bigint; enrolledLpCount: number; estimatedMonthlyClaimRate: bigint; monthsOfCoverage: number | null }> {
+  validateContractId(contractId);
+  const retval = await simulateCall(server, contractId, "get_pool_health", [], networkPassphrase);
+  if (!retval) {
+    return {
+      balance: 0n,
+      enrolledLpCount: 0,
+      estimatedMonthlyClaimRate: 0n,
+      monthsOfCoverage: null,
+    };
+  }
+  const health = scValToNative(retval) as Record<string, unknown>;
+  return {
+    balance: (health.balance as bigint) ?? 0n,
+    enrolledLpCount: (health.enrolled_lp_count as number) ?? 0,
+    estimatedMonthlyClaimRate: (health.estimated_monthly_claim_rate as bigint) ?? 0n,
+    monthsOfCoverage: (health.months_of_coverage as number | null) ?? null,
+  };
+}
