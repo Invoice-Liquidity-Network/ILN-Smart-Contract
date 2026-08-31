@@ -1,6 +1,6 @@
 # Indexer & Notifications Monitoring Runbook
 
-Operational monitoring for the ILN indexer HTTP/GraphQL API and the notifications service. Complements [indexer-incident-runbook.md](./indexer-incident-runbook.md) and [notifications-operations.md](./notifications-operations.md).
+Operational monitoring for the ILN indexer HTTP/GraphQL API and the notifications service. Complements [indexer-incident-runbook.md](./indexer-incident-runbook.md) and [notifications-operations.md](./notifications-operations.md). Concrete SLO targets are defined in [slos.md](./slos.md) and are referenced by the [incident response runbook](./incident-response-runbook.md) for severity classification.
 
 ## 1. What `/health` checks (indexer)
 

@@ -40,7 +40,7 @@ For a **cosmetic** bug with no funds/auth/data-integrity impact, do not use this
 
 ## 2. Severity classification
 
-Aligned 1:1 with the severity table in [`SECURITY.md`](../SECURITY.md#severity-levels) and [`docs/security.md`](security.md). Incident severity drives the response timeline, who is paged, and whether `pause()` is on the table.
+Aligned 1:1 with the severity table in [`SECURITY.md`](../SECURITY.md#severity-levels) and [`docs/security.md`](security.md). Incident severity drives the response timeline, who is paged, and whether `pause()` is on the table. Concrete SLO targets that define "degraded enough to declare an incident" are in [`docs/slos.md`](slos.md) — the SLO breach thresholds in that document replace subjective judgment during a stressful moment.
 
 | Severity | Definition (from `SECURITY.md`) | Incident response |
 |----------|--------------------------------|-------------------|
