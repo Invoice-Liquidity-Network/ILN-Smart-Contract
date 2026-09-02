@@ -197,3 +197,48 @@ collisions regardless of how similarly the two contracts name their keys.
 which were merged into the single `DataKey` enum. Variant names were
 preserved during the merge, so existing serialized data remains
 byte-compatible.
+
+## 10. Storage Layout Freeze — Sign-off Gate (Issue #651)
+
+The "Storage layout frozen" item on the
+[Mainnet Launch Checklist](mainnet-launch-checklist.md) requires an explicit,
+recorded sign-off — not just the absence of open storage PRs — before mainnet
+deployment. This section is that gate.
+
+### 10.1 What is frozen
+
+Once frozen, no PR may add, remove, rename, reorder, or retype a variant in
+any of the key enums documented in sections 2–6 of this document
+(`invoice_liquidity::DataKey`, `insurance_pool::DataKey`,
+`reputation_bonus::{ConfigKey, ReputationKey, InvoiceKey}`,
+`iln_distribution::StorageKey`, `iln_governance::StorageKey`) without first:
+
+1. Reopening this freeze via a PR that updates this section (unfreezing is an
+   explicit, reviewed action, not something that happens implicitly).
+2. Getting the same sign-offs listed in §10.2 again after the change.
+3. Updating sections 2–6 above and, if the change is not purely additive,
+   the migration guidance in [Upgrade Guide](upgrade-guide.md).
+
+Purely additive changes that a future upgrade's `migrate()` entrypoint
+defaults for existing records (the pattern used by the
+[v1→v2 migration](upgrade-guide.md#v1--v2-state-migration-script--issue-114))
+remain possible post-launch without breaking this freeze — the freeze covers
+*silent, unmigrated* schema drift, not the supported upgrade path itself.
+
+### 10.2 Sign-off
+
+Mainnet deployment must not proceed until every row below is signed:
+
+| Area | Maintainer | Signed off | Date | Notes |
+|------|------------|------------|------|-------|
+| Contracts (storage authoring) | TBD | No | TBD | Confirms sections 2–6 match the code that will be deployed to mainnet. |
+| Security (collision/migration review) | TBD | No | TBD | Confirms section 1 and 7's collision-safety argument and section 9's migration notes hold for the deployed code. |
+| Release (freeze enforcement) | TBD | No | TBD | Confirms no open PR touches a frozen enum at deployment time. |
+
+### 10.3 Enforcement until launch
+
+Between sign-off and mainnet deployment, any PR that touches a frozen key
+enum's definition must link back to this section in its description and
+explain why the freeze does not apply (e.g. it is testnet-only, or it follows
+the reopen procedure in §10.1). Reviewers should treat an unexplained diff to
+a frozen enum as a launch-blocking finding.

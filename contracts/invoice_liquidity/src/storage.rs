@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::invoice::{
     AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
 };
+use crate::multisig::AdminAction;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,10 +19,9 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
-    /// Issue #645: monotonically increasing count of admin actions ever
-    /// recorded in the admin action audit log (never decreases, even as
-    /// older ring-buffer entries are overwritten).
-    AdminActionCount,
+    /// Issue #655: governance-configurable cap on a single invoice's `amount`,
+    /// for a staged mainnet rollout. `0` = uncapped (default).
+    MaxInvoiceAmount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -58,6 +58,11 @@ pub enum DataKey {
     TotalVolumeEurc,
     TotalVolumeXlm,
     TokenVolume(Address),
+    /// Issue #655: governance-configurable cap on cumulative funded volume
+    /// (`TokenVolume`) for a given token, for a staged mainnet rollout — can
+    /// be raised over time as confidence in the deployment grows. `0` =
+    /// uncapped (default).
+    TokenVolumeCap(Address),
     /// Referral counts keyed by fixed-size code
     ReferralCount(BytesN<32>),
     Dispute(u64),
@@ -107,6 +112,30 @@ pub enum DataKey {
     /// deviation (basis points) between a price source's reported price
     /// and the cross-source median before it's rejected as an outlier.
     MaxPriceDeviationBps,
+
+    // ── Issue #124 / #641: multisig admin ───────────────────────────
+    /// The multisig admin signer set + approval threshold, once bootstrapped
+    /// via `initialize_multisig_admin`.
+    MultisigAdmin,
+    /// A pending/executed/expired multisig proposal, keyed by its id.
+    MultisigProposal(u64),
+    /// Monotonically increasing multisig proposal id counter.
+    NextProposalId,
+    /// Issue #641: the id of the currently in-flight (Pending,
+    /// non-expired) proposal for a given `AdminAction`, if any — used to
+    /// reject a second concurrent proposal for the same logical action
+    /// instead of allowing duplicates to race each other.
+    PendingActionProposal(AdminAction),
+    /// Issue #640: the currently scheduled signer rotation (old signer ->
+    /// new signer + timelock expiry), if any. Only one rotation may be
+    /// pending at a time.
+    PendingSignerRotation,
+    /// Issue #775: ledger timestamp of the most recent `pause()` (single-admin
+    /// or multisig path). Absent until the contract has been paused at least
+    /// once. Read via `get_protocol_status()` for the public status view;
+    /// never cleared on `unpause()` so operators keep a "last halted at"
+    /// reference.
+    LastPauseTimestamp,
 }
 
 // ----------------------------------------------------------------

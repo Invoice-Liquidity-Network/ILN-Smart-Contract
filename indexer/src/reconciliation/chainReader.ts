@@ -25,10 +25,31 @@ export interface OnChainInvoice {
   funder: string | null;
 }
 
+/**
+ * Public, incident-relevant protocol state from `get_protocol_status()`
+ * (Issue #775). Field names mirror the on-chain `ProtocolStatus` struct.
+ */
+export interface OnChainProtocolStatus {
+  paused: boolean;
+  /** Ledger timestamp (seconds) of the most recent pause; 0 if never paused. */
+  lastPauseTimestamp: number;
+  admin: string;
+  multisigConfigured: boolean;
+  multisigThreshold: number;
+  multisigSignerCount: number;
+  oracleCircuitTripped: boolean;
+  oracleCircuitsTripped: number;
+}
+
 export interface ChainReader {
   /** Returns null when the contract reports the invoice does not exist. */
   getInvoice(invoiceId: number): Promise<OnChainInvoice | null>;
   getInvoiceCount(): Promise<number>;
+  /**
+   * Reads `get_protocol_status()`; null if the contract has no such view.
+   * Optional so existing `ChainReader` fakes in tests don't have to implement it.
+   */
+  getProtocolStatus?(): Promise<OnChainProtocolStatus | null>;
 }
 
 export interface SorobanChainReaderOptions {
@@ -98,6 +119,26 @@ export class SorobanChainReader implements ChainReader {
       return 0;
     }
     return Number(raw);
+  }
+
+  async getProtocolStatus(): Promise<OnChainProtocolStatus | null> {
+    const raw = await this.simulate('get_protocol_status');
+    if (raw === null || typeof raw !== 'object') {
+      return null;
+    }
+    const record = raw as Record<string, unknown>;
+    const num = (v: unknown): number =>
+      typeof v === 'bigint' ? Number(v) : typeof v === 'number' ? Math.trunc(v) : Number(v ?? 0);
+    return {
+      paused: record.paused === true,
+      lastPauseTimestamp: num(record.last_pause_timestamp),
+      admin: String(record.admin ?? ''),
+      multisigConfigured: record.multisig_configured === true,
+      multisigThreshold: num(record.multisig_threshold),
+      multisigSignerCount: num(record.multisig_signer_count),
+      oracleCircuitTripped: record.oracle_circuit_tripped === true,
+      oracleCircuitsTripped: num(record.oracle_circuits_tripped),
+    };
   }
 
   /**

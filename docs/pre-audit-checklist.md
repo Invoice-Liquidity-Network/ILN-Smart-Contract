@@ -219,7 +219,6 @@ The following items are ❌ as of this document's creation. Each must be resolve
 
 | Item | Description | Suggested Issue Label |
 |------|-------------|----------------------|
-| 1.4 | Multi-sig admin error variant test coverage | `audit-prep`, `testing` |
 | 1.6 | All `ContractError` variants have dedicated test cases | `audit-prep`, `testing` |
 | 2.4 | Verify zero `unsafe` blocks across all contract crates | `audit-prep`, `security` |
 | 3.2 | Doc comments for all `iln_distribution` public functions | `audit-prep`, `docs` |

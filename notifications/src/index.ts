@@ -14,6 +14,8 @@ import { createEmailSubscriptionsRouter } from './api/email.js';
 import { createEmailNotificationsRouter } from './api/emailNotifications.js';
 import type { SlackSubscription } from './api/slack.js';
 import type { TelegramSubscription } from './api/telegram.js';
+import { logger } from './lib/logger.js';
+import { createRequestIdMiddleware } from './lib/requestId.js';
 
 const db = createNotificationsDatabase(config.dbPath);
 const port = config.port;
@@ -30,7 +32,8 @@ const delivery = new WebhookDeliveryService({
     const res = await fetch(url, init);
     return { status: res.status };
   },
-  logger: (msg) => console.log(msg),
+  // Structured logging (Issue #776) — carries the request/event correlation id.
+  logger: (msg) => logger.info(msg, { component: 'webhook-delivery' }),
   historyStore,
 });
 const emailDelivery = new EmailDeliveryService(
@@ -46,6 +49,9 @@ const slackStore = new Map<string, SlackSubscription>();
 const telegramStore = new Map<string, TelegramSubscription>();
 
 const app = express();
+// Correlation-ID first so every downstream log line for the request is tagged
+// (Issue #776).
+app.use(createRequestIdMiddleware());
 app.use(express.json());
 app.use(createWebhooksRouter(store, delivery, historyStore));
 app.use(createSlackRouter(slackStore));
@@ -65,5 +71,5 @@ app.use(
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.listen(port, () => {
-  console.log(`ILN notifications service listening on ${port}`);
+  logger.info('ILN notifications service listening', { port });
 });
