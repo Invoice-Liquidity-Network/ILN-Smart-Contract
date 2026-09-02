@@ -335,6 +335,38 @@ fn test_update_fee_rate_via_governance_takes_effect() {
 
 // ── Test 3 ────────────────────────────────────────────────────────────────────
 
+/// A proposal progress through the live governance lifecycle and explicitly lands
+/// in `Passed` before the final `Executed` transition.
+#[test]
+fn test_proposal_status_transitions_are_exercised() {
+    let t = setup();
+
+    let proposal_id = t.governance.create_proposal(
+        &t.voter,
+        &ProposalAction::UpdateFeeRate(250),
+        &dummy_hash(&t.env),
+        &250_i128,
+    );
+
+    let initial = t.governance.get_proposal(&proposal_id);
+    assert_eq!(initial.status, ProposalStatus::Active);
+
+    t.governance.cast_vote(&t.voter, &proposal_id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    ledger.sequence_number += invoice_liquidity::constants::ECONOMIC_PARAM_COOLDOWN_LEDGERS as u32;
+    t.env.ledger().set(ledger);
+
+    assert_eq!(t.governance.try_execute_proposal(&proposal_id), Ok(Ok(())));
+    let passed = t.governance.get_proposal(&proposal_id);
+    assert_eq!(passed.status, ProposalStatus::Passed);
+
+    assert_eq!(t.governance.try_execute_proposal(&proposal_id), Ok(Ok(())));
+    let executed = t.governance.get_proposal(&proposal_id);
+    assert_eq!(executed.status, ProposalStatus::Executed);
+}
+
 /// A vetoed proposal cannot be executed; the target parameter is unchanged.
 #[test]
 fn test_veto_proposal_prevents_execution() {
