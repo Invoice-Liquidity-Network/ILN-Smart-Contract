@@ -427,11 +427,88 @@ Emitted from `invoice.rs` whenever an address's reputation profile changes.
 ### Invoice NFT lifecycle
 
 Defined in `nft.rs`, emitted alongside the corresponding invoice lifecycle
-events:
+events. These events let indexers track invoice-NFT ownership changes (e.g.
+freelancer → LP on funding) and power NFT marketplace features.
 
-- **InvoiceNftMinted** — on `submit_invoice`: `invoice_id`, `owner`, `amount`, `due_date`, `timestamp`.
-- **InvoiceNftTransferred** — on `fund_invoice` (freelancer → LP): `invoice_id`, `from`, `to`, `timestamp`.
-- **InvoiceNftBurned** — on full `mark_paid`: `invoice_id`, `owner`, `timestamp`.
+> **Deprecation note:** the current implementation emits these events with the
+deprecated `env.events().publish()` method. The project tracks the migration
+to the `#[contractevent]` macro in [Issue #26](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/26).
+Topic names and payload fields below are the target schemas and will not change
+with the migration.
+
+#### InvoiceNftMinted
+
+Emitted when an invoice NFT is created for a new invoice (`submit_invoice`).
+
+Topics: `["invoice_nft_minted", invoice_id, owner]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Invoice the NFT represents |
+| `owner` | `Address` | Initial owner (the freelancer) |
+| `amount` | `i128` | Total invoice amount |
+| `due_date` | `u32` | Invoice due date |
+| `timestamp` | `u64` | Ledger timestamp of minting |
+
+Example payload:
+
+```json
+{
+  "invoice_id": 42,
+  "owner": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5",
+  "amount": 5000000000,
+  "due_date": 1767225600,
+  "timestamp": 1764633600
+}
+```
+
+#### InvoiceNftTransferred
+
+Emitted when an invoice NFT changes owner, e.g. freelancer → LP when the
+invoice is funded (`fund_invoice`).
+
+Topics: `["invoice_nft_transferred", invoice_id, from, to]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Invoice the NFT represents |
+| `from` | `Address` | Previous owner |
+| `to` | `Address` | New owner |
+| `timestamp` | `u64` | Ledger timestamp of transfer |
+
+Example payload:
+
+```json
+{
+  "invoice_id": 42,
+  "from": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5",
+  "to": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z6",
+  "timestamp": 1764633605
+}
+```
+
+#### InvoiceNftBurned
+
+Emitted when an invoice NFT is destroyed, i.e. when the invoice is marked
+fully paid (`mark_paid`).
+
+Topics: `["invoice_nft_burned", invoice_id, owner]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Invoice the NFT represented |
+| `owner` | `Address` | Owner at burn time (the LP holding the NFT) |
+| `timestamp` | `u64` | Ledger timestamp of burn |
+
+Example payload:
+
+```json
+{
+  "invoice_id": 42,
+  "owner": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z6",
+  "timestamp": 1767225600
+}
+```
 
 ---
 

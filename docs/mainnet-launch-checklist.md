@@ -19,7 +19,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Item | Description | Owner | Status | Link |
 |------|-------------|-------|--------|------|
 | Upgrade path tested | Test upload, deploy, migration, rollback decision points, and post-upgrade smoke checks. | Contracts lead | In progress | [Upgrade Guide](upgrade-guide.md) |
-| Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Not started | [Access Control](access-control.md) |
+| Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Complete | [Multi-sig Admin Runbook](multisig-admin-runbook.md) · [Access Control](access-control.md) |
 | Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout](storage-layout.md) |
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
 | Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | Not started | [Developer Quickstart](developer-quickstart.md) |

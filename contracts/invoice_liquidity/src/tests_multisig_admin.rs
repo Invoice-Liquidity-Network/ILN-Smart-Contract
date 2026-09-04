@@ -1,4 +1,4 @@
-/// Comprehensive tests for Multi-sig Admin feature (Issue #124)
+/// Comprehensive tests for Multi-sig Admin feature (Issue #124, #638)
 ///
 /// Tests cover:
 /// - 2-of-3 threshold scenarios
@@ -6,24 +6,31 @@
 /// - Duplicate signature prevention
 /// - Threshold validation
 /// - Various admin actions
-
+/// - Production threshold flow (2-of-3) mirroring docs/multisig-admin-runbook.md
 #[cfg(test)]
+// The generated `try_*` contract clients return `Result<Result<.., _>, _>`;
+// asserting success with `.unwrap()` triggers unused_must_use under -D warnings.
+#[allow(unused_must_use)]
 mod tests {
     use crate::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Address, Env, Vec};
 
+    #[allow(dead_code)]
     struct TestEnv {
         env: Env,
-        contract: InvoiceLiquidityContractClient,
+        contract: InvoiceLiquidityContractClient<'static>,
         admin1: Address,
         admin2: Address,
         admin3: Address,
         other: Address,
-        usdc_token: Address,
     }
 
     fn setup_multisig() -> TestEnv {
         let env = Env::default();
+        // Multisig entry points call require_auth() on the proposer/signer/
+        // executor; mock auth so the generated client calls pass.
+        env.mock_all_auths();
 
         // Generate test addresses
         let admin1 = Address::generate(&env);
@@ -49,12 +56,7 @@ mod tests {
         let contract = InvoiceLiquidityContractClient::new(&env, &contract_id);
 
         // Initialize the contract
-        contract.initialize(
-            &admin1,
-            &usdc_token_addr,
-            &eurc_token_addr,
-            &xlm_token_addr,
-        );
+        contract.initialize(&admin1, &usdc_token_addr, &eurc_token_addr, &xlm_token_addr);
 
         TestEnv {
             env,
@@ -63,7 +65,6 @@ mod tests {
             admin2,
             admin3,
             other,
-            usdc_token: usdc_token_addr,
         }
     }
 
@@ -81,7 +82,7 @@ mod tests {
         signers.push_back(t.admin3.clone());
 
         // Initialize multisig admin with 2-of-3 threshold
-        let result = t.contract.initialize_multisig_admin(&signers, &2);
+        let result = t.contract.try_initialize_multisig_admin(&signers, &2);
         assert!(result.is_ok());
     }
 
@@ -96,11 +97,12 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
         // Propose pause action
-        let result = t.contract.propose_pause(&t.admin1);
-        assert!(result.is_ok());
+        let result = t.contract.try_propose_pause(&t.admin1).unwrap();
         let proposal_id = result.unwrap();
         assert!(proposal_id > 0);
     }
@@ -116,18 +118,19 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // Only admin1 has signed (needs 2)
-        let result = t.contract.sign_proposal(&t.admin1, &proposal_id);
+        let result = t.contract.try_sign_proposal(&t.admin1, &proposal_id);
         assert!(result.is_ok());
 
         // Threshold not reached yet
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::ThresholdNotReached);
+        let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::ThresholdNotReached)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -141,19 +144,26 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // First signature
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Second signature - threshold reached
-        t.contract.sign_proposal(&t.admin2, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin2, &proposal_id)
+            .unwrap();
 
         // Execute proposal
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_ok());
+        t.contract
+            .try_execute_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Verify contract is paused
         assert!(t.contract.is_paused());
@@ -170,14 +180,15 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // Non-authorized address tries to sign
-        let result = t.contract.sign_proposal(&t.other, &proposal_id);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::NotAuthorizedSigner);
+        let result = t.contract.try_sign_proposal(&t.other, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::NotAuthorizedSigner)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -191,17 +202,20 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // First signature
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Same address tries to sign again
-        let result = t.contract.sign_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::AlreadySigned);
+        let result = t.contract.try_sign_proposal(&t.admin1, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::AlreadySigned)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -215,12 +229,13 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
         // Non-signer tries to propose
-        let result = t.contract.propose_pause(&t.other);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::NotAuthorizedSigner);
+        let result = t.contract.try_propose_pause(&t.other);
+        assert_eq!(result, Err(Ok(ContractError::NotAuthorizedSigner)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -234,15 +249,18 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Try to execute with only 1 signature (need 2)
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::ThresholdNotReached);
+        let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::ThresholdNotReached)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -256,12 +274,13 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
         // Try to execute non-existent proposal
-        let result = t.contract.execute_proposal(&t.admin1, &999);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::ProposalNotFound);
+        let result = t.contract.try_execute_proposal(&t.admin1, &999);
+        assert_eq!(result, Err(Ok(ContractError::ProposalNotFound)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -275,19 +294,26 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
-        t.contract.sign_proposal(&t.admin2, &proposal_id).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin2, &proposal_id)
+            .unwrap();
 
         // Execute once
-        t.contract.execute_proposal(&t.admin1, &proposal_id).unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Try to execute again
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::ProposalAlreadyExecuted);
+        let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::ProposalAlreadyExecuted)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -302,9 +328,8 @@ mod tests {
         signers.push_back(t.admin2.clone());
 
         // Threshold (3) > signer count (2)
-        let result = t.contract.initialize_multisig_admin(&signers, &3);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ContractError::InvalidMultisigConfig);
+        let result = t.contract.try_initialize_multisig_admin(&signers, &3);
+        assert_eq!(result, Err(Ok(ContractError::InvalidMultisigConfig)));
     }
 
     // ────────────────────────────────────────────────────────────
@@ -318,20 +343,29 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
         // First pause
-        let pause_id = t.contract.propose_pause(&t.admin1).unwrap();
-        t.contract.sign_proposal(&t.admin1, &pause_id).unwrap();
-        t.contract.sign_proposal(&t.admin2, &pause_id).unwrap();
-        t.contract.execute_proposal(&t.admin1, &pause_id).unwrap();
+        let pause_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
+        t.contract.try_sign_proposal(&t.admin1, &pause_id).unwrap();
+        t.contract.try_sign_proposal(&t.admin2, &pause_id).unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin1, &pause_id)
+            .unwrap();
 
         // Then unpause
-        let unpause_id = t.contract.propose_unpause(&t.admin1).unwrap();
-        t.contract.sign_proposal(&t.admin1, &unpause_id).unwrap();
-        t.contract.sign_proposal(&t.admin2, &unpause_id).unwrap();
-        let result = t.contract.execute_proposal(&t.admin1, &unpause_id);
-        assert!(result.is_ok());
+        let unpause_id = t.contract.try_propose_unpause(&t.admin1).unwrap().unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &unpause_id)
+            .unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin2, &unpause_id)
+            .unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin1, &unpause_id)
+            .unwrap();
 
         // Verify contract is unpaused
         assert!(!t.contract.is_paused());
@@ -348,22 +382,31 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &3).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &3)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // Get all three to sign
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
-        t.contract.sign_proposal(&t.admin2, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin2, &proposal_id)
+            .unwrap();
 
         // Should fail with only 2 signatures
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_err());
+        let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
+        assert_eq!(result, Err(Ok(ContractError::ThresholdNotReached)));
 
         // Third signature makes it succeed
-        t.contract.sign_proposal(&t.admin3, &proposal_id).unwrap();
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
-        assert!(result.is_ok());
+        t.contract
+            .try_sign_proposal(&t.admin3, &proposal_id)
+            .unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin1, &proposal_id)
+            .unwrap();
     }
 
     // ────────────────────────────────────────────────────────────
@@ -377,17 +420,24 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // Sign in reverse order
-        t.contract.sign_proposal(&t.admin3, &proposal_id).unwrap();
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin3, &proposal_id)
+            .unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Should still execute successfully
-        let result = t.contract.execute_proposal(&t.admin2, &proposal_id);
-        assert!(result.is_ok());
+        t.contract
+            .try_execute_proposal(&t.admin2, &proposal_id)
+            .unwrap();
     }
 
     // ────────────────────────────────────────────────────────────
@@ -401,12 +451,16 @@ mod tests {
         signers.push_back(t.admin1.clone());
         signers.push_back(t.admin2.clone());
         signers.push_back(t.admin3.clone());
-        t.contract.initialize_multisig_admin(&signers, &2).unwrap();
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
 
-        let proposal_id = t.contract.propose_pause(&t.admin1).unwrap();
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
 
         // First signer signs
-        t.contract.sign_proposal(&t.admin1, &proposal_id).unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
 
         // Advance ledger past the multisig window (17_280 ledgers)
         let mut ledger = t.env.ledger().get();
@@ -414,14 +468,77 @@ mod tests {
         t.env.ledger().set(ledger);
 
         // Second signer tries to sign after expiration
-        let result = t.contract.sign_proposal(&t.admin2, &proposal_id);
+        let result = t.contract.try_sign_proposal(&t.admin2, &proposal_id);
 
         // Should fail because proposal has expired
         assert!(result.is_err());
 
         // Execution should also fail
-        let result = t.contract.execute_proposal(&t.admin1, &proposal_id);
+        let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
         assert!(result.is_err());
     }
-}
 
+    // ────────────────────────────────────────────────────────────
+    // Test 16: Production threshold flow (2-of-3) (Issue #638)
+    //
+    // Mirrors the production multi-sig configuration documented in
+    // docs/multisig-admin-runbook.md: 3 independent signer keys and a
+    // threshold of 2 (minimum 2-of-3). Verifies the exact propose →
+    // sign → execute lifecycle operators will run at launch, including
+    // that a single compromised key is never sufficient.
+    // ────────────────────────────────────────────────────────────
+    #[test]
+    fn test_production_threshold_multisig_flow() {
+        let t = setup_multisig();
+
+        // Production signer set: 3 independent keys, threshold 2-of-3.
+        let mut signers = Vec::new(&t.env);
+        signers.push_back(t.admin1.clone());
+        signers.push_back(t.admin2.clone());
+        signers.push_back(t.admin3.clone());
+        t.contract
+            .try_initialize_multisig_admin(&signers, &2)
+            .unwrap();
+
+        // 1. An authorized signer proposes a pause.
+        let proposal_id = t.contract.try_propose_pause(&t.admin1).unwrap().unwrap();
+        assert!(proposal_id > 0);
+
+        // 2. A single signature must NOT be sufficient — one compromised key
+        //    cannot pause the contract.
+        t.contract
+            .try_sign_proposal(&t.admin1, &proposal_id)
+            .unwrap();
+        let exec = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
+        assert_eq!(exec, Err(Ok(ContractError::ThresholdNotReached)));
+        assert!(!t.contract.is_paused());
+
+        // 3. Second independent key reaches the 2-of-3 threshold.
+        t.contract
+            .try_sign_proposal(&t.admin2, &proposal_id)
+            .unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin1, &proposal_id)
+            .unwrap();
+
+        // 4. The action is applied — contract is now paused.
+        assert!(t.contract.is_paused());
+
+        // 5. The same threshold governs recovery: two signatures unpause.
+        let unpause_id = t.contract.try_propose_unpause(&t.admin2).unwrap().unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin2, &unpause_id)
+            .unwrap();
+        t.contract
+            .try_sign_proposal(&t.admin3, &unpause_id)
+            .unwrap();
+        t.contract
+            .try_execute_proposal(&t.admin2, &unpause_id)
+            .unwrap();
+        assert!(!t.contract.is_paused());
+
+        // 6. A non-signer can never propose or sign.
+        let result = t.contract.try_propose_pause(&t.other);
+        assert_eq!(result, Err(Ok(ContractError::NotAuthorizedSigner)));
+    }
+}

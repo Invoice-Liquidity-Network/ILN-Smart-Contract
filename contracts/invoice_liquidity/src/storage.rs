@@ -16,6 +16,10 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
+    /// Issue #124: multi-sig admin configuration (signers + threshold).
+    MultisigAdmin,
+    /// Issue #124: monotonic counter for unique multisig proposal IDs.
+    MultisigProposalCounter,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -62,6 +66,8 @@ pub enum DataKey {
     InvoiceNftOwner(u64),
     /// Issue #533: Fee tier configuration — ordered list of (min_amount, fee_rate_bps).
     FeeTiers,
+    /// Issue #124: multi-sig proposals by ID.
+    MultisigProposal(u64),
     /// Issue #539: Storage version tracking for migration safety.
     StorageVersion,
     /// Reentrancy guard lock (Issue #535)
@@ -515,6 +521,48 @@ pub fn get_total_paid(env: &Env) -> u64 {
         .persistent()
         .get(&DataKey::TotalPaid)
         .unwrap_or(0)
+}
+
+// ----------------------------------------------------------------
+// Multi-sig Admin Helpers (Issue #124)
+// ----------------------------------------------------------------
+
+pub fn get_multisig_admin(env: &Env) -> Option<crate::multisig::MultisigAdmin> {
+    env.storage().instance().get(&DataKey::MultisigAdmin)
+}
+
+pub fn set_multisig_admin(env: &Env, admin: &crate::multisig::MultisigAdmin) {
+    env.storage().instance().set(&DataKey::MultisigAdmin, admin);
+}
+
+pub fn get_multisig_proposal(
+    env: &Env,
+    proposal_id: u64,
+) -> Option<crate::multisig::MultisigProposal> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::MultisigProposal(proposal_id))
+}
+
+pub fn save_multisig_proposal(env: &Env, proposal: &crate::multisig::MultisigProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MultisigProposal(proposal.id), proposal);
+}
+
+/// Next proposal ID (starts at 1).
+pub fn get_next_proposal_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultisigProposalCounter)
+        .unwrap_or(1)
+}
+
+pub fn increment_proposal_id(env: &Env) {
+    let next_id = get_next_proposal_id(env).saturating_add(1);
+    env.storage()
+        .instance()
+        .set(&DataKey::MultisigProposalCounter, &next_id);
 }
 
 #[cfg(test)]

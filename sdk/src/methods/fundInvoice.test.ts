@@ -10,7 +10,14 @@ import { vi, describe, it, expect, beforeEach } from "vitest";
  */
 
 import { fundInvoice, computeEffectiveYieldBps } from "./fundInvoice.js";
-import { SorobanRpc, Networks, Account, Keypair, scValToNative } from "@stellar/stellar-sdk";
+import {
+  SorobanRpc,
+  Networks,
+  Account,
+  Keypair,
+  scValToNative,
+  Contract,
+} from "@stellar/stellar-sdk";
 
 // Mock scValToNative to control invoice decoding in tests, and Transaction
 // so signAndSubmit doesn't attempt to parse fake XDR strings.
@@ -532,6 +539,129 @@ describe("fundInvoice — oracle verification", () => {
       Networks.TESTNET
     );
     expect(result.txHash).toBe("txhash");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fundInvoice — require_oracle_verification forwarding (Issue #594)
+// ---------------------------------------------------------------------------
+
+describe("fundInvoice — require_oracle_verification forwarding", () => {
+  // Real (unmocked) scValToNative so we can decode the ScVal the SDK builds.
+  let realScValToNative: typeof import("@stellar/stellar-sdk").scValToNative;
+  let callSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import("@stellar/stellar-sdk")>(
+      "@stellar/stellar-sdk"
+    );
+    realScValToNative = actual.scValToNative;
+  });
+
+  beforeEach(() => {
+    callSpy = vi.spyOn(Contract.prototype, "call");
+  });
+
+  afterEach(() => {
+    callSpy.mockRestore();
+  });
+
+  function mockHappyPath() {
+    mockAccountLoad("100");
+    mockIsAllowanceSufficient.mockReturnValue(true);
+    mockGetAllowance.mockResolvedValue({
+      amount: 10_000_000n,
+      expirationLedger: 9999,
+    });
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
+      sequence: 200,
+    });
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
+      result: { retval: { _stub: true } },
+    });
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
+      async (tx) => ({
+        ...tx,
+        sign: vi.fn(),
+        toEnvelope: () => ({ toXDR: () => "xdr" }),
+      })
+    );
+    (mockServer.sendTransaction as vi.Mock).mockResolvedValue({
+      status: "PENDING",
+      hash: "forwardtxhash",
+    });
+  }
+
+  function fundInvoiceCallArgs() {
+    const calls = callSpy.mock.calls as unknown as [string, ...unknown[]][];
+    return calls.find(([method]) => method === "fund_invoice");
+  }
+
+  it("forwards requireOracleVerification=true as the 4th contract argument", async () => {
+    mockHappyPath();
+
+    await fundInvoice(
+      mockServer,
+      CONTRACT_ID,
+      LP_KEYPAIR,
+      1n,
+      { requireOracleVerification: true },
+      Networks.TESTNET
+    );
+
+    const args = fundInvoiceCallArgs();
+    expect(args).toBeDefined();
+    // [method, funder, invoice_id, fund_amount, require_oracle_verification]
+    expect(args).toHaveLength(5);
+    expect(realScValToNative(args![4])).toBe(true);
+  });
+
+  it("forwards requireOracleVerification=false (default) as the 4th contract argument", async () => {
+    mockHappyPath();
+
+    await fundInvoice(mockServer, CONTRACT_ID, LP_KEYPAIR, 1n, {}, Networks.TESTNET);
+
+    const args = fundInvoiceCallArgs();
+    expect(args).toBeDefined();
+    expect(args).toHaveLength(5);
+    expect(realScValToNative(args![4])).toBe(false);
+  });
+
+  it("still forwards the flag when an approval is required (two-step flow)", async () => {
+    mockAccountLoad("100");
+    mockIsAllowanceSufficient.mockReturnValue(false);
+    mockGetAllowance.mockResolvedValue({ amount: 0n, expirationLedger: 0 });
+    mockBuildApprove.mockResolvedValue("APPROVALXDR==");
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
+      sequence: 200,
+    });
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
+      result: { retval: { _stub: true } },
+    });
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
+      async (tx) => ({
+        ...tx,
+        sign: vi.fn(),
+        toEnvelope: () => ({ toXDR: () => "xdr" }),
+      })
+    );
+    (mockServer.sendTransaction as vi.Mock)
+      .mockResolvedValueOnce({ status: "PENDING", hash: "approvetx" })
+      .mockResolvedValueOnce({ status: "PENDING", hash: "fundtx" });
+
+    await fundInvoice(
+      mockServer,
+      CONTRACT_ID,
+      LP_KEYPAIR,
+      1n,
+      { requireOracleVerification: true },
+      Networks.TESTNET
+    );
+
+    const args = fundInvoiceCallArgs();
+    expect(args).toBeDefined();
+    expect(args).toHaveLength(5);
+    expect(realScValToNative(args![4])).toBe(true);
   });
 });
 

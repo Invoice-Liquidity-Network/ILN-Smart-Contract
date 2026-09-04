@@ -12,6 +12,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod invoice;
+pub mod multisig;
 pub mod nft;
 pub mod rate_logic;
 pub mod storage;
@@ -681,6 +682,220 @@ impl InvoiceLiquidityContract {
         );
         Ok(())
     }
+
+    /// Return whether the contract is currently paused.
+    /// Access: Anyone
+    pub fn is_paused(env: Env) -> bool {
+        crate::invoice::is_paused(&env)
+    }
+
+    // ============================================================
+    // Multi-sig Admin (Issue #124)
+    //
+    // Threshold-based (M-of-N) approval for high-security admin
+    // operations. Any authorized signer proposes an action, signers
+    // approve via sign_proposal, and once the threshold is reached any
+    // signer can execute. Proposals expire after
+    // MULTISIG_WINDOW_LEDGERS (~24h) if not executed.
+    // ============================================================
+
+    /// Initialize the multi-signature admin configuration.
+    ///
+    /// Enables threshold-based approval for admin actions. Once configured,
+    /// signers propose/sign/execute actions instead of a single admin key.
+    ///
+    /// # Arguments
+    /// - `signers`: addresses authorized to participate in multi-sig
+    /// - `threshold`: signatures required to execute (must be > 0 and <= signers.len())
+    ///
+    /// Access: Admin only
+    pub fn initialize_multisig_admin(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ContractError> {
+        require_admin(&env)?;
+
+        // Validate configuration: 0 < threshold <= signers.len()
+        if threshold == 0 || threshold as usize > signers.len() as usize {
+            return Err(ContractError::InvalidMultisigConfig);
+        }
+
+        let admin = multisig::MultisigAdmin { signers, threshold };
+        storage::set_multisig_admin(&env, &admin);
+        Ok(())
+    }
+
+    /// Propose a pause action.
+    ///
+    /// Creates a new `Pending` proposal to pause the contract. Must be called
+    /// by an authorized signer once multi-sig is initialized.
+    ///
+    /// Access: Multi-sig authorized signer
+    pub fn propose_pause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        proposer.require_auth();
+
+        let admin = storage::get_multisig_admin(&env).ok_or(ContractError::NotAuthorizedSigner)?;
+
+        if !multisig::is_signer(&env, &admin.signers, &proposer) {
+            return Err(ContractError::NotAuthorizedSigner);
+        }
+
+        let proposal_id = storage::get_next_proposal_id(&env);
+        let proposal = multisig::MultisigProposal {
+            id: proposal_id,
+            action: multisig::AdminAction::Pause,
+            signers_approved: Vec::new(&env),
+            state: multisig::ProposalState::Pending,
+            expires_at: env.ledger().sequence() + multisig::MULTISIG_WINDOW_LEDGERS,
+        };
+
+        storage::save_multisig_proposal(&env, &proposal);
+        storage::increment_proposal_id(&env);
+
+        Ok(proposal_id)
+    }
+
+    /// Propose an unpause action.
+    ///
+    /// Creates a new `Pending` proposal to unpause the contract. Must be
+    /// called by an authorized signer once multi-sig is initialized.
+    ///
+    /// Access: Multi-sig authorized signer
+    pub fn propose_unpause(env: Env, proposer: Address) -> Result<u64, ContractError> {
+        proposer.require_auth();
+
+        let admin = storage::get_multisig_admin(&env).ok_or(ContractError::NotAuthorizedSigner)?;
+
+        if !multisig::is_signer(&env, &admin.signers, &proposer) {
+            return Err(ContractError::NotAuthorizedSigner);
+        }
+
+        let proposal_id = storage::get_next_proposal_id(&env);
+        let proposal = multisig::MultisigProposal {
+            id: proposal_id,
+            action: multisig::AdminAction::Unpause,
+            signers_approved: Vec::new(&env),
+            state: multisig::ProposalState::Pending,
+            expires_at: env.ledger().sequence() + multisig::MULTISIG_WINDOW_LEDGERS,
+        };
+
+        storage::save_multisig_proposal(&env, &proposal);
+        storage::increment_proposal_id(&env);
+
+        Ok(proposal_id)
+    }
+
+    /// Sign (approve) a proposal.
+    ///
+    /// Adds the signer's approval to a proposal. Once the signature threshold
+    /// is reached, the proposal becomes executable. A signer may only sign
+    /// once (`AlreadySigned`), and signing an expired proposal is rejected.
+    ///
+    /// Access: Multi-sig authorized signer
+    pub fn sign_proposal(env: Env, signer: Address, proposal_id: u64) -> Result<(), ContractError> {
+        signer.require_auth();
+
+        let admin = storage::get_multisig_admin(&env).ok_or(ContractError::NotAuthorizedSigner)?;
+
+        if !multisig::is_signer(&env, &admin.signers, &signer) {
+            return Err(ContractError::NotAuthorizedSigner);
+        }
+
+        let mut proposal = storage::get_multisig_proposal(&env, proposal_id)
+            .ok_or(ContractError::ProposalNotFound)?;
+
+        if multisig::is_expired(&env, &proposal) {
+            proposal.state = multisig::ProposalState::Expired;
+            storage::save_multisig_proposal(&env, &proposal);
+            return Err(ContractError::ProposalExpired);
+        }
+
+        if multisig::has_signed(&proposal, &signer) {
+            return Err(ContractError::AlreadySigned);
+        }
+
+        proposal.signers_approved.push_back(signer);
+        storage::save_multisig_proposal(&env, &proposal);
+
+        Ok(())
+    }
+
+    /// Execute a proposal that has reached the signature threshold.
+    ///
+    /// Applies the proposed action (pause/unpause) and marks the proposal as
+    /// `Executed`. Executing requires the threshold to have been met and the
+    /// proposal to still be within its validity window.
+    ///
+    /// Access: Multi-sig authorized signer
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        executor.require_auth();
+
+        let admin = storage::get_multisig_admin(&env).ok_or(ContractError::NotAuthorizedSigner)?;
+
+        if !multisig::is_signer(&env, &admin.signers, &executor) {
+            return Err(ContractError::NotAuthorizedSigner);
+        }
+
+        let mut proposal = storage::get_multisig_proposal(&env, proposal_id)
+            .ok_or(ContractError::ProposalNotFound)?;
+
+        // Already executed
+        if proposal.state == multisig::ProposalState::Executed {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+
+        // Expired
+        if multisig::is_expired(&env, &proposal) {
+            proposal.state = multisig::ProposalState::Expired;
+            storage::save_multisig_proposal(&env, &proposal);
+            return Err(ContractError::ProposalExpired);
+        }
+
+        // Threshold not met
+        if !multisig::threshold_reached(&proposal, admin.threshold) {
+            return Err(ContractError::ThresholdNotReached);
+        }
+
+        // Mark as executed, then apply the action
+        proposal.state = multisig::ProposalState::Executed;
+        storage::save_multisig_proposal(&env, &proposal);
+
+        match proposal.action {
+            multisig::AdminAction::Pause => {
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "paused"),),
+                    ContractPaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            multisig::AdminAction::Unpause => {
+                set_paused(&env, false);
+                env.events().publish(
+                    (Symbol::new(&env, "unpaused"),),
+                    ContractUnpaused {
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            _ => {
+                // RemoveToken / SetFeeRate / SetMaxDiscount / UpdateMultisig
+                // are reserved for future versions of the multi-sig module.
+            }
+        }
+
+        Ok(())
+    }
+
+    // ============================================================
+    // END Multi-sig Admin
+    // ============================================================
 
     // ------------------------------------------------------------
     // upgrade (Issue #48, #539)
@@ -3074,6 +3289,10 @@ mod tests_invoice_count;
 mod tests_batch_submit_reputation;
 // Issue #pause-checks: expire_invoice and appeal_default pause guards
 mod tests_pause_checks;
+// Issue #124: multi-sig admin (2-of-3 threshold flow)
+mod tests_multisig_admin;
 // Pre-audit Item 1.6 & Issue #670: ContractError variant coverage
 mod tests_coverage_boost;
+// Coverage-gate tests: branches left uncovered by the suites above
+mod tests_coverage_gate;
 mod tests_error_cases;

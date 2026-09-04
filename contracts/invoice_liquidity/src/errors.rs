@@ -64,4 +64,19 @@ pub enum ContractError {
     /// attacks where an attacker races to resolve the queue immediately after a
     /// high-reputation LP joins (Issue #MEV-1).
     QueueNotMature = 39,
+    // ── Issue #124: Multi-sig Admin ───────────────────────────────
+    /// Caller is not an authorized multisig signer.
+    NotAuthorizedSigner = 40,
+    /// Proposal does not exist.
+    ProposalNotFound = 41,
+    /// Signer has already approved this proposal.
+    AlreadySigned = 42,
+    /// Proposal has expired and cannot be signed or executed.
+    ProposalExpired = 43,
+    /// Threshold of signatures has not been reached.
+    ThresholdNotReached = 44,
+    /// Proposal has already been executed.
+    ProposalAlreadyExecuted = 45,
+    /// Invalid multisig configuration (e.g., threshold > signer count).
+    InvalidMultisigConfig = 46,
 }

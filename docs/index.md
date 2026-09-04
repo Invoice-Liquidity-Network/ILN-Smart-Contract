@@ -29,6 +29,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Security Policy](security.md) | Vulnerability classes, reporting, response timelines, severity, and safe harbor. |
 | [Threat Model](threat-model.md) | Trust assumptions, risks, and mitigations. |
 | [Access Control](access-control.md) | Roles and authorization rules. |
+| [Multi-sig Admin Runbook](multisig-admin-runbook.md) | Production signer set, key ceremony, custody, recovery, and rotation. |
 | [Auditor Onboarding](auditor-onboarding.md) | Guided reading path and known-accepted-risk register for external auditors. |
 | [Audit Readiness Dashboard](audit-readiness-dashboard.md) | Unified tracking of audit and mainnet readiness. |
 | [Upgrade Guide](upgrade-guide.md) | Contract upgrade procedure and safeguards. |

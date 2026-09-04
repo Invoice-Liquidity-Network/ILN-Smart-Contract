@@ -57,9 +57,12 @@ export async function cancelInvoice(
 
   const contract = new Contract(contractAddress);
 
+  // Issue #596: cancel_invoice accepts a single user argument (invoice_id: u64).
+  // The freelancer/submitter is derived on-chain via require_submitter_by_id,
+  // so passing submitterAddress here caused an argument-count mismatch and
+  // every cancellation through the SDK to fail.
   const op = contract.call(
     "cancel_invoice",
-    nativeToScVal(submitterAddress, { type: "address" }),
     nativeToScVal(invoiceId, { type: "u64" })
   );
 

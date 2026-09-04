@@ -5,16 +5,14 @@
 /// such as pause, contract upgrade, or token removal.
 ///
 /// Workflow:
-/// 1. Any signer calls propose_admin_action() to create a proposal
-/// 2. Signers call sign_admin_action() to approve the proposal
-/// 3. Once threshold is reached, any signer calls execute_admin_action()
+/// 1. Any signer calls propose_pause() / propose_unpause() to create a proposal
+/// 2. Signers call sign_proposal() to approve the proposal
+/// 3. Once the threshold is reached, any signer calls execute_proposal()
 /// 4. Proposals expire after MULTISIG_WINDOW_LEDGERS if not executed
-
 use soroban_sdk::{contracttype, Address, Env, Vec};
-use crate::errors::ContractError;
 
 /// Number of ledgers a multisig proposal remains valid (approximately 24 hours)
-pub const MULTISIG_WINDOW_LEDGERS: u64 = 17_280;
+pub const MULTISIG_WINDOW_LEDGERS: u32 = 17_280;
 
 /// Enumeration of admin actions that require multi-sig approval
 #[contracttype]
@@ -31,10 +29,7 @@ pub enum AdminAction {
     /// Set maximum discount rate
     SetMaxDiscount(u32),
     /// Update multisig configuration itself (change signers or threshold)
-    UpdateMultisig {
-        new_signers: Vec<Address>,
-        new_threshold: u32,
-    },
+    UpdateMultisig(Vec<Address>, u32),
 }
 
 /// Multi-signature admin configuration
@@ -68,11 +63,11 @@ pub struct MultisigProposal {
     /// Current state of the proposal
     pub state: ProposalState,
     /// Ledger sequence number when this proposal expires
-    pub expires_at: u64,
+    pub expires_at: u32,
 }
 
 /// Validate that an address is in the signer list
-pub fn is_signer(env: &Env, signers: &Vec<Address>, address: &Address) -> bool {
+pub fn is_signer(_env: &Env, signers: &Vec<Address>, address: &Address) -> bool {
     for i in 0..signers.len() {
         if signers.get(i).unwrap() == *address {
             return true;
@@ -93,7 +88,7 @@ pub fn has_signed(proposal: &MultisigProposal, signer: &Address) -> bool {
 
 /// Check if proposal has reached the approval threshold
 pub fn threshold_reached(proposal: &MultisigProposal, threshold: u32) -> bool {
-    proposal.signers_approved.len() as u32 >= threshold
+    proposal.signers_approved.len() >= threshold
 }
 
 /// Check if proposal has expired

@@ -384,3 +384,405 @@ fn test_claim_yield_and_referral_stats() {
     let y = t.contract.claim_yield(&id);
     assert_eq!(y, 300_000);
 }
+
+// ----------------------------------------------------------------
+// Additional resolve_dispute branch coverage
+// ----------------------------------------------------------------
+
+#[test]
+fn test_resolve_dispute_rejected_on_funded_returns_funded() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+
+    let reason = BytesN::from_array(&t.env, &[10u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    let resolution = BytesN::from_array(&t.env, &[11u8; 32]);
+    // Resolution 2 = Rejected (Freelancer right) → status restored to Funded
+    t.contract.resolve_dispute(&id, &resolution, &2);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Funded);
+}
+
+#[test]
+fn test_resolve_dispute_rejected_on_partially_funded() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    // Partially fund (half)
+    t.contract
+        .fund_invoice(&t.funder, &id, &(INVOICE_AMOUNT / 2), &false);
+
+    let reason = BytesN::from_array(&t.env, &[12u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    let resolution = BytesN::from_array(&t.env, &[13u8; 32]);
+    t.contract.resolve_dispute(&id, &resolution, &2);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::PartiallyFunded);
+}
+
+#[test]
+fn test_resolve_dispute_upheld_with_partial_payment() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+
+    // Partial payment by payer
+    t.contract.mark_paid(&id, &(INVOICE_AMOUNT / 2));
+
+    let reason = BytesN::from_array(&t.env, &[14u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    let resolution = BytesN::from_array(&t.env, &[15u8; 32]);
+    // Resolution 1 = Upheld (Payer right) → Cancelled, payer refund
+    t.contract.resolve_dispute(&id, &resolution, &1);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Cancelled);
+}
+
+#[test]
+fn test_resolve_dispute_invalid_resolution() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+
+    let reason = BytesN::from_array(&t.env, &[16u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    let resolution = BytesN::from_array(&t.env, &[17u8; 32]);
+    let result = t.contract.try_resolve_dispute(&id, &resolution, &3);
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+}
+
+// ----------------------------------------------------------------
+// auto_resolve_dispute on Funded invoice
+// ----------------------------------------------------------------
+
+#[test]
+fn test_auto_resolve_dispute_funded_invoice() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+
+    let reason = BytesN::from_array(&t.env, &[18u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    // Advance past dispute timeout (10000 ledgers)
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 20000;
+    t.env.ledger().set(ledger);
+
+    t.contract.auto_resolve_dispute(&id);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Funded);
+}
+
+#[test]
+fn test_auto_resolve_dispute_partially_funded() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &(INVOICE_AMOUNT / 2), &false);
+
+    let reason = BytesN::from_array(&t.env, &[19u8; 32]);
+    t.contract.dispute_invoice(&id, &reason);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 20000;
+    t.env.ledger().set(ledger);
+
+    t.contract.auto_resolve_dispute(&id);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::PartiallyFunded);
+}
+
+// ----------------------------------------------------------------
+// claim_default with partially funded invoice
+// ----------------------------------------------------------------
+
+#[test]
+fn test_claim_default_partial_funding() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    // Partially fund
+    t.contract
+        .fund_invoice(&t.funder, &id, &(INVOICE_AMOUNT / 2), &false);
+
+    // Advance past due date
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp = due + 10;
+    t.env.ledger().set(ledger);
+
+    // claim_default only applies to fully Funded invoices; a partially
+    // funded invoice must be rejected with NotFunded, leaving the invoice
+    // untouched in PartiallyFunded state (cancel_invoice is the exit path).
+    let result = t.contract.try_claim_default(&t.funder, &id);
+    assert_eq!(result, Err(Ok(ContractError::NotFunded)));
+
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::PartiallyFunded);
+}
+
+// ----------------------------------------------------------------
+// Cancel partially funded invoice (refund path)
+// ----------------------------------------------------------------
+
+#[test]
+fn test_cancel_partially_funded_refunds_funders() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    // Partially fund
+    t.contract
+        .fund_invoice(&t.funder, &id, &(INVOICE_AMOUNT / 2), &false);
+
+    let funder_before = t.token.balance(&t.funder);
+    t.contract.cancel_invoice(&id);
+    let funder_after = t.token.balance(&t.funder);
+
+    // Funder should get back their funded amount minus discount
+    let fund_amount = INVOICE_AMOUNT / 2;
+    let discount = fund_amount * DISCOUNT_RATE as i128 / 10_000;
+    let expected_refund = fund_amount - discount;
+    assert_eq!(funder_after - funder_before, expected_refund);
+
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Cancelled);
+}
+
+// ----------------------------------------------------------------
+// Appeal resolution — reject appeal (not upheld)
+// ----------------------------------------------------------------
+
+#[test]
+fn test_resolve_appeal_not_upheld() {
+    let t = setup_booster();
+    let now = t.env.ledger().timestamp();
+    let due = now + DUE_DATE_OFFSET;
+
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp = due + 10;
+    t.env.ledger().set(ledger);
+
+    t.contract.claim_default(&t.funder, &id);
+    let evidence = BytesN::from_array(&t.env, &[20u8; 32]);
+    t.contract.appeal_default(&id, &evidence);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Appealed);
+
+    // Admin rejects the appeal
+    t.contract.resolve_appeal(&id, &false);
+    let inv = t.contract.get_invoice(&id);
+    assert_eq!(inv.status, InvoiceStatus::Defaulted);
+}
+
+// ----------------------------------------------------------------
+// update_config — full happy path + error branches
+// ----------------------------------------------------------------
+
+#[test]
+fn test_update_config_happy_path() {
+    let t = setup_booster();
+    advance_rate_limit(&t.env);
+
+    let new_xlm = Address::generate(&t.env);
+    let new_usdc = Address::generate(&t.env);
+    let new_eurc = Address::generate(&t.env);
+
+    t.contract.update_config(
+        &t.admin, &70, &200, &100, &50, &2000, &5000, &new_xlm, &new_usdc, &new_eurc,
+    );
+
+    let cfg = t.contract.get_config();
+    assert_eq!(cfg.high_rep_threshold, 70);
+    assert_eq!(cfg.bonus_bps, 200);
+    assert_eq!(cfg.min_discount_rate_bps, 100);
+    assert_eq!(cfg.decay_rate_bps, 50);
+    assert_eq!(cfg.decay_period_ledgers, 2000);
+    assert_eq!(cfg.dispute_timeout_ledgers, 5000);
+    // price_oracle and max_oracle_age_ledgers should be preserved
+    assert_eq!(cfg.price_oracle, None);
+    assert_eq!(cfg.max_oracle_age_ledgers, 17280);
+}
+
+#[test]
+fn test_update_config_rejects_invalid_bonus_bps() {
+    let t = setup_booster();
+    advance_rate_limit(&t.env);
+
+    let dummy = Address::generate(&t.env);
+    let result = t.contract.try_update_config(
+        &t.admin, &70, &501, // MAX_BONUS_BPS is 500, so 501 is too high
+        &100, &50, &2000, &5000, &dummy, &dummy, &dummy,
+    );
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+}
+
+#[test]
+fn test_update_config_rejects_zero_min_discount() {
+    let t = setup_booster();
+    advance_rate_limit(&t.env);
+
+    let dummy = Address::generate(&t.env);
+    let result = t.contract.try_update_config(
+        &t.admin, &70, &100, &0, // zero min_discount_rate
+        &50, &2000, &5000, &dummy, &dummy, &dummy,
+    );
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+}
+
+// ----------------------------------------------------------------
+// get_config error path (no config stored)
+// ----------------------------------------------------------------
+
+#[test]
+fn test_get_config_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(InvoiceLiquidityContract, ());
+    let client = InvoiceLiquidityContractClient::new(&env, &contract_id);
+    let result = client.try_get_config();
+    assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+}
+
+// ----------------------------------------------------------------
+// update_fee_rate happy path
+// ----------------------------------------------------------------
+
+#[test]
+fn test_update_fee_rate() {
+    let t = setup_booster();
+    advance_rate_limit(&t.env);
+
+    t.contract.update_fee_rate(&500);
+    // Fee tiers are empty, so effective rate comes from the flat FeeRate
+    // (which is set to 500 by update_fee_rate).
+    assert_eq!(t.contract.get_fee_tiers().len(), 0);
+}
+
+// ----------------------------------------------------------------
+// update_max_discount happy path
+// ----------------------------------------------------------------
+
+#[test]
+fn test_update_max_discount() {
+    let t = setup_booster();
+    advance_rate_limit(&t.env);
+
+    t.contract.update_max_discount(&3000);
+    // Verify by trying to submit with rate just under the new cap
+    let due = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    let res = t.contract.try_submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due,
+        &2999,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    assert!(res.is_ok());
+}
