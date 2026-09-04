@@ -2109,6 +2109,7 @@ impl InvoiceLiquidityContract {
         }
 
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         // Update LP index
         add_invoice_to_lp(&env, &funder, invoice_id);
@@ -2266,6 +2267,7 @@ impl InvoiceLiquidityContract {
 
         invoice.funder = Some(new_lp.clone());
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         remove_invoice_from_lp(&env, &current_lp, invoice_id);
         add_invoice_to_lp(&env, &new_lp, invoice_id);
@@ -2464,6 +2466,7 @@ impl InvoiceLiquidityContract {
         // If not fully paid, save and emit partial event
         if invoice.amount_paid < invoice.amount {
             save_invoice(&env, &invoice);
+            crate::nft::sync_nft_state(&env, invoice_id)?;
             env.events().publish(
                 (
                     Symbol::new(&env, "partially_paid"),
@@ -2524,9 +2527,11 @@ impl InvoiceLiquidityContract {
             .unwrap_or(0);
 
         // CEI: update state before external token transfers
+        // CEI: update state before external token transfers
         invoice.status = InvoiceStatus::Paid;
 
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         // Distribute proportionally to funders
         for i in 0..funders.len() {
@@ -2673,6 +2678,7 @@ impl InvoiceLiquidityContract {
         // CEI: update state before external token transfers
         invoice.status = InvoiceStatus::Defaulted;
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         let mut total_refunded: i128 = 0;
 
@@ -2827,6 +2833,7 @@ impl InvoiceLiquidityContract {
 
         invoice.status = InvoiceStatus::Appealed;
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         env.events().publish(
             (
@@ -2888,6 +2895,7 @@ impl InvoiceLiquidityContract {
         }
 
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         env.events().publish(
             (
@@ -2963,6 +2971,7 @@ impl InvoiceLiquidityContract {
 
         invoice.status = InvoiceStatus::Disputed;
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         env.events().publish(
             (
@@ -3066,6 +3075,7 @@ impl InvoiceLiquidityContract {
         }
 
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         env.events().publish(
             (
@@ -3121,6 +3131,7 @@ impl InvoiceLiquidityContract {
         }
 
         save_invoice(&env, &invoice);
+        crate::nft::sync_nft_state(&env, invoice_id)?;
 
         let empty_hash = BytesN::from_array(&env, &[0u8; 32]);
         env.events().publish(

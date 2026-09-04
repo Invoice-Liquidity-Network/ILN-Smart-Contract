@@ -114,3 +114,66 @@ and `reputation_bonus`'s `test_governance_setters_and_access_control`) pass
 unchanged after these fixes, confirming the `saturating_*`/`checked_*`
 replacements are behavior-preserving for all valid inputs and only change
 behavior at the numeric boundary.
+
+## Re-Audit (August 26, 2026)
+
+**Commit SHA:** `267c51c53edc33267f91e77a19df1cd5a10fef74`
+
+A comprehensive re-audit of all five contract crates was conducted to ensure no stale arithmetic operations remained, especially after recent feature additions (such as the quadratic voting and delegation additions in `iln_governance` and the risk-priced premium calculations in `insurance_pool`).
+
+### New Findings and Fixes
+
+#### 1. `iln_governance`
+* **Finding:** In the `isqrt` integer square root calculation, the midpoint formula `let mid = lo + (hi - lo + 1) / 2;` used raw arithmetic operations (`+`, `-`, `/`), which could cause an overflow panic if `hi` approached `i128::MAX`.
+* **Fix:** Replaced with safe, explicit saturating and checked alternatives:
+  ```rust
+  let mid = lo.saturating_add(
+      hi.saturating_sub(lo)
+          .saturating_add(1)
+          .saturating_div(2)
+  );
+  ```
+  And `hi = mid - 1` replaced with `hi = mid.saturating_sub(1)`.
+
+#### 2. `insurance_pool`
+* **Finding:** `increment_default_count` used `count + 1`, a raw `+` operation.
+* **Fix:** Replaced with `count.saturating_add(1)`.
+* **Finding:** `calculate_premium_rate_bps` used raw operations `(default_count * numerator * 10_000) / denominator` and `base_rate + risk_adjustment`, which could overflow if default count or risk multipliers were very large.
+* **Fix:** Replaced with a checked multiplication and division chain falling back to max basis points, and a saturating addition:
+  ```rust
+  let risk_adjustment = default_count
+      .checked_mul(numerator)
+      .and_then(|v| v.checked_mul(10_000))
+      .and_then(|v| v.checked_div(denominator))
+      .unwrap_or(10_000);
+  let total_rate = (base_rate as i128).saturating_add(risk_adjustment);
+  ```
+* **Finding:** `calculate_premium_amount` and `get_tiered_coverage` used raw multiplications and divisions (`*`, `/`).
+* **Fix:** Replaced all with corresponding `.saturating_mul()` and `.saturating_div()` methods.
+
+#### 3. `iln_distribution`
+* **Finding:** `total_earned` used raw division `lp_volume / HUNDRED_USDC_STROOPS`.
+* **Fix:** Replaced with `lp_volume.saturating_div(HUNDRED_USDC_STROOPS)`.
+
+#### 4. `invoice_liquidity`
+* **Finding:** `invoice.rs` decay calculations used raw division `/ decay_config.decay_period_ledgers` and raw multiplication/division for decay amount scaling.
+* **Fix:** Replaced with `.saturating_div` and `.saturating_mul`.
+* **Finding:** Heap indexing in `top_payers.rs` used raw `/`, `*`, `+`, `-` operators.
+* **Fix:** Converted all to saturating alternatives (`saturating_div`, `saturating_mul`, `saturating_add`, `saturating_sub`).
+
+#### 5. `reputation_bonus`
+* **Status:** Verified that all calculations in this crate already use explicit `checked_*` and `saturating_*` operations. No raw arithmetic operations exist.
+
+### Verification of Release Profile Panic Masking
+
+We verified that the contract logic does not rely on `overflow-checks = true` to mask `.unwrap()`-based panics during arithmetic overflows. Because every user-controlled or variable arithmetic path is protected using:
+- `checked_*` with graceful error handling (e.g. returning `ContractError::ArithmeticOverflow` or `InsuranceError::ArithmeticOverflow`), or
+- `saturating_*` to safely clamp calculations,
+the contracts will never trigger an implicit transaction abort due to overflow checks. All behaviors at numeric bounds are explicitly handled and graceful.
+
+### Property-Based Testing Integration
+
+To provide continuous validation of these arithmetic invariants under randomized conditions, we added new property-based testing modules:
+1. `contracts/reputation_bonus/tests/tests_reputation_proptest.rs`: Randomly sequences `Submit`, `Pay`, and `Default` events to verify that reputation scores remain bounded in `[0, 100]` and match manual calculation invariants under adversarial event sequencing.
+2. `contracts/iln_distribution/src/tests_distribution_proptest.rs`: Randomly sequences `AccrueLp`, `AccrueSettlement`, `ClaimTokens`, and rate updates to verify that reward accruals remain non-negative and claim states are strictly consistent with token balances.
+

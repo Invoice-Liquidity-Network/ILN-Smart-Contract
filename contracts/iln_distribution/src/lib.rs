@@ -239,7 +239,7 @@ impl IlnDistribution {
             .get(&StorageKey::PayerRewardRate)
             .unwrap_or(DEFAULT_PAYER_REWARD_RATE);
 
-        let lp_reward = (lp_volume / HUNDRED_USDC_STROOPS).saturating_mul(lp_reward_rate);
+        let lp_reward = lp_volume.saturating_div(HUNDRED_USDC_STROOPS).saturating_mul(lp_reward_rate);
         let freelancer_reward = (freelancer_settled as i128).saturating_mul(freelancer_reward_rate);
         let payer_reward = (payer_on_time as i128).saturating_mul(payer_reward_rate);
 
@@ -777,3 +777,7 @@ mod test {
         }
     }
 }
+
+#[cfg(test)]
+mod tests_distribution_proptest;
+

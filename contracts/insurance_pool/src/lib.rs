@@ -319,8 +319,13 @@ impl InsurancePool {
             return base_rate;
         }
 
-        let risk_adjustment = (default_count * numerator * 10_000) / denominator;
-        let total_rate = base_rate as i128 + risk_adjustment;
+        let risk_adjustment = default_count
+            .checked_mul(numerator)
+            .and_then(|v| v.checked_mul(10_000))
+            .and_then(|v| v.checked_div(denominator))
+            .unwrap_or(10_000); // fallback to max bps on overflow
+
+        let total_rate = (base_rate as i128).saturating_add(risk_adjustment);
 
         // Cap at 100% (10_000 bps)
         if total_rate > 10_000 {
@@ -334,7 +339,9 @@ impl InsurancePool {
     /// The amount is the invoice amount multiplied by the risk-priced rate.
     pub fn calculate_premium_amount(env: Env, lp: Address, invoice_amount: i128) -> i128 {
         let rate_bps = Self::calculate_premium_rate_bps(env, lp);
-        (invoice_amount * rate_bps as i128) / 10_000
+        invoice_amount
+            .saturating_mul(rate_bps as i128)
+            .saturating_div(10_000)
     }
 
     /// Get the tiered coverage for an LP based on their total premiums paid.
@@ -348,20 +355,21 @@ impl InsurancePool {
         // Tier 2: 10-25% of default coverage -> 75% of default coverage
         // Tier 3: 25-50% of default coverage -> 100% of default coverage
         // Tier 4: > 50% of default coverage -> 150% of default coverage
-        let threshold_10 = default_coverage / 10;
-        let threshold_25 = default_coverage / 4;
-        let threshold_50 = default_coverage / 2;
+        let threshold_10 = default_coverage.saturating_div(10);
+        let threshold_25 = default_coverage.saturating_div(4);
+        let threshold_50 = default_coverage.saturating_div(2);
 
         if premiums_paid >= threshold_50 {
-            (default_coverage * 150) / 100 // 150% coverage
+            default_coverage.saturating_mul(150).saturating_div(100) // 150% coverage
         } else if premiums_paid >= threshold_25 {
             default_coverage // 100% coverage
         } else if premiums_paid >= threshold_10 {
-            (default_coverage * 75) / 100 // 75% coverage
+            default_coverage.saturating_mul(75).saturating_div(100) // 75% coverage
         } else {
-            (default_coverage * 50) / 100 // 50% coverage
+            default_coverage.saturating_mul(50).saturating_div(100) // 50% coverage
         }
     }
+
 
     /// Returns `true` if a claim has already been processed for `invoice_id`.
     pub fn is_claimed(env: Env, invoice_id: u64) -> bool {
