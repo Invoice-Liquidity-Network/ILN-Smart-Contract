@@ -17,7 +17,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "node init && tsup",
     "test": "vitest run --coverage",
     "test:ci": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.config.ts",
