@@ -11,7 +11,7 @@
   ],
   "type": "commonjs",
   "scripts": {
-    "build": "tsc",
+    "build": "node init && tsc",
     "test": "vitest run",
     "test:cli-e2e": "vitest run tests/e2e",
     "lint": "eslint src",

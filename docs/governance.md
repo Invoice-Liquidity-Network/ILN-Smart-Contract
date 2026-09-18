@@ -242,8 +242,7 @@ Read-only getter.  Returns `true` while the veto power is active.
 
 ### Intended removal timeline
 
-`disable_veto_power()` **must be called via governance vote before mainnet
-launch**.  Until it is called, the admin retains unilateral veto authority.
+The retirement of the admin veto follows the quantitative trigger criteria and phased transition defined in [Decentralization Roadmap](decentralization-roadmap.md) and [ADR-012](adr/ADR-012-governance-multisig-handoff.md). `disable_veto_power()` is a permanent, one-way switch called via a passed governance proposal once operational stability, TVL, timelock activation, and M-of-N emergency pause readiness are fully proven on mainnet. Until sunset criteria are certified, the admin retains veto authority as an emergency brake.
 
 ---
 
