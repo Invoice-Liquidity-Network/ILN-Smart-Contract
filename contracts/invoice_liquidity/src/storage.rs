@@ -112,6 +112,18 @@ pub enum DataKey {
     /// deviation (basis points) between a price source's reported price
     /// and the cross-source median before it's rejected as an outlier.
     MaxPriceDeviationBps,
+    /// Issue #816: per-feed TWAP opt-in flag. `true` routes `Price`
+    /// reads through the windowed TWAP average; `false` (default) keeps
+    /// the existing raw spot behavior. Stored per feed type since not
+    /// every feed has enough liquidity/data points for a meaningful window.
+    TwapEnabled(crate::oracle_registry::OracleFeedType),
+    /// Issue #817: governance-configurable TWAP window in ledgers, bounded
+    /// by `MIN/MAX_TWAP_WINDOW_LEDGERS`. Distinct from the
+    /// `max_oracle_age_ledgers` staleness bound.
+    TwapWindowLedgers,
+    /// Issue #815/#816: chronological TWAP price samples per feed + token,
+    /// backing the opt-in windowed average.
+    TwapSamples(crate::oracle_registry::OracleFeedType, Address),
 
     // ── Issue #124 / #641: multisig admin ───────────────────────────
     /// The multisig admin signer set + approval threshold, once bootstrapped

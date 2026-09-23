@@ -85,4 +85,7 @@ pub enum ContractError {
     /// Issue #655: funding this amount would push the token's cumulative
     /// funded volume past the governance-configured staged-rollout cap.
     GlobalVolumeCapExceeded = 45,
+    /// Issue #817: requested TWAP window is outside the governance-bounded
+    /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` range.
+    InvalidTwapWindow = 46,
 }

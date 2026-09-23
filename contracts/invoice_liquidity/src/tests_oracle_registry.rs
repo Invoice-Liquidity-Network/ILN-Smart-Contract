@@ -987,3 +987,84 @@ fn test_circuit_retrips_immediately_if_still_stale_right_after_reset() {
          a fresh multi-query streak on top of the pre-existing one"
     );
 }
+
+// ── Issues #815/#816/#817: TWAP accumulator port + per-feed opt-in + window bounds ──
+
+#[test]
+fn test_twap_disabled_by_default_spot_unchanged() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    assert!(!t.contract.is_twap_enabled(&OracleFeedType::Price));
+    // Default window is the 1-hour (720-ledger) documented default.
+    assert_eq!(t.contract.get_twap_window(), 720);
+    assert_eq!(t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address), None);
+}
+
+#[test]
+fn test_twap_enabled_feed_reads_windowed_average() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+    assert!(t.contract.is_twap_enabled(&OracleFeedType::Price));
+
+    // Record $20.00 at T0, then $21.00 thirty minutes later; with the
+    // default 1-hour window the average over the pair is $20,500.
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+
+    assert_eq!(
+        t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address),
+        Some(20_500)
+    );
+    // get_verified_price branches to the TWAP average when enabled (no spot
+    // sources registered, so spot alone would error with NoPriceSource).
+    assert_eq!(
+        t.contract.get_verified_price(&OracleFeedType::Price, &t.token.address),
+        20_500
+    );
+}
+
+#[test]
+fn test_twap_disabled_feed_uses_spot_even_with_samples() {
+    use crate::oracle_registry::{OracleFeedType, DEFAULT_MAX_PRICE_DEVIATION_BPS};
+    let t = setup();
+    // Backfill the same samples as above, but leave the flag off.
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+    assert!(!t.contract.is_twap_enabled(&OracleFeedType::Price));
+    // No spot sources -> spot path errors, proving the TWAP average was NOT
+    // consulted while disabled (it would have returned 20_500).
+    let res = t.contract.try_get_verified_price(&OracleFeedType::Price, &t.token.address);
+    assert_eq!(res, Err(Ok(crate::errors::ContractError::NoPriceSource)));
+    let _ = DEFAULT_MAX_PRICE_DEVIATION_BPS;
+}
+
+#[test]
+fn test_twap_window_bounds_accept_and_reject() {
+    use crate::oracle_registry::{MAX_TWAP_WINDOW_LEDGERS, MIN_TWAP_WINDOW_LEDGERS};
+    let t = setup();
+    // Bounds themselves are accepted.
+    t.contract.set_twap_window(&MIN_TWAP_WINDOW_LEDGERS);
+    assert_eq!(t.contract.get_twap_window(), MIN_TWAP_WINDOW_LEDGERS);
+    t.contract.set_twap_window(&MAX_TWAP_WINDOW_LEDGERS);
+    assert_eq!(t.contract.get_twap_window(), MAX_TWAP_WINDOW_LEDGERS);
+    // Outside bounds rejected with the dedicated error.
+    assert_eq!(
+        t.contract.try_set_twap_window(&(MIN_TWAP_WINDOW_LEDGERS - 1)),
+        Err(Ok(crate::errors::ContractError::InvalidTwapWindow))
+    );
+    assert_eq!(
+        t.contract.try_set_twap_window(&(MAX_TWAP_WINDOW_LEDGERS + 1)),
+        Err(Ok(crate::errors::ContractError::InvalidTwapWindow))
+    );
+    assert_eq!(
+        t.contract.try_set_twap_window(&0),
+        Err(Ok(crate::errors::ContractError::InvalidTwapWindow))
+    );
+}

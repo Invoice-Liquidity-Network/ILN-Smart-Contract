@@ -723,6 +723,14 @@ pub fn get_verified_price(
     feed_type: OracleFeedType,
     token: Address,
 ) -> Result<i128, ContractError> {
+    // Issue #816: per-feed opt-in — when TWAP is enabled and enough
+    // in-window samples exist, read the windowed average instead of spot.
+    // Falls through to the spot path below while samples backfill.
+    if is_twap_enabled(&env, feed_type) {
+        if let Some(avg) = get_twap_price(&env, feed_type, &token) {
+            return Ok(avg);
+        }
+    }
     let sources = get_price_sources(env.clone(), feed_type);
     let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
     let mut priced_sources: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
@@ -774,4 +782,162 @@ pub fn get_verified_price(
         return Err(ContractError::AllPriceSourcesRejected);
     }
     Ok(median(&survivors))
+}
+
+// ── TWAP opt-in per feed (Issues #815/#816/#817) ─────────────────────────
+//
+// The accumulator math lives in `crate::twap` (ported from
+// `contracts/examples/twap_oracle`). This section owns the production
+// wiring: a governance-settable per-feed opt-in flag plus a bounded,
+// governance-configurable window. Default is spot (existing behavior) until
+// a feed explicitly opts in, so this is not a breaking change.
+//
+// `fund_invoice`'s payer-verification (`Identity`) path stays boolean spot
+// verification — TWAP applies to numeric `Price` reads via
+// `get_verified_price`, which branches below. Enabling TWAP on `Identity`
+// is stored but has no effect on verification today (documented, not an
+// error, so governance can stage configuration in any order).
+
+/// Seconds per ledger on Stellar (~5s), used to convert the ledger-based
+/// TWAP window into the timestamp-based window `twap::twap_average` expects.
+pub const LEDGER_SECONDS: u64 = 5;
+
+/// Issue #817: minimum TWAP window = 360 ledgers ≈ 30 minutes. Rationale
+/// (see `docs/oracle-attack-economics.md` §4–§5 methodology): a sandwich
+/// attack manipulates price within a single block/ledger at near-zero
+/// on-chain cost, so the window must span *many* ledgers to dilute any one
+/// manipulated sample — 30 minutes is the example crate's recommended floor
+/// and matches `twap-oracle-recommendations.md`'s minimum.
+pub const MIN_TWAP_WINDOW_LEDGERS: u64 = 360;
+
+/// Issue #817: maximum TWAP window = 17_280 ledgers ≈ 24 hours. Rationale:
+/// beyond the default `max_oracle_age_ledgers` staleness bound (also
+/// 17_280) the average would bake in data the freshness check itself
+/// rejects as stale, making staleness worse without adding sandwich
+/// resistance. Distinct bound, same order of magnitude, deliberately.
+pub const MAX_TWAP_WINDOW_LEDGERS: u64 = 17_280;
+
+/// Default TWAP window = 720 ledgers ≈ 1 hour (the example crate's default
+/// `get_price` window), applied until governance sets an explicit value.
+pub const DEFAULT_TWAP_WINDOW_LEDGERS: u64 = 720;
+
+/// Whether `feed_type` routes `Price` reads through the TWAP windowed
+/// average. Defaults to `false` (raw spot, current behavior).
+pub fn is_twap_enabled(env: &Env, feed_type: OracleFeedType) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::TwapEnabled(feed_type))
+        .unwrap_or(false)
+}
+
+/// Enable or disable the TWAP path for `feed_type`.
+///
+/// Access: Admin only (governance-controlled via the same
+/// admin=governance-contract convention used throughout this registry).
+pub fn set_twap_enabled(
+    env: &Env,
+    feed_type: OracleFeedType,
+    enabled: bool,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::TwapEnabled(feed_type), &enabled);
+    Ok(())
+}
+
+/// The currently configured TWAP window in ledgers.
+pub fn get_twap_window_ledgers(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TwapWindowLedgers)
+        .unwrap_or(DEFAULT_TWAP_WINDOW_LEDGERS)
+}
+
+/// Update the TWAP window, rejecting values outside
+/// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` with the dedicated
+/// `ContractError::InvalidTwapWindow`.
+///
+/// Access: Admin only.
+pub fn set_twap_window_ledgers(env: &Env, window_ledgers: u64) -> Result<(), ContractError> {
+    require_admin(env)?;
+    if window_ledgers < MIN_TWAP_WINDOW_LEDGERS || window_ledgers > MAX_TWAP_WINDOW_LEDGERS {
+        return Err(ContractError::InvalidTwapWindow);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::TwapWindowLedgers, &window_ledgers);
+    Ok(())
+}
+
+/// Record a price observation for `feed_type` + `token` at the current
+/// ledger timestamp, for later windowed averaging.
+///
+/// Access: Admin only (keeper/governance pushes samples; the example
+/// crate's `update_price` was likewise admin-gated).
+pub fn record_twap_sample(
+    env: &Env,
+    feed_type: OracleFeedType,
+    token: Address,
+    price: i128,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    if price <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    let key = DataKey::TwapSamples(feed_type, token);
+    let mut samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    crate::twap::push_sample(
+        &mut samples,
+        crate::twap::TwapSample {
+            timestamp: env.ledger().timestamp(),
+            price,
+        },
+        crate::twap::MAX_TWAP_SAMPLES,
+    );
+    env.storage().persistent().set(&key, &samples);
+    Ok(())
+}
+
+/// Windowed TWAP average for `feed_type` + `token` over the configured
+/// window, or `None` when fewer than two in-window samples exist.
+pub fn get_twap_price(env: &Env, feed_type: OracleFeedType, token: &Address) -> Option<i128> {
+    let samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TwapSamples(feed_type, token.clone()))?;
+    if samples.len() < 2 {
+        return None;
+    }
+    let window_ledgers = get_twap_window_ledgers(env);
+    let window_seconds = window_ledgers.saturating_mul(LEDGER_SECONDS);
+    let current_time = env.ledger().timestamp();
+    let window_start = current_time.saturating_sub(window_seconds);
+    crate::twap::twap_average(&samples, window_start, current_time)
+}
+
+/// TWAP-aware price read used by numeric `Price` consumers.
+///
+/// - TWAP disabled (default): behaves exactly as before (spot median with
+///   outlier rejection).
+/// - TWAP enabled: returns the windowed average when at least two
+///   in-window samples exist; otherwise falls back to the spot path so a
+///   freshly-enabled feed stays live while keepers backfill samples. The
+///   fallback is documented, not silent — callers can distinguish it via
+///   `get_twap_price` returning `None`.
+pub fn get_twap_aware_price(
+    env: Env,
+    feed_type: OracleFeedType,
+    token: Address,
+) -> Result<i128, ContractError> {
+    if is_twap_enabled(&env, feed_type) {
+        if let Some(avg) = get_twap_price(&env, feed_type, &token) {
+            return Ok(avg);
+        }
+    }
+    get_verified_price(env, feed_type, token)
 }
