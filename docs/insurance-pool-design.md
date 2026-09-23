@@ -1,6 +1,6 @@
 # Insurance Pool Design — Default Protection for LPs (Issue #123)
 
-**Status:** Design-forward stub (interface + accounting implemented; economics & token settlement are follow-ups)
+**Status:** Real token settlement implemented (Issue #824); claim payout prioritization added (Issue #825)
 **Crate:** `contracts/insurance_pool`
 
 ## Motivation
@@ -77,10 +77,10 @@ Each proposal overwrites any previously pending proposal of the same kind.
 `iln_governance`) since the timelock itself — not caller identity — is the
 security boundary once a change has been proposed by the admin.
 
-## Stub semantics (what ships here)
+## Implementation status
 
-The stub in `contracts/insurance_pool/src/lib.rs` is a **correct, fully-tested**
-implementation of the interface with intentionally simplified economics:
+The implementation in `contracts/insurance_pool/src/lib.rs` is **fully featured** with both
+token settlement and payout prioritization:
 
 - **Accounting, not custody for premiums; real transfers for payouts.**
   `deposit_premium` moves real SAC tokens from the LP into the pool and
@@ -520,7 +520,7 @@ console.log(`Claim filed for invoice ${invoiceId}: payout ${payout} stroops`);
 
 ---
 
-## Follow-up work (before mainnet)
+## Completed work
 
 - ~~Real SAC token custody for premiums and payouts.~~ Done (Issue #527).
 - ~~Risk-priced premiums and coverage (vs. flat cap).~~ Done (Issue #528) —

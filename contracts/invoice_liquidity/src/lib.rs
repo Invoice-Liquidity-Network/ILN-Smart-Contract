@@ -17,6 +17,7 @@ pub mod nft;
 pub mod rate_logic;
 pub mod storage;
 pub mod top_payers;
+pub mod twap_accumulator;
 use access::*;
 use access::{check_rate_limit, lock_reentrancy, unlock_reentrancy};
 pub mod constants;
@@ -28,6 +29,7 @@ pub mod oracle_interface;
 pub mod oracle_registry;
 use insurance_pool::InsurancePoolInterfaceClient;
 use oracle_registry::OracleFeedType;
+use twap_accumulator::{record_observation, get_twap, TWAPError};
 
 pub use crate::invoice::{
     AppealRecord, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode,

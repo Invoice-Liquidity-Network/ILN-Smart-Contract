@@ -21,6 +21,7 @@
 extern crate std;
 
 mod insurance_interface;
+mod claim_prioritization;
 #[cfg(test)]
 mod test;
 

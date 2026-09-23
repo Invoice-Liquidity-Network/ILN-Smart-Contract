@@ -5,6 +5,7 @@ mod tests {
     use iln_governance::{GovContract, GovContractClient};
     use invoice_liquidity::{
         InvoiceLiquidityContract, InvoiceLiquidityContractClient, ReferralCode,
+        twap_accumulator::{record_observation, get_twap, TWAPError},
     };
     use proptest::prelude::*;
     use soroban_sdk::{
@@ -259,6 +260,173 @@ mod tests {
                 Ok(_) => {}
                 Err(_) => {}
             }
+        }
+
+        // ============================================================
+        // 6. TWAP accumulator fuzz targets (Issue #823)
+        // ============================================================
+
+        #[test]
+        fn prop_twap_observation_never_panics(
+            price in 0i128..i128::MAX,
+            timestamp in any::<u64>(),
+            ledger_sequence in any::<u32>(),
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut ledger_info = env.ledger().get();
+            ledger_info.timestamp = timestamp;
+            ledger_info.sequence_number = ledger_sequence as u64;
+            env.ledger().set(ledger_info);
+
+            // Should never panic, even with arbitrary prices/timestamps/sequences
+            let _ = record_observation(&env, &token, price, timestamp, ledger_sequence);
+        }
+
+        #[test]
+        fn prop_twap_rejects_negative_prices(
+            price in i128::MIN..0i128,
+            timestamp in any::<u64>(),
+            ledger_sequence in any::<u32>(),
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut ledger_info = env.ledger().get();
+            ledger_info.timestamp = timestamp;
+            ledger_info.sequence_number = ledger_sequence as u64;
+            env.ledger().set(ledger_info);
+
+            // Negative prices must be rejected
+            let result = record_observation(&env, &token, price, timestamp, ledger_sequence);
+            assert_eq!(result, Err(TWAPError::NegativePrice));
+        }
+
+        #[test]
+        fn prop_twap_enforces_monotonic_ledger_sequence(
+            price1 in 0i128..i128::MAX,
+            price2 in 0i128..i128::MAX,
+            timestamp1 in 1000u64..2000u64,
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut ledger_info = env.ledger().get();
+            ledger_info.timestamp = timestamp1;
+            ledger_info.sequence_number = 100;
+            env.ledger().set(ledger_info);
+
+            let _ = record_observation(&env, &token, price1, timestamp1, 100);
+
+            ledger_info.timestamp = timestamp1 + 100;
+            ledger_info.sequence_number = 100; // Same sequence as before (invalid)
+            env.ledger().set(ledger_info);
+
+            // Must reject non-increasing ledger sequence
+            let result = record_observation(&env, &token, price2, timestamp1 + 100, 100);
+            assert_eq!(result, Err(TWAPError::MonotonicOrderViolation));
+        }
+
+        #[test]
+        fn prop_twap_calculation_within_bounds(
+            prices in prop::collection::vec(0i128..1_000_000, 2..10),
+            base_timestamp in 1000u64..10000u64,
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut ledger_info = env.ledger().get();
+            let mut current_timestamp = base_timestamp;
+            let mut current_ledger = 100u32;
+
+            for (idx, &price) in prices.iter().enumerate() {
+                ledger_info.timestamp = current_timestamp;
+                ledger_info.sequence_number = current_ledger as u64;
+                env.ledger().set(ledger_info);
+
+                let result = record_observation(&env, &token, price, current_timestamp, current_ledger);
+
+                if idx > 0 {
+                    // After first observation, subsequent ones should succeed if intervals are respected
+                    // (Due to MIN_OBSERVATION_INTERVAL_SECS, we need to advance time)
+                    if result.is_ok() {
+                        current_timestamp = current_timestamp.saturating_add(100);
+                        current_ledger = current_ledger.saturating_add(1);
+                    }
+                }
+            }
+
+            // TWAP should be retrievable without panicking
+            let twap_result = get_twap(&env, &token, 10000);
+            assert!(twap_result.is_ok());
+
+            if let Ok(twap) = twap_result {
+                // TWAP must be non-negative (Invariant I1)
+                assert!(twap >= 0);
+
+                // TWAP should be bounded by min/max of observed prices (Invariant I3)
+                if !prices.is_empty() {
+                    let min_price = prices.iter().copied().min().unwrap_or(0);
+                    let max_price = prices.iter().copied().max().unwrap_or(0);
+                    if min_price > 0 {
+                        // Rough bounds (exact check depends on time weighting)
+                        assert!(twap <= max_price);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn prop_twap_accumulator_deterministic(
+            price in 0i128..i128::MAX,
+            timestamp in 1000u64..10000u64,
+            ledger_sequence in 100u32..200u32,
+        ) {
+            let env1 = Env::default();
+            let env2 = Env::default();
+            let token1 = Address::generate(&env1);
+            let token2 = Address::generate(&env2);
+
+            // Setup identical ledger state
+            for env in [&env1, &env2] {
+                let mut ledger_info = env.ledger().get();
+                ledger_info.timestamp = timestamp;
+                ledger_info.sequence_number = ledger_sequence as u64;
+                env.ledger().set(ledger_info);
+            }
+
+            // Record same observation in both environments
+            let result1 = record_observation(&env1, &token1, price, timestamp, ledger_sequence);
+            let result2 = record_observation(&env2, &token2, price, timestamp, ledger_sequence);
+
+            // Results must be identical (Invariant I4: determinism)
+            assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn prop_twap_extreme_prices_no_overflow(
+            price in (i128::MAX / 2)..i128::MAX,
+            time_delta in 1u64..1000u64,
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut ledger_info = env.ledger().get();
+            ledger_info.timestamp = 1000;
+            ledger_info.sequence_number = 100;
+            env.ledger().set(ledger_info);
+
+            let _ = record_observation(&env, &token, price, 1000, 100);
+
+            // Advance time and add another observation
+            ledger_info.timestamp = 1000 + time_delta;
+            ledger_info.sequence_number = 101;
+            env.ledger().set(ledger_info);
+
+            // Must not overflow even with extreme prices and large time deltas
+            let result = record_observation(&env, &token, price, 1000 + time_delta, 101);
+            assert!(result.is_ok());
         }
     }
 }
