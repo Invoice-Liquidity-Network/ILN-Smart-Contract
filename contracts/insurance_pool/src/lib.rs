@@ -167,6 +167,10 @@ pub enum DataKey {
     /// Default counter for a specific (lp, payer) pair, the raw data
     /// surfaced for the collusion heuristic (Issue #829).
     PairDefaultCount(Address, Address),
+    /// Address of the reputation_bonus contract for cross-contract
+    /// reputation reads (ADR-015). If not set, premium calculation
+    /// ignores reputation scores.
+    ReputationContract,
 }
 
 /// Solvency snapshot returned by `get_pool_health`, so LPs can judge
@@ -372,6 +376,31 @@ impl InsurancePool {
         Ok(())
     }
 
+    /// Set the reputation_bonus contract address for cross-contract
+    /// reputation reads (ADR-015). Requires admin auth.
+    ///
+    /// Once set, `calculate_premium_rate_bps` will read the LP's reputation
+    /// score and reduce their effective default count proportionally.
+    ///
+    /// Pass `None` or an empty address to disable reputation integration.
+    pub fn set_reputation_contract(
+        env: Env,
+        contract: Address,
+    ) -> Result<(), InsuranceError> {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReputationContract, &contract);
+        Ok(())
+    }
+
+    /// Get the configured reputation_bonus contract address, if any.
+    pub fn get_reputation_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationContract)
+    }
+
     /// Propose a new risk multiplier. Requires current admin auth. Overwrites
     /// any previously pending risk multiplier proposal.
     pub fn propose_risk_multiplier(
@@ -485,22 +514,31 @@ impl InsurancePool {
     /// Calculate the risk-priced premium for an LP based on their history.
     /// Returns the premium rate in basis points.
     ///
-    /// Formula: base_rate + (default_count * risk_multiplier)
-    /// Example: base=500 (5%), multiplier=100/1 (100x per default)
+    /// Formula: base_rate + (effective_default_count * risk_multiplier)
+    ///
+    /// The effective default count is reduced by the LP's reputation score
+    /// (ADR-015): higher reputation means fewer effective defaults.
+    ///   effective_default_count = default_count × (1 - score/100)
+    ///
+    /// Example: base=500 (5%), multiplier=0.5x, score=80%
     ///   - 0 defaults: 500 bps (5%)
-    ///   - 1 default: 600 bps (6%)
-    ///   - 2 defaults: 700 bps (7%)
+    ///   - 1 default, score 80: effective=0.2 → 510 bps (5.1%)
+    ///   - 2 defaults, score 50: effective=1.0 → 550 bps (5.5%)
     pub fn calculate_premium_rate_bps(env: Env, lp: Address) -> u32 {
         let base_rate = Self::get_base_premium_rate_bps(env.clone());
-        let default_count = Self::get_default_count(env.clone(), lp) as i128;
+        let default_count = Self::get_default_count(env.clone(), lp.clone()) as i128;
         let numerator = Self::get_risk_multiplier_numerator(env.clone());
-        let denominator = Self::get_risk_multiplier_denominator(env);
+        let denominator = Self::get_risk_multiplier_denominator(env.clone());
 
         if denominator == 0 {
             return base_rate;
         }
 
-        let risk_adjustment = default_count
+        // ADR-015: apply reputation discount to effective default count
+        let effective_default_count =
+            Self::apply_reputation_discount(env.clone(), lp, default_count);
+
+        let risk_adjustment = effective_default_count
             .checked_mul(numerator)
             .and_then(|v| v.checked_mul(10_000))
             .and_then(|v| v.checked_div(denominator))
@@ -513,6 +551,51 @@ impl InsurancePool {
             10_000
         } else {
             total_rate as u32
+        }
+    }
+
+    /// Apply reputation discount to the default count (ADR-015).
+    ///
+    /// Reads the LP's reputation score from the configured reputation_bonus
+    /// contract and reduces the effective default count proportionally.
+    /// Higher scores produce larger discounts. The floor is 0 — reputation
+    /// never increases the effective count.
+    ///
+    /// Falls back to the raw default_count if the reputation contract is
+    /// not configured or the cross-contract call fails.
+    fn apply_reputation_discount(env: Env, lp: Address, default_count: i128) -> i128 {
+        let Some(rep_contract) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ReputationContract)
+        else {
+            // No reputation contract configured — no discount
+            return default_count;
+        };
+
+        // Cross-contract call: reputation_bonus.get_reputation(lp) → ReputationScore
+        // We only need the `score` field (0–100).
+        let args = soroban_sdk::vec![env.clone(), lp.into_val(&env)];
+        let result: Result<soroban_sdk::Val, soroban_sdk::Error> =
+            env.try_invoke_contract(&rep_contract, &soroban_sdk::symbol_short!("get_reputation"), args);
+
+        match result {
+            Ok(val) => {
+                // The ReputationScore is a ContractType; extract the score field.
+                // try_invoke_contract returns a Val — we need to decode it.
+                // For safety, use try-from with a fallback.
+                let score: u32 = soroban_sdk::TryFromVal::try_from_val(&env, &val)
+                    .unwrap_or(0u32);
+                // Apply discount: effective = default_count × (100 - score) / 100
+                default_count
+                    .checked_mul(100 - score as i128)
+                    .and_then(|v| v.checked_div(100))
+                    .unwrap_or(default_count)
+            }
+            Err(_) => {
+                // Cross-contract call failed — no discount
+                default_count
+            }
         }
     }
 

@@ -105,6 +105,13 @@ This section summarises the production-hardening work completed across the
 
 ### Economic Security
 
+Protocol economics, LP risk assumptions, insurance parameters, and oracle-attack
+costing live in the unified
+[Protocol Economics & Risk](index.md#protocol-economics--risk) section of the
+docs index (LP risk guide → governance playbook → token economics → oracle
+attack economics → insurance design/parameters, plus the review cadence). This
+narrative keeps only a short capability summary:
+
 - Multi-token support with token management functions and associated events
 - Discount rate validation and bounds checking
 - Payer verification oracle interface with mock oracle for testing
@@ -186,6 +193,7 @@ and emergency pause capability is available.
 - [SCF Grant Milestone Tracker](scf-grant-milestone-tracker.md) — issue→deliverable map for this batch (label-linked)
 - [Integration Partner Onboarding](integration-partner-onboarding.md) — external integrator go-live path
 - [Audit Findings Summary](audit-findings-summary.md) — public findings template
+- [Protocol Economics & Risk](index.md#protocol-economics--risk) — LP risk, token economics, insurance, oracle attack model, review cadence
 - [Audit Readiness Dashboard](audit-readiness-dashboard.md) — audit tracking
 - [Threat Model](threat-model.md) — security assumptions
 - [Mainnet Launch Checklist](mainnet-launch-checklist.md) — launch readiness
