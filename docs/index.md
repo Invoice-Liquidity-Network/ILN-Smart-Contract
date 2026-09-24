@@ -40,6 +40,23 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) | Dry-run-verified procedure for deploying, verifying, and publishing mainnet contracts. |
 | [Pre-Audit Checklist](pre-audit-checklist.md) | Audit preparation tasks. |
 
+
+## Protocol Economics & Risk
+
+Read in this order when onboarding to protocol economics, LP risk, and governance operations. Deeper attack/insurance models follow the guides.
+
+| Order | Document | Description |
+|-------|----------|-------------|
+| 1 | [LP Risk Management Guide](lp-risk-management-guide.md) | Default, yield, lock-up, oracle, and governance risks for LPs; working assumptions and checklist. |
+| 2 | [Governance Operations Playbook](governance-operations-playbook.md) | Steady-state proposal flow, emergency pause/oracle/insurance paths, parameter-change checklist. |
+| 3 | [Token Economics Paper](token-economics.md) | Value loop, baseline projections, kill-criteria, and testnet validation findings. |
+| 4 | [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model for payer-oracle manipulation at current parameters. |
+| 5 | [Insurance Pool Design](insurance-pool-design.md) | Default-protection pool interface, claims, and integration. |
+| 6 | [Insurance Pool Launch Parameters](insurance-pool-launch-parameters.md) | Recommended premium, coverage tiers, caps, and circuit-breaker values. |
+| — | [Economics & Risk Review Cadence](review-cadence.md) | Who reviews these assumptions, how often, and what each cycle re-validates. |
+
+The [SCF technical narrative](scf-technical-narrative.md) points here instead of duplicating economics content.
+
 ## Integrations
 
 | Document | Description |

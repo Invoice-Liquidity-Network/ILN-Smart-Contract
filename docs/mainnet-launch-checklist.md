@@ -63,7 +63,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
 | CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
 | Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
-| Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Not started | [Issue templates](../.github/ISSUE_TEMPLATE) |
+| Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Complete | [Support Channels](support-channels.md) |
 
 ## Maintainer Sign-off
 
@@ -75,7 +75,7 @@ Mainnet launch requires sign-off from core maintainers after all blocking items 
 | TBD | Security | No | TBD | Pending advisory process and incident runbook review. |
 | TBD | Infrastructure | No | TBD | Pending production monitoring and deployment runbook. |
 | TBD | Documentation | No | TBD | Pending final guide review. |
-| TBD | Community | No | TBD | Pending support channel confirmation. |
+| TBD | Community | No | TBD | Support channels documented in support-channels.md (Issues + security); Discussions deferred. |
 
 ## Automation
 
