@@ -6,7 +6,7 @@ import { vi, describe, it, expect} from 'vitest';
  *   - Preset defaults (RPC URL, network passphrase, contract ID)
  */
 
-import { ILNClient, iln, TESTNET_RPC_URL, MAINNET_RPC_URL } from "./client.js";
+import { ILNClient, iln, TESTNET_RPC_URL, MAINNET_RPC_URL, CONTRACT_REGISTRY } from "./client.js";
 import { Networks } from "@stellar/stellar-sdk";
 
 // ---------------------------------------------------------------------------
@@ -80,26 +80,24 @@ describe("ILNClient.testnet", () => {
 // ---------------------------------------------------------------------------
 
 describe("ILNClient.mainnet", () => {
-  it("creates a client with mainnet defaults", () => {
-    const client = ILNClient.mainnet();
+  it("throws when mainnet registry is empty and no override provided", () => {
+    expect(() => ILNClient.mainnet()).toThrow("Mainnet contract IDs are not yet populated");
+  });
 
+  it("succeeds when explicit contractId is provided", () => {
+    const client = ILNClient.mainnet(undefined, {
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    });
     expect(client.networkPassphrase).toBe(Networks.PUBLIC);
-    expect(MAINNET_RPC_URL).toContain("soroban.stellar.org");
+    expect(client.contractId).toBe("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4");
   });
 
   it("accepts an optional signer", () => {
     const signer = { publicKey: "GAA", signTransaction: vi.fn() };
-    const client = ILNClient.mainnet(signer as unknown);
-    expect(client.signer).toBe(signer);
-  });
-
-  it("accepts optional overrides", () => {
-    const client = ILNClient.mainnet(undefined, {
-      rpcUrl: "https://custom-rpc.example.com",
+    const client = ILNClient.mainnet(signer as unknown, {
       contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
     });
-
-    expect(client.contractId).toBe("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4");
+    expect(client.signer).toBe(signer);
   });
 });
 
@@ -133,6 +131,39 @@ describe("ILNClient.custom", () => {
 
     expect(client.signer).toBeUndefined();
     expect(client.contractId).toBe("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract registry
+// ---------------------------------------------------------------------------
+
+describe("CONTRACT_REGISTRY", () => {
+  it("testnet has a populated invoiceLiquidity address", () => {
+    expect(CONTRACT_REGISTRY.testnet.invoiceLiquidity).toBeTruthy();
+  });
+
+  it("mainnet invoiceLiquidity is empty (not yet deployed)", () => {
+    expect(CONTRACT_REGISTRY.mainnet.invoiceLiquidity).toBe("");
+  });
+});
+
+describe("ILNClient contract registry integration", () => {
+  it("testnet client exposes contracts from registry", () => {
+    const client = ILNClient.testnet();
+    expect(client.contracts.invoiceLiquidity).toBe(
+      CONTRACT_REGISTRY.testnet.invoiceLiquidity
+    );
+  });
+
+  it("custom contracts override registry defaults", () => {
+    const client = ILNClient.testnet(undefined, {
+      contracts: { insurancePool: "CINSURANCE" },
+    });
+    expect(client.contracts.insurancePool).toBe("CINSURANCE");
+    expect(client.contracts.invoiceLiquidity).toBe(
+      CONTRACT_REGISTRY.testnet.invoiceLiquidity
+    );
   });
 });
 

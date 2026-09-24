@@ -36,6 +36,55 @@ export const TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
 export const MAINNET_RPC_URL = "https://soroban.stellar.org";
 
 // ---------------------------------------------------------------------------
+// Contract registry
+// ---------------------------------------------------------------------------
+
+/** The five deployed ILN contract addresses for a given network. */
+export interface ContractAddresses {
+  /** Invoice-liquidity contract address. */
+  invoiceLiquidity: string;
+  /** Insurance pool contract address. */
+  insurancePool: string;
+  /** Distribution contract address. */
+  distribution: string;
+  /** Fund queue contract address. */
+  fundQueue: string;
+  /** NFT / reputation token contract address. */
+  nft: string;
+}
+
+/** Known network names. */
+export type NetworkName = "testnet" | "mainnet";
+
+/**
+ * Per-network contract registry.
+ *
+ * Testnet addresses are populated from the latest CI/CD deployment.
+ * Mainnet addresses are left empty until mainnet deployment; calling
+ * `ILNClient.mainnet()` without explicit overrides throws rather than
+ * silently using a bogus address (#876).
+ */
+export const CONTRACT_REGISTRY: Record<NetworkName, ContractAddresses> = {
+  testnet: {
+    invoiceLiquidity:
+      "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+    insurancePool: "",
+    distribution: "",
+    fundQueue: "",
+    nft: "",
+  },
+  mainnet: {
+    // Intentionally left empty — mainnet deployment not yet completed.
+    // ILNClient.mainnet() will throw if these are not populated.
+    invoiceLiquidity: "",
+    insurancePool: "",
+    distribution: "",
+    fundQueue: "",
+    nft: "",
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
 
@@ -52,6 +101,11 @@ export interface ILNClientConfig {
    * Read-only methods like getReputation work without a signer.
    */
   signer?: ISigner;
+  /**
+   * Optional pre-populated contract addresses for all five ILN contracts.
+   * When provided, overrides the registry lookup for the bound network.
+   */
+  contracts?: Partial<ContractAddresses>;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +138,8 @@ export class ILNClient {
   readonly contractId: string;
   /** Optional signer for authenticated methods. */
   readonly signer?: ISigner | undefined;
+  /** Pre-populated contract addresses for all five ILN contracts. */
+  readonly contracts: ContractAddresses;
 
   // Cached imports (lazy-loaded for tree-shaking)
   private _getReputation?: typeof import("./methods/reputation.js").getReputation;
@@ -104,6 +160,13 @@ export class ILNClient {
     this.networkPassphrase = config.networkPassphrase;
     this.contractId = config.contractId;
     this.signer = config.signer;
+    this.contracts = {
+      invoiceLiquidity: config.contractId,
+      insurancePool: config.contracts?.insurancePool ?? "",
+      distribution: config.contracts?.distribution ?? "",
+      fundQueue: config.contracts?.fundQueue ?? "",
+      nft: config.contracts?.nft ?? "",
+    };
   }
 
   // --------------------------------------------------------------------------
@@ -123,16 +186,14 @@ export class ILNClient {
    */
   static testnet(
     signer?: ISigner,
-    options?: { rpcUrl?: string; contractId?: string }
+    options?: { rpcUrl?: string; contractId?: string; contracts?: Partial<ContractAddresses> }
   ): ILNClient {
+    const registry = CONTRACT_REGISTRY.testnet;
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? TESTNET_RPC_URL,
       networkPassphrase: "Test SDF Network ; September 2015",
-      contractId:
-        options?.contractId ??
-        // Published testnet deployment: the canonical contract ID from
-        // the latest testnet CI/CD deployment. Update here when redeploying.
-        "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+      contractId: options?.contractId ?? registry.invoiceLiquidity,
+      contracts: { ...registry, ...options?.contracts },
       ...(signer ? { signer } : {}),
     });
   }
@@ -150,17 +211,22 @@ export class ILNClient {
    */
   static mainnet(
     signer?: ISigner,
-    options?: { rpcUrl?: string; contractId?: string }
+    options?: { rpcUrl?: string; contractId?: string; contracts?: Partial<ContractAddresses> }
   ): ILNClient {
-    // Future-proof: we allow configuring mainnet ahead of deployment
-    // so integrators can test their integration code against the API shape.
+    const registry = CONTRACT_REGISTRY.mainnet;
+    const contractId = options?.contractId ?? registry.invoiceLiquidity;
+    if (!contractId) {
+      throw new Error(
+        "Mainnet contract IDs are not yet populated in the registry. " +
+          "Pass an explicit contractId or contracts option, or wait for " +
+          "mainnet deployment to complete."
+      );
+    }
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? MAINNET_RPC_URL,
       networkPassphrase: "Public Global Stellar Network ; September 2015",
-      contractId:
-        options?.contractId ??
-        // TODO: replace with actual mainnet contract ID after mainnet deployment
-        "",
+      contractId,
+      contracts: { ...registry, ...options?.contracts },
       ...(signer ? { signer } : {}),
     });
   }
