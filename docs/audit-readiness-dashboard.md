@@ -130,8 +130,8 @@ These items improve operations and community engagement but are not blocking aud
 | Item | Status | Notes |
 |------|--------|---|
 | SDK examples for common integration patterns | ❌ Open | Help developers onboard |
-| Audit findings summary (published report excerpt, remediation tracking) | ❌ Open | Transparency with community |
-| Integration partner onboarding guide | ❌ Open | Process for external developers |
+| Audit findings summary (published report excerpt, remediation tracking) | ✅ Template ready | [audit-findings-summary.md](audit-findings-summary.md) |
+| Integration partner onboarding guide | ✅ Complete | [integration-partner-onboarding.md](integration-partner-onboarding.md) |
 
 ---
 
@@ -178,7 +178,7 @@ These items improve operations and community engagement but are not blocking aud
 
 **Goal:** Resolve audit findings, complete 🟡 HIGH PRIORITY items, prepare mainnet.
 
-**Tracking:** Audit findings will be tracked in a separate `audit-findings.md` with remediation PRs linked.
+**Tracking:** Public findings use [`audit-findings-summary.md`](audit-findings-summary.md); keep this dashboard for milestone-level status.
 
 **Status:** ⏳ Pending audit start
 

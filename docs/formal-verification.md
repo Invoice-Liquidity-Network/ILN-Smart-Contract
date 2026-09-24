@@ -2,6 +2,8 @@
 
 ## 1. Overview
 
+Cross-contract system invariants spanning `invoice_liquidity`, `iln_distribution`, and `insurance_pool` are specified separately in [`formal-verification-cross-contract.md`](formal-verification-cross-contract.md).
+
 This document defines formal invariants, valid state transitions, and authorization properties for the protocol's core state machines. These specifications serve as the basis for formal verification, property-based testing, and audit review.
 
 Two independent state machines are covered:
