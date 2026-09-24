@@ -82,6 +82,18 @@ pub struct IlnDistribution;
 
 #[contractimpl]
 impl IlnDistribution {
+    /// Initialize the distribution contract with the ILN core contract and governance token.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `iln_contract` - Address of the ILN core contract (sole authorized caller for accruals).
+    /// * `gov_token` - Address of the governance token to mint rewards in.
+    ///
+    /// # Access
+    /// * Callable once during deployment.
+    ///
+    /// # Panics
+    /// * Panics with `"already initialized"` if called more than once.
     pub fn initialize(env: Env, iln_contract: Address, gov_token: Address) {
         if env.storage().instance().has(&StorageKey::Initialized) {
             panic!("already initialized");
@@ -116,6 +128,21 @@ impl IlnDistribution {
         );
     }
 
+    /// Record LP-funded volume for reward accrual.
+    ///
+    /// Called by the ILN core contract when an LP funds an invoice.
+    /// Accumulates volume that determines the LP's governance token reward.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `lp` - Address of the liquidity provider.
+    /// * `amount_usdc_equivalent` - Volume in USDC stroops (7 decimals).
+    ///
+    /// # Access
+    /// * Restricted to the ILN core contract via `require_auth`.
+    ///
+    /// # Behavior
+    /// * Non-positive and amounts exceeding `MAX_LP_ACCRUAL_PER_CALL` are silently ignored.
     pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         Self::require_iln_invoker(&env);
 
@@ -141,6 +168,20 @@ impl IlnDistribution {
         );
     }
 
+    /// Record a settlement for freelancer and payer reward accrual.
+    ///
+    /// Called by the ILN core contract when an invoice is settled.
+    /// Increments the freelancer's settlement count and (if on-time) the payer's
+    /// on-time settlement count.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `freelancer` - Address of the freelancer receiving payment.
+    /// * `payer` - Address of the payer making payment.
+    /// * `settled_on_time` - Whether the settlement met the deadline.
+    ///
+    /// # Access
+    /// * Restricted to the ILN core contract via `require_auth`.
     pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
         Self::require_iln_invoker(&env);
 
@@ -172,6 +213,20 @@ impl IlnDistribution {
         );
     }
 
+    /// Claim accrued governance tokens for the caller.
+    ///
+    /// Mints the difference between total earned and already claimed.
+    /// Uses saturating subtraction so repeated calls return 0 without error.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `claimer` - Address claiming tokens (must authorize).
+    ///
+    /// # Access
+    /// * Restricted to the claimer via `require_auth`.
+    ///
+    /// # Returns
+    /// * The amount of tokens minted (0 if nothing claimable).
     pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
         claimer.require_auth();
 
@@ -202,6 +257,18 @@ impl IlnDistribution {
         claimable
     }
 
+    /// Get the total governance tokens earned by a participant.
+    ///
+    /// Computes rewards from LP volume, freelancer settlements, and on-time payer
+    /// settlements using current reward rates. May differ from previously claimed
+    /// amounts if rates have changed since claiming.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `participant` - Address to query.
+    ///
+    /// # Returns
+    /// * Total earned in governance token stroops.
     pub fn get_accrual(env: Env, participant: Address) -> i128 {
         Self::total_earned(&env, &participant)
     }
@@ -612,6 +679,75 @@ mod test {
             dist.get_accrual(&lp),
             expected_units.saturating_mul(DEFAULT_LP_REWARD_RATE)
         );
+    }
+
+    /// #838 — Verify double-initialize panics (most critical error path).
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn initialize_rejects_double_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        // Second init must panic
+        dist.initialize(&iln_id, &gov_token_id.address());
+    }
+
+    /// #839 — Regression: accrue_lp rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_lp_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let lp = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_lp(&lp, &1000);
+        });
+    }
+
+    /// #839 — Regression: accrue_settlement rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_settlement_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let freelancer = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_settlement(
+                &freelancer,
+                &payer,
+                &true,
+            );
+        });
     }
 
     /// Issue #660 / #661 — property-based tests for the reward-conservation
