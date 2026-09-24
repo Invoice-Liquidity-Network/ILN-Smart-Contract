@@ -69,6 +69,7 @@ cargo test --workspace --tests --all
 | 2.2 | No `#[allow(clippy::...)]` suppressions added without a documented reason | ⚠️ Partial | `#![allow(clippy::too_many_arguments)]` is present in `lib.rs` and `fuzz/src/lib.rs`; this is justified by Soroban macro-generated client code — confirm comment explains this |
 | 2.3 | `cargo deny check advisories licenses bans sources` passes | ✅ Pass | `cargo-deny` workflow runs on push to `main` and weekly |
 | 2.4 | No `unsafe` blocks in any contract crate | ❌ Open | Verify with `grep -r "unsafe" contracts/` — all crates are `#![no_std]` and should have zero `unsafe` |
+| 2.5 | No `unwrap()`/`expect()` in non-test contract source | ✅ Pass | See [panic-path-hardening-report.md](./panic-path-hardening-report.md); CI gate: `make check-no-unwrap` |
 
 **Commands:**
 ```bash
