@@ -98,12 +98,57 @@ export class ILNClient {
   private _getPoolHealth?: typeof import("./methods/insurance.js").getPoolHealth;
   private _getDistributionAccrual?: typeof import("./methods/distribution.js").getDistributionAccrual;
   private _submitBatchTransaction?: typeof import("./methods/batch.js").submitBatchTransaction;
+  private _networkVerified = false;
 
   constructor(config: ILNClientConfig) {
     this.rpc = new SorobanRpc.Server(config.rpcUrl);
     this.networkPassphrase = config.networkPassphrase;
     this.contractId = config.contractId;
     this.signer = config.signer;
+  }
+
+  // --------------------------------------------------------------------------
+  // Network verification
+  // --------------------------------------------------------------------------
+
+  /**
+   * Verify that the configured network passphrase matches the RPC endpoint.
+   *
+   * Queries `getNetwork()` on the Soroban RPC to obtain the server's actual
+   * network passphrase and compares it against the passphrase configured in
+   * this client. On mismatch, throws with a clear diagnostic message so the
+   * operator can fix their configuration before submitting any transactions.
+   *
+   * Call this after construction (or use the `testnet()` / `mainnet()` factory
+   * methods which call it automatically) to guard against costly
+   * mainnet-contract-against-testnet-RPC mistakes.
+   *
+   * @throws {Error} if the RPC passphrase does not match the configured passphrase
+   *
+   * @example
+   * ```ts
+   * const client = ILNClient.custom({ rpcUrl: "...", networkPassphrase: Networks.TESTNET, contractId: "..." });
+   * await client.verifyNetwork(); // throws if RPC is actually mainnet
+   * ```
+   */
+  async verifyNetwork(): Promise<void> {
+    try {
+      const network = await this.rpc.getNetwork();
+      if (network.passphrase !== this.networkPassphrase) {
+        throw new Error(
+          `Network mismatch: configured passphrase "${this.networkPassphrase}" ` +
+          `does not match the RPC endpoint's passphrase "${network.passphrase}". ` +
+          `You may be pointing a mainnet contract at a testnet RPC (or vice versa).`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Network mismatch")) {
+        throw err;
+      }
+      throw new Error(
+        `Failed to verify network passphrase: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -396,6 +441,11 @@ export class ILNClient {
     if (!this.signer) {
       throw new Error("Batch transaction submission requires a signer");
     }
+    // Verify network passphrase before submitting any transaction
+    if (!this._networkVerified) {
+      await this.verifyNetwork();
+      this._networkVerified = true;
+    }
     if (!this._submitBatchTransaction) {
       this._submitBatchTransaction = (await import("./methods/batch.js")).submitBatchTransaction;
     }
@@ -485,6 +535,10 @@ class ILNSingleton {
 
   async submitBatchTransaction(calls: import("./methods/batch.js").BatchContractCall[]) {
     return this.client.submitBatchTransaction(calls);
+  }
+
+  async verifyNetwork(): Promise<void> {
+    return this.client.verifyNetwork();
   }
 }
 
