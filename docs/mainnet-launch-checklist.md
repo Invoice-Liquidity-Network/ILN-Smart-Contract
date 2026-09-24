@@ -1,6 +1,10 @@
 # Mainnet Launch Checklist
 
-This checklist tracks the minimum readiness requirements before ILN mainnet deployment. Status values are maintained manually during planning and automatically refreshed for rows that link to GitHub issues when those issues are closed or reopened.
+**Status:** Historical Reference — Superseded by audit-readiness-dashboard.md
+
+This checklist has been reconciled with `pre-audit-checklist.md` and merged into [`audit-readiness-dashboard.md`](audit-readiness-dashboard.md), which is now the single authoritative tracking source. This document is retained for historical reference only.
+
+Status values are maintained manually during planning and automatically refreshed for rows that link to GitHub issues when those issues are closed or reopened.
 
 Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 
@@ -19,21 +23,27 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | Item | Description | Owner | Status | Link |
 |------|-------------|-------|--------|------|
 | Upgrade path tested | Test upload, deploy, migration, rollback decision points, and post-upgrade smoke checks. | Contracts lead | In progress | [Upgrade Guide](upgrade-guide.md) |
-| Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Complete | [Multi-sig Admin Runbook](multisig-admin-runbook.md) · [Access Control](access-control.md) |
-| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout](storage-layout.md) |
+| Multi-sig admin configured | Configure production admin as a multi-sig account or equivalent governance-controlled authority. | Governance lead | Not started | [Access Control](access-control.md) |
+| Storage layout frozen | Confirm storage keys, schema, and migration compatibility are launch-ready. | Contracts lead | In progress | [Storage Layout Freeze Sign-off](storage-layout.md#10-storage-layout-freeze--sign-off-gate-issue-651) |
 | Insurance pool readiness | Ensure insurance pool contract has test coverage >= 95%, completed security audit, deployment verification, and SDK integration. | Contracts lead | Not started | [Insurance Pool](../contracts/insurance_pool) |
-| Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | Not started | [Developer Quickstart](developer-quickstart.md) |
+| Mainnet deployment runbook | Dry-run every deployment command and record final runbook approvals. | Release lead | In progress | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) |
 | Contract IDs published | Publish verified mainnet contract IDs and SAC addresses after deployment. | Release lead | Not started | [README](../README.md) |
+| Staged rollout caps configured | Set initial per-invoice and per-token volume caps via governance before opening to real funds; raise over time. | Governance lead | In progress | [#655](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/655) |
 
 ## Infrastructure
 
 | Item | Description | Owner | Status | Link |
 |------|-------------|-------|--------|------|
 | Indexer deployed | Deploy production indexer with backup, restore, and replay procedures. | Infrastructure lead | In progress | [indexer](../indexer) |
-| Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | Not started | [CI/CD](ci-cd.md) |
+| Monitoring configured | Configure health checks, alerting, log retention, and on-call routing for indexer and notifications. | Infrastructure lead | In progress | [monitoring-runbook.md](monitoring-runbook.md) |
+| SLOs documented and monitored | Define and monitor Service Level Objectives for indexer and notifications, tied to specific alerting signals. | Infrastructure lead | Not started | [SLOs](slos.md) |
+| Synthetic canary monitoring deployed | Deploy a synthetic transaction monitor that periodically performs end-to-end invoice lifecycle against mainnet. | Infrastructure lead | Not started | [#777](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/777) |
 | Notifications deployed | Deploy webhook/email notifications with HMAC signing, rate limiting, and SSRF controls verified. | Infrastructure lead | In progress | [notifications](../notifications) |
-| Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | Not started | [Security Policy](security.md) |
-| Deployment secrets reviewed | Confirm production secrets are stored in GitHub Actions or approved secret management only. | Release lead | In progress | [Deploy testnet workflow](../.github/workflows/deploy-testnet.yml) |
+| Incident response runbook | Publish escalation, rollback, advisory, and user-communication steps. | Security lead | In progress | [Incident Response Runbook](incident-response-runbook.md) |
+| Deployment secrets reviewed | Confirm production secrets follow an approved, reviewed custody path distinct from testnet's GitHub Actions secret. | Release lead | In progress | [Deployment Secret Management](deployment-secrets.md) |
+| Mainnet rollback runbook rehearsed | Publish and rehearse the early-launch rollback decision procedure (pause, veto, in-place rollback, full redeploy) before mainnet launch. | Release lead | In progress | [#657](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/657) |
+| Game-day exercise completed | Run a structured game-day exercise validating the incident response runbook and component runbooks against a multi-failure scenario on testnet. | Security lead | Not started | [Game-Day Exercise Plan](game-day-exercise-plan.md) |
+| Alert-to-incident-channel integration verified | Verify that SLO-breach alerts actually reach the configured incident channel (Slack/PagerDuty) within the detection window. | Infrastructure lead | Not started | [#779](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/779) |
 
 ## Documentation
 
@@ -41,12 +51,9 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | Local development guide complete | Verify a fresh-machine local setup path for contracts, Docker, SDK, CLI, indexer, and notifications. | Docs lead | Complete | [#300](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/300) |
 | Glossary complete | Publish protocol terminology for DeFi, invoice factoring, Stellar, and ILN-specific terms. | Docs lead | Complete | [#301](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/301) |
-| Auditor onboarding package | Prepare guided reading path and known-accepted-risk register for external auditors. | Docs lead | Complete | [#791](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/791) |
 | SDK guide complete | Confirm SDK examples match current contract IDs, methods, and error handling. | SDK lead | In progress | [SDK Integration](sdk-integration.md) |
 | Security docs linked | Link security policy from root, docs index, and release checklist. | Docs lead | In progress | [Security Policy](security.md) |
-| Documentation consistency audit | Cross-check all docs for contradictions after hardening batch. | Docs lead | Complete | [#789](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/789) |
-| License compliance verified | Confirm LICENSE file and dependency license compatibility across Rust and TypeScript. | Security lead | Complete | [#790](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/790) |
-| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
+| User-facing launch notes | Prepare final mainnet usage, known limitations, and migration notes. | Release lead | In progress | [Mainnet Launch Notes](mainnet-launch-notes.md) |
 
 ## Community
 
@@ -55,21 +62,19 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | CONTRIBUTING up to date | Confirm contribution, review, testing, and local setup expectations are current. | Community lead | In progress | [CONTRIBUTING](../CONTRIBUTING.md) |
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
 | CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
-| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
+| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
 | Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Not started | [Issue templates](../.github/ISSUE_TEMPLATE) |
 
 ## Maintainer Sign-off
 
 Mainnet launch requires sign-off from core maintainers after all blocking items are complete.
 
-**Reconciliation performed:** 2026-08-30 — Checklist updated to reflect batch completion. See [#792](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/792).
-
 | Maintainer | Area | Signed off | Date | Notes |
 |------------|------|------------|------|-------|
 | TBD | Contracts | No | TBD | Pending audit and upgrade dry run. |
 | TBD | Security | No | TBD | Pending advisory process and incident runbook review. |
 | TBD | Infrastructure | No | TBD | Pending production monitoring and deployment runbook. |
-| TBD | Documentation | No | TBD | Auditor onboarding package, consistency audit, and license compliance completed in batch. |
+| TBD | Documentation | No | TBD | Pending final guide review. |
 | TBD | Community | No | TBD | Pending support channel confirmation. |
 
 ## Automation

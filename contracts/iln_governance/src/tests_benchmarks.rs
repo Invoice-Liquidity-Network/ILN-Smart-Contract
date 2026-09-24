@@ -51,11 +51,27 @@ fn setup_benchmark_env() -> BaseBenchEnv {
 
     let iln_contract = env.register_contract(None, MockIlnBench);
     let dist_contract = env.register_contract(None, MockIlnBench);
+    let rep_contract = env.register_contract(None, MockIlnBench);
     let admin = Address::generate(&env);
 
     let contract_id = env.register_contract(None, GovContract);
     let contract = GovContractClient::new(&env, &contract_id);
-    contract.initialize(&iln_contract, &dist_contract, &token_addr, &admin, &10_000);
+    contract.initialize(
+        &iln_contract,
+        &dist_contract,
+        &rep_contract,
+        &token_addr,
+        &admin,
+        &10_000,
+    );
+
+    // Issue #805: checkpoint + age both actors so benchmarked votes and
+    // delegations exercise the eligible path.
+    contract.checkpoint_balance(&proposer);
+    contract.checkpoint_balance(&voter);
+    let mut ledger = env.ledger().get();
+    ledger.sequence_number += MIN_VOTE_HOLD_LEDGERS + 1;
+    env.ledger().set(ledger);
 
     BaseBenchEnv {
         env,

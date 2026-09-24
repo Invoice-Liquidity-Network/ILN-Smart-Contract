@@ -67,12 +67,11 @@ Invoice Liquidity Network is a two-sided protocol on Stellar that connects invoi
 
 ### Smart Contracts (Soroban WASM)
 
-Five Soroban contracts deployed to each Stellar network. See [Contracts](#smart-contracts-detailed) for full details.
+Four Soroban contracts deployed to each Stellar network. See [Contracts](#smart-contracts-detailed) for full details.
 
 - **invoice_liquidity** — Core escrow: submit, fund, settle, cancel, default invoices; multi-token support; reputation scoring.
 - **iln_governance** — On-chain governance: proposals, voting, delegation, quorum, admin veto.
 - **iln_distribution** — Yield and incentive distribution for LPs, freelancers, and payers.
-- **insurance_pool** — Insurance pool for covering invoice defaults and claims.
 - **reputation_bonus** — Reputation-based discount bonuses and invoice hooks.
 
 ### TypeScript SDK (`@iln/sdk`)

@@ -20,12 +20,11 @@ const INVOICE_AMOUNT: i128 = 1_000_000_000;
 const DISCOUNT_RATE: u32 = 300;
 const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30; // 30 days
 
-#[allow(dead_code)]
 struct PauseTestEnv {
     env: Env,
     contract: InvoiceLiquidityContractClient<'static>,
     token: TokenClient<'static>,
-    _admin: Address,
+    admin: Address,
     freelancer: Address,
     payer: Address,
     funder: Address,
@@ -68,7 +67,7 @@ fn setup_pause() -> PauseTestEnv {
         env,
         contract,
         token,
-        _admin: usdc_admin,
+        admin: usdc_admin,
         freelancer,
         payer,
         funder,

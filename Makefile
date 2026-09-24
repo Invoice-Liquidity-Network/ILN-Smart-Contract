@@ -187,7 +187,7 @@ fuzz: ## Run the property/fuzz test suite
 test-fuzz: ## Run fuzz tests for the iln_fuzz crate
 	cargo test -p iln_fuzz
 
-lint: fmt-check clippy ## Lint everything (rustfmt check + clippy)
+lint: fmt-check clippy check-no-unwrap ## Lint everything (rustfmt check + clippy + panic-path gate)
 
 fmt: ## Format all Rust code in place
 	cargo fmt --all
@@ -198,8 +198,17 @@ fmt-check: ## Verify Rust formatting without modifying files
 clippy: ## Run clippy with warnings denied
 	cargo clippy --all-targets -- -D warnings
 
+check-no-unwrap: ## Gate: fail if unwrap()/expect() appears in non-test contract source (#845)
+	bash scripts/check-no-unwrap-in-contract-source.sh
+
 deploy-testnet: ## Deploy all contracts to Stellar testnet
 	bash scripts/deploy-testnet.sh
+
+deploy-mainnet-dry-run: ## Dry-run the mainnet deployment (no transactions submitted)
+	bash scripts/deploy-mainnet.sh --dry-run
+
+deploy-mainnet: ## Deploy all contracts to Stellar mainnet (requires CONFIRM="DEPLOY TO MAINNET")
+	bash scripts/deploy-mainnet.sh
 
 seed: ## Seed the testnet deployment with sample data
 	npx tsx scripts/seed.ts
@@ -210,6 +219,12 @@ reset-testnet: ## Reset local/testnet state
 
 health: ## Run the deployment health check (JSON metrics)
 	npx tsx scripts/check-contract-health.ts --pretty
+
+verify-mainnet: ## Run mainnet-readiness verification (writes verification-report.mainnet.json)
+	NETWORK=mainnet npx tsx scripts/verify-deployment.ts
+
+publish-mainnet: ## Publish verified mainnet contract IDs/SAC addresses to README.md
+	bash scripts/publish-mainnet-contracts.sh
 
 docs: ## Generate SDK API documentation (typedoc)
 	cd sdk && $(PKG) run docs

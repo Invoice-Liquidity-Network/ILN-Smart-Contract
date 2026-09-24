@@ -1,3 +1,5 @@
+import { PerRecipientRateLimiter } from './rateLimiter.js';
+
 export interface SlackInvoiceEvent {
   type: 'invoice.submitted' | 'invoice.funded' | 'invoice.paid' | 'invoice.expiring_soon';
   invoiceId: number;
@@ -18,7 +20,7 @@ const TOKEN_EMOJI: Record<string, string> = {
 };
 
 function tokenEmoji(token: string): string {
-  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default;
+  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default ?? '\u{26AB}';
 }
 
 function formatAmount(amount: string, token: string): string {
@@ -133,11 +135,28 @@ export type SlackHttpClient = (
   body: unknown,
 ) => Promise<{ ok: boolean; status: number }>;
 
+export interface SlackDeliveryOptions {
+  /**
+   * Per-channel rate limiter. Defaults to a shared instance keyed by webhook
+   * URL, so one noisy channel cannot starve delivery to other channels
+   * (Issue #728). Inject your own instance in tests to control the clock.
+   */
+  rateLimiter?: PerRecipientRateLimiter | undefined;
+}
+
+const defaultSlackRateLimiter = new PerRecipientRateLimiter();
+
 export async function deliverSlackNotification(
   webhookUrl: string,
   event: SlackInvoiceEvent,
   http: SlackHttpClient,
+  options: SlackDeliveryOptions = {},
 ): Promise<{ ok: boolean; status: number }> {
+  const rateLimiter = options.rateLimiter ?? defaultSlackRateLimiter;
+  if (!rateLimiter.tryConsume(webhookUrl)) {
+    return { ok: false, status: 429 };
+  }
+
   const payload = buildSlackMessage(event);
   try {
     const res = await http(webhookUrl, payload);

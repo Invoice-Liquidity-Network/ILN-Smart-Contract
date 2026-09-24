@@ -13,8 +13,6 @@ soroban-sdk = { workspace = true, features = ["hazmat"] }
 invoice_liquidity = { path = "../invoice_liquidity" }
 iln_governance = { path = "../iln_governance" }
 insurance_pool = { path = "../insurance_pool" }
-iln_distribution = { path = "../iln_distribution" }
-reputation_bonus = { path = "../reputation_bonus" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

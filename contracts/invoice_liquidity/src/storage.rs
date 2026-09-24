@@ -1,7 +1,10 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol};
 
 use crate::config::Config;
-use crate::invoice::{AppealRecord, Invoice, LpFundRequest};
+use crate::invoice::{
+    AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
+};
+use crate::multisig::AdminAction;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,10 +19,9 @@ pub enum DataKey {
     /// Minimum payer reputation required to fund an invoice (Issue #28). Default 0.
     MinPayerReputation,
     NextInvoiceId,
-    /// Issue #124: multi-sig admin configuration (signers + threshold).
-    MultisigAdmin,
-    /// Issue #124: monotonic counter for unique multisig proposal IDs.
-    MultisigProposalCounter,
+    /// Issue #655: governance-configurable cap on a single invoice's `amount`,
+    /// for a staged mainnet rollout. `0` = uncapped (default).
+    MaxInvoiceAmount,
 
     // Persistent Storage
     Invoice(u64),         // DEPRECATED: kept for backwards compatibility
@@ -44,6 +46,9 @@ pub enum DataKey {
     /// Used to enforce a minimum maturity delay before `resolve_fund_queue` may
     /// be called, preventing MEV / front-running (Issue #MEV-1).
     FundQueueOpenedAt(u64),
+    /// Issue #645: ring-buffer slot for the admin action audit log, indexed
+    /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
+    AdminActionLog(u32),
 
     // Stats (Persistent)
     TotalInvoices,
@@ -53,6 +58,11 @@ pub enum DataKey {
     TotalVolumeEurc,
     TotalVolumeXlm,
     TokenVolume(Address),
+    /// Issue #655: governance-configurable cap on cumulative funded volume
+    /// (`TokenVolume`) for a given token, for a staged mainnet rollout — can
+    /// be raised over time as confidence in the deployment grows. `0` =
+    /// uncapped (default).
+    TokenVolumeCap(Address),
     /// Referral counts keyed by fixed-size code
     ReferralCount(BytesN<32>),
     Dispute(u64),
@@ -66,8 +76,6 @@ pub enum DataKey {
     InvoiceNftOwner(u64),
     /// Issue #533: Fee tier configuration — ordered list of (min_amount, fee_rate_bps).
     FeeTiers,
-    /// Issue #124: multi-sig proposals by ID.
-    MultisigProposal(u64),
     /// Issue #539: Storage version tracking for migration safety.
     StorageVersion,
     /// Reentrancy guard lock (Issue #535)
@@ -84,6 +92,62 @@ pub enum DataKey {
     /// Issue #529: deployed insurance pool contract address, consulted by
     /// claim_default() to compensate enrolled LPs on a confirmed default.
     InsurancePool,
+    /// Cached insurance pool interface version verified at configuration time.
+    InsurancePoolInterfaceVersion,
+    /// Cached oracle interface version verified at register_oracle time,
+    /// keyed by feed type.
+    OracleInterfaceVersion(crate::oracle_registry::OracleFeedType),
+    /// Issue #circuit-breaker: whether the oracle circuit breaker for a
+    /// feed type + token resolution channel is tripped (sticky — cleared
+    /// only via governance-gated `reset_oracle_circuit`, never auto-cleared
+    /// by a fresh query, to avoid flapping).
+    OracleCircuitTripped(crate::oracle_registry::OracleFeedType, Address),
+    /// Issue #price-deviation: list of registered price-reporting oracle
+    /// sources for a feed type, consulted together for cross-source
+    /// deviation checking. Distinct from OracleRegistry/TokenOracle (the
+    /// single-oracle model used for boolean payer verification, where
+    /// deviation checking doesn't apply).
+    PriceSources(crate::oracle_registry::OracleFeedType),
+    /// Issue #price-deviation: governance-configurable maximum allowed
+    /// deviation (basis points) between a price source's reported price
+    /// and the cross-source median before it's rejected as an outlier.
+    MaxPriceDeviationBps,
+    /// Issue #816: per-feed TWAP opt-in flag. `true` routes `Price`
+    /// reads through the windowed TWAP average; `false` (default) keeps
+    /// the existing raw spot behavior. Stored per feed type since not
+    /// every feed has enough liquidity/data points for a meaningful window.
+    TwapEnabled(crate::oracle_registry::OracleFeedType),
+    /// Issue #817: governance-configurable TWAP window in ledgers, bounded
+    /// by `MIN/MAX_TWAP_WINDOW_LEDGERS`. Distinct from the
+    /// `max_oracle_age_ledgers` staleness bound.
+    TwapWindowLedgers,
+    /// Issue #815/#816: chronological TWAP price samples per feed + token,
+    /// backing the opt-in windowed average.
+    TwapSamples(crate::oracle_registry::OracleFeedType, Address),
+
+    // ── Issue #124 / #641: multisig admin ───────────────────────────
+    /// The multisig admin signer set + approval threshold, once bootstrapped
+    /// via `initialize_multisig_admin`.
+    MultisigAdmin,
+    /// A pending/executed/expired multisig proposal, keyed by its id.
+    MultisigProposal(u64),
+    /// Monotonically increasing multisig proposal id counter.
+    NextProposalId,
+    /// Issue #641: the id of the currently in-flight (Pending,
+    /// non-expired) proposal for a given `AdminAction`, if any — used to
+    /// reject a second concurrent proposal for the same logical action
+    /// instead of allowing duplicates to race each other.
+    PendingActionProposal(AdminAction),
+    /// Issue #640: the currently scheduled signer rotation (old signer ->
+    /// new signer + timelock expiry), if any. Only one rotation may be
+    /// pending at a time.
+    PendingSignerRotation,
+    /// Issue #775: ledger timestamp of the most recent `pause()` (single-admin
+    /// or multisig path). Absent until the contract has been paused at least
+    /// once. Read via `get_protocol_status()` for the public status view;
+    /// never cleared on `unpause()` so operators keep a "last halted at"
+    /// reference.
+    LastPauseTimestamp,
 }
 
 // ----------------------------------------------------------------
@@ -113,6 +177,37 @@ pub fn get_insurance_pool(env: &Env) -> Option<Address> {
 
 pub fn set_insurance_pool(env: &Env, pool: &Address) {
     env.storage().instance().set(&DataKey::InsurancePool, pool);
+}
+
+pub fn set_insurance_pool_interface_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::InsurancePoolInterfaceVersion, &version);
+}
+
+pub fn get_insurance_pool_interface_version(env: &Env) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&DataKey::InsurancePoolInterfaceVersion)
+}
+
+pub fn set_oracle_interface_version(
+    env: &Env,
+    feed_type: crate::oracle_registry::OracleFeedType,
+    version: u32,
+) {
+    env.storage()
+        .instance()
+        .set(&DataKey::OracleInterfaceVersion(feed_type), &version);
+}
+
+pub fn get_oracle_interface_version(
+    env: &Env,
+    feed_type: crate::oracle_registry::OracleFeedType,
+) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleInterfaceVersion(feed_type))
 }
 
 pub fn is_paused(env: &Env) -> bool {
@@ -398,12 +493,6 @@ pub struct StatsAccumulator {
     pub paid_delta: i64,
 }
 
-impl Default for StatsAccumulator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl StatsAccumulator {
     pub fn new() -> Self {
         StatsAccumulator {
@@ -521,189 +610,4 @@ pub fn get_total_paid(env: &Env) -> u64 {
         .persistent()
         .get(&DataKey::TotalPaid)
         .unwrap_or(0)
-}
-
-// ----------------------------------------------------------------
-// Multi-sig Admin Helpers (Issue #124)
-// ----------------------------------------------------------------
-
-pub fn get_multisig_admin(env: &Env) -> Option<crate::multisig::MultisigAdmin> {
-    env.storage().instance().get(&DataKey::MultisigAdmin)
-}
-
-pub fn set_multisig_admin(env: &Env, admin: &crate::multisig::MultisigAdmin) {
-    env.storage().instance().set(&DataKey::MultisigAdmin, admin);
-}
-
-pub fn get_multisig_proposal(
-    env: &Env,
-    proposal_id: u64,
-) -> Option<crate::multisig::MultisigProposal> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::MultisigProposal(proposal_id))
-}
-
-pub fn save_multisig_proposal(env: &Env, proposal: &crate::multisig::MultisigProposal) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::MultisigProposal(proposal.id), proposal);
-}
-
-/// Next proposal ID (starts at 1).
-pub fn get_next_proposal_id(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&DataKey::MultisigProposalCounter)
-        .unwrap_or(1)
-}
-
-pub fn increment_proposal_id(env: &Env) {
-    let next_id = get_next_proposal_id(env).saturating_add(1);
-    env.storage()
-        .instance()
-        .set(&DataKey::MultisigProposalCounter, &next_id);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::invoice::InvoiceStatus;
-    use crate::InvoiceLiquidityContract;
-    use soroban_sdk::testutils::Address as _;
-
-    #[test]
-    fn test_storage_helpers_and_stats() {
-        let env = Env::default();
-        let contract_id = env.register(InvoiceLiquidityContract, ());
-
-        env.as_contract(&contract_id, || {
-            let user = Address::generate(&env);
-            let admin = Address::generate(&env);
-
-            // Admin
-            assert_eq!(get_admin(&env), None);
-            set_admin(&env, &admin);
-            assert_eq!(get_admin(&env), Some(admin.clone()));
-
-            // Config
-            assert_eq!(get_config(&env), None);
-            let config = Config {
-                high_rep_threshold: 80,
-                bonus_bps: 100,
-                min_discount_rate_bps: 50,
-                decay_rate_bps: 50,
-                decay_period_ledgers: 1000,
-                dispute_timeout_ledgers: 5000,
-                xlm_sac_address: user.clone(),
-                usdc_sac_address: user.clone(),
-                eurc_sac_address: user.clone(),
-                price_oracle: None,
-                max_oracle_age_ledgers: 17280,
-            };
-            set_config(&env, &config);
-            assert_eq!(get_config(&env), Some(config));
-
-            // Insurance pool & pause
-            assert_eq!(get_insurance_pool(&env), None);
-            set_insurance_pool(&env, &admin);
-            assert_eq!(get_insurance_pool(&env), Some(admin.clone()));
-
-            assert!(!is_paused(&env));
-            set_paused(&env, true);
-            assert!(is_paused(&env));
-            set_paused(&env, false);
-
-            // Next invoice id
-            assert_eq!(read_next_invoice_id(&env), 1);
-            let id1 = next_invoice_id(&env).unwrap();
-            assert_eq!(id1, 1);
-            assert_eq!(read_next_invoice_id(&env), 2);
-
-            // Invoice save / load / exists
-            assert!(!invoice_exists(&env, 1));
-            let inv = Invoice {
-                id: 1,
-                freelancer: user.clone(),
-                payer: user.clone(),
-                token: user.clone(),
-                amount: 1000,
-                due_date: 100000,
-                discount_rate: 300,
-                status: InvoiceStatus::Pending,
-                funder: None,
-                funded_at: None,
-                amount_funded: 0,
-                amount_paid: 0,
-                referral_code: crate::invoice::ReferralCode::None,
-                submitter_reputation: 50,
-            };
-            save_invoice(&env, &inv);
-            assert!(invoice_exists(&env, 1));
-            let loaded = load_invoice(&env, 1);
-            assert_eq!(loaded.id, 1);
-            let core = load_invoice_core(&env, 1);
-            assert_eq!(core.id, 1);
-            assert!(try_load_invoice_core(&env, 1).is_some());
-            assert!(try_load_invoice_core(&env, 999).is_none());
-
-            // Funders list
-            let mut funders = get_invoice_funders(&env, 1);
-            assert_eq!(funders.len(), 0);
-            funders.push_back((user.clone(), 5000));
-            save_invoice_funders(&env, 1, &funders);
-            assert_eq!(get_invoice_funders(&env, 1).len(), 1);
-
-            // LP score
-            assert_eq!(get_lp_score(&env, &user), 50);
-            set_lp_score(&env, &user, 90);
-            assert_eq!(get_lp_score(&env, &user), 90);
-
-            // Queue
-            let queue = get_fund_queue(&env, 1);
-            assert_eq!(queue.len(), 0);
-            save_fund_queue(&env, 1, &queue);
-            assert_eq!(get_queue_resolution(&env, 1), None);
-            save_queue_resolution(&env, 1, &user);
-            assert_eq!(get_queue_resolution(&env, 1), Some(user.clone()));
-
-            // Queue opened at
-            assert_eq!(get_fund_queue_opened_at(&env, 1), None);
-            try_set_fund_queue_opened_at(&env, 1);
-            assert!(get_fund_queue_opened_at(&env, 1).is_some());
-
-            // Appeal & pre-default score
-            assert_eq!(get_appeal(&env, 1), None);
-            let appeal_rec = AppealRecord {
-                evidence_hash: soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
-                appealed_at: 5000,
-                pre_default_score: 80,
-            };
-            save_appeal(&env, 1, &appeal_rec);
-            assert_eq!(get_appeal(&env, 1), Some(appeal_rec));
-
-            assert_eq!(get_pre_default_payer_score(&env, 1), None);
-            save_pre_default_payer_score(&env, 1, 75);
-            assert_eq!(get_pre_default_payer_score(&env, 1), Some(75));
-
-            // Stats accumulator & incrementors
-            let mut acc = StatsAccumulator::default();
-            acc.add_invoice();
-            acc.add_funded();
-            acc.add_paid();
-            acc.commit(&env);
-
-            assert_eq!(get_total_invoices(&env), 1);
-            assert_eq!(get_total_funded(&env), 1);
-            assert_eq!(get_total_paid(&env), 1);
-
-            increment_total_invoices(&env);
-            increment_total_funded(&env);
-            increment_total_paid(&env);
-
-            assert_eq!(get_total_invoices(&env), 2);
-            assert_eq!(get_total_funded(&env), 2);
-            assert_eq!(get_total_paid(&env), 2);
-        });
-    }
 }

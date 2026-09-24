@@ -68,4 +68,24 @@ describe("iln insurance", () => {
     expect(executeClaim).toHaveBeenCalledWith(CONTRACT, "42", LP);
     vi.restoreAllMocks();
   });
+
+  it("health shows pool solvency metrics", async () => {
+    const fetchHealth = vi.fn().mockResolvedValue({
+      balance: 100000n,
+      enrolledLpCount: 42,
+      estimatedMonthlyClaimRate: 500n,
+      monthsOfCoverage: 200,
+    });
+    const cmd = makeInsuranceCommand(vi.fn(), vi.fn(), vi.fn(), vi.fn(), fetchHealth);
+
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+
+    await cmd.parseAsync(["health", "--contract", CONTRACT], { from: "user" });
+
+    expect(fetchHealth).toHaveBeenCalledWith(CONTRACT);
+    expect(logs.some((l) => l.includes("Pool Balance"))).toBe(true);
+    expect(logs.some((l) => l.includes("Enrolled LPs"))).toBe(true);
+    vi.restoreAllMocks();
+  });
 });

@@ -8,10 +8,14 @@
  *
  * Two modes:
  *
- *   --simulate   (default)  Runs the full migration LOGIC against an in-memory
- *                           model of v1 state — no network, no dependencies.
- *                           Deterministic; used in CI to prove the transform is
- *                           lossless. `npx tsx scripts/migrate-v1-v2.ts` exits 0.
+ *   --simulate   (default)  Runs the full migration LOGIC against an in-memory,
+ *                           mainnet-shaped model of v1 state — hundreds of
+ *                           invoices spanning every lifecycle state, a wide
+ *                           freelancer pool, and explicit boundary-value
+ *                           invoices, not just a handful of fixtures (Issue
+ *                           #652). No network, no dependencies. Deterministic;
+ *                           used in CI to prove the transform is lossless.
+ *                           `npx tsx scripts/migrate-v1-v2.ts` exits 0.
  *
  *   --testnet               Executes the real procedure against Soroban testnet
  *                           using @stellar/stellar-sdk: deploy v1, seed sample
@@ -103,8 +107,28 @@ function verifyMigration(
   }
 }
 
-/** Build a representative spread of v1 state for the simulation. */
-function sampleV1State(): { invoices: InvoiceV1[]; reputation: Record<string, number> } {
+/** Deterministic PRNG (mulberry32) so the mainnet-shaped sample is reproducible in CI. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Build a mainnet-shaped spread of v1 state for the simulation: hundreds of
+ * invoices spanning every lifecycle state, a freelancer pool large enough that
+ * many entries fall outside the reputation table (exercising the default-score
+ * path at scale), and a handful of explicit boundary values (Issue #652 — the
+ * upgrade-path checklist item previously only ran the ~12-fixture sample).
+ */
+function sampleV1State(
+  count = 500
+): { invoices: InvoiceV1[]; reputation: Record<string, number> } {
   const statuses: InvoiceStatus[] = [
     "Pending",
     "Funded",
@@ -113,32 +137,86 @@ function sampleV1State(): { invoices: InvoiceV1[]; reputation: Record<string, nu
     "Expired",
     "Cancelled",
   ];
+  const rand = mulberry32(0xc0ffee);
+  const FREELANCER_POOL = 40;
+  const PAYER_POOL = 60;
+
   const invoices: InvoiceV1[] = [];
-  for (let i = 1; i <= 12; i++) {
+  for (let i = 1; i <= count; i++) {
+    const status = statuses[Math.floor(rand() * statuses.length)];
+    const amount = BigInt(1 + Math.floor(rand() * 999_999)) * 1_000_000n;
+    // Funded/paid amounts stay internally consistent with the invoice's status,
+    // the way real pre-migration ledger state would be.
+    const amount_funded =
+      status === "Pending" || status === "Cancelled" ? 0n : amount;
+    const amount_paid =
+      status === "Paid"
+        ? amount
+        : status === "Defaulted"
+          ? (amount * BigInt(Math.floor(rand() * 60))) / 100n
+          : 0n;
+
     invoices.push({
       id: i,
-      freelancer: `GFREELANCER${i % 3}`,
-      payer: `GPAYER${i % 4}`,
-      amount: BigInt(i) * 1_000_000_0n,
-      due_date: 1_900_000_000 + i * 86_400,
-      discount_rate: 100 + i * 25,
-      status: statuses[i % statuses.length],
-      amount_funded: i % 2 === 0 ? BigInt(i) * 5_000_000n : 0n,
-      amount_paid: i % 5 === 0 ? BigInt(i) * 1_000_000n : 0n,
+      freelancer: `GFREELANCER${i % FREELANCER_POOL}`,
+      payer: `GPAYER${i % PAYER_POOL}`,
+      amount,
+      due_date: 1_700_000_000 + Math.floor(rand() * 60_000_000),
+      discount_rate: Math.floor(rand() * 2500),
+      status,
+      amount_funded,
+      amount_paid,
     });
   }
-  const reputation: Record<string, number> = {
-    GFREELANCER0: 72,
-    GFREELANCER1: 41,
-    // GFREELANCER2 intentionally absent -> exercises the default path.
-  };
+
+  // Explicit boundary values a purely-random sample could miss: minimum unit
+  // amount, a very large (near-whale) amount, and 0%/max discount rates.
+  const nextId = count + 1;
+  invoices.push(
+    {
+      id: nextId,
+      freelancer: `GFREELANCER0`,
+      payer: `GPAYER0`,
+      amount: 1n,
+      due_date: 1_700_000_000,
+      discount_rate: 0,
+      status: "Paid",
+      amount_funded: 1n,
+      amount_paid: 1n,
+    },
+    {
+      id: nextId + 1,
+      freelancer: `GFREELANCER${FREELANCER_POOL - 1}`,
+      payer: `GPAYER${PAYER_POOL - 1}`,
+      amount: 500_000_000_000_000n,
+      due_date: 1_900_000_000,
+      discount_rate: 2500,
+      status: "Funded",
+      amount_funded: 500_000_000_000_000n,
+      amount_paid: 0n,
+    }
+  );
+
+  // Reputation is only known for ~60% of the freelancer pool, so a large
+  // fraction of migrated invoices exercise the DEFAULT_REPUTATION fallback —
+  // the case most likely to be under-covered by a small hand-written fixture.
+  const reputation: Record<string, number> = {};
+  for (let f = 0; f < FREELANCER_POOL; f++) {
+    if (f % 5 === 4) continue; // every 5th freelancer intentionally absent
+    reputation[`GFREELANCER${f}`] = 1 + Math.floor(rand() * 99);
+  }
+
   return { invoices, reputation };
 }
 
 async function runSimulate() {
   console.log("🔁 v1 → v2 migration — SIMULATE mode (in-memory, no network)\n");
   const { invoices, reputation } = sampleV1State();
-  console.log(`• Seeded ${invoices.length} v1 invoices across all statuses.`);
+  console.log(
+    `• Seeded ${invoices.length} v1 invoices across all statuses (mainnet-shaped: ` +
+      `${Object.keys(reputation).length}/${new Set(invoices.map((i) => i.freelancer)).size} ` +
+      `freelancers have a reputation entry, remainder exercise the default-score path).`
+  );
 
   const migrated = invoices.map((v1) => migrateInvoice(v1, reputation));
   console.log(`• Migrated ${migrated.length} invoices to v2 schema.`);

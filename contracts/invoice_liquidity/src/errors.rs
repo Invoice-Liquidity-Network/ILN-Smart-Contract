@@ -64,19 +64,28 @@ pub enum ContractError {
     /// attacks where an attacker races to resolve the queue immediately after a
     /// high-reputation LP joins (Issue #MEV-1).
     QueueNotMature = 39,
-    // ── Issue #124: Multi-sig Admin ───────────────────────────────
-    /// Caller is not an authorized multisig signer.
-    NotAuthorizedSigner = 40,
-    /// Proposal does not exist.
-    ProposalNotFound = 41,
-    /// Signer has already approved this proposal.
-    AlreadySigned = 42,
-    /// Proposal has expired and cannot be signed or executed.
-    ProposalExpired = 43,
-    /// Threshold of signatures has not been reached.
-    ThresholdNotReached = 44,
-    /// Proposal has already been executed.
-    ProposalAlreadyExecuted = 45,
-    /// Invalid multisig configuration (e.g., threshold > signer count).
-    InvalidMultisigConfig = 46,
+    /// Cross-contract dependency reported an incompatible interface version
+    /// (or the version query failed) during configuration.
+    IncompatibleInterfaceVersion = 40,
+    /// Issue #circuit-breaker: every oracle in the priority chain for this
+    /// feed type + token is circuit-tripped (or absent after excluding a
+    /// tripped one) — oracle-gated funding must be rejected rather than
+    /// silently proceeding as if no oracle were configured.
+    OracleCircuitOpen = 41,
+    /// Issue #price-deviation: no price source is registered for the
+    /// requested feed type, or every registered source failed to respond.
+    NoPriceSource = 42,
+    /// Issue #price-deviation: every registered price source's report
+    /// deviated beyond the configured threshold from every other — no
+    /// source survived to produce a validated price.
+    AllPriceSourcesRejected = 43,
+    /// Issue #655: invoice `amount` exceeds the governance-configured
+    /// staged-rollout per-invoice cap.
+    MaxInvoiceAmountExceeded = 44,
+    /// Issue #655: funding this amount would push the token's cumulative
+    /// funded volume past the governance-configured staged-rollout cap.
+    GlobalVolumeCapExceeded = 45,
+    /// Issue #817: requested TWAP window is outside the governance-bounded
+    /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` range.
+    InvalidTwapWindow = 46,
 }

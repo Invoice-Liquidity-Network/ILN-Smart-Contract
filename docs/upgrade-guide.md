@@ -709,6 +709,23 @@ re-written with the new fields populated (defaulted) or they will fail to decode
 under v2. The migration is automated and verified by
 [`scripts/migrate-v1-v2.ts`](../scripts/migrate-v1-v2.ts).
 
+### End-to-end test against mainnet-shaped state (Issue #652)
+
+`--simulate` no longer exercises a handful of hand-written fixtures — it builds a
+mainnet-shaped pre-migration dataset: 500 deterministically generated invoices
+spread across all six lifecycle states, plus explicit boundary-value invoices
+(minimum unit amount, a near-whale amount, 0%/max discount rate). Funded/paid
+amounts are kept internally consistent with each invoice's status, the way real
+ledger state would be. The freelancer pool is large enough (40 addresses) that
+roughly a fifth of invoices belong to a freelancer with no reputation entry,
+so the `DEFAULT_REPUTATION` fallback path is exercised at scale, not just for
+one fixture row. `verifyMigration()` then checks losslessness across the full
+set, not a sample.
+
+The generator (`sampleV1State()` in `scripts/migrate-v1-v2.ts`) uses a seeded
+PRNG (`mulberry32`), so the dataset — and therefore CI's pass/fail outcome — is
+reproducible across runs.
+
 ### The lossless transform
 
 The single source of truth is the pure `migrateInvoice()` function:

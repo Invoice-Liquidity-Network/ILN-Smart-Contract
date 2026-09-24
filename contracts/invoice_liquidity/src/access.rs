@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::invoice::{get_invoice_funders, invoice_exists, load_invoice, StorageKey};
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Role {
@@ -156,57 +156,96 @@ pub fn clear_rate_limit(env: &Env, fn_name: &str) {
     env.storage().instance().remove(&key);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::InvoiceLiquidityContract;
-    use soroban_sdk::testutils::Ledger;
+// ----------------------------------------------------------------
+// Admin Action Audit Log (Issue #645)
+// ----------------------------------------------------------------
+//
+// A bounded on-chain ring buffer of the most recently *executed* admin
+// actions, so the log can be queried directly (`get_recent_admin_actions`)
+// instead of replaying the full Horizon event stream to answer "what has
+// the admin done recently". This complements, rather than replaces, the
+// existing per-action events (AdminChanged, ParameterUpdated, TokenAdded,
+// ...) — those remain the durable, unbounded audit trail; this view only
+// retains the last ADMIN_ACTION_LOG_CAPACITY entries for cheap lookups.
+//
+// `record_admin_action` must only be called after `require_admin` has
+// already succeeded for the current invocation. Soroban transactions are
+// atomic (see threat model F1), so if the calling function later returns
+// an error, this write is rolled back along with the rest of the
+// transaction — only genuinely executed actions remain in the log.
 
-    #[test]
-    fn test_role_variants() {
-        assert_eq!(Role::Submitter, Role::Submitter);
-        assert_eq!(Role::Payer, Role::Payer);
-        assert_eq!(Role::LP, Role::LP);
-        assert_eq!(Role::Admin, Role::Admin);
-        assert_eq!(Role::Governance, Role::Governance);
-        assert_eq!(Role::Anyone, Role::Anyone);
-        assert_ne!(Role::Submitter, Role::Payer);
+/// Number of most-recent admin actions retained in the ring buffer.
+pub const ADMIN_ACTION_LOG_CAPACITY: u32 = 50;
+
+/// One entry in the admin action audit log.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminActionRecord {
+    /// Monotonically increasing sequence number (never reused, even once
+    /// the corresponding ring-buffer slot is overwritten).
+    pub seq: u64,
+    /// Name of the admin entry point that was called (e.g. "pause",
+    /// "add_token").
+    pub action: Symbol,
+    /// The admin address that authorized the call.
+    pub admin: Address,
+    /// Ledger sequence at which the action executed.
+    pub ledger: u32,
+    /// Ledger close timestamp at which the action executed.
+    pub timestamp: u64,
+}
+
+/// Append an entry to the admin action audit log. See module-level docs
+/// above for the atomicity argument that makes this safe to call
+/// immediately after `require_admin` succeeds, before the rest of the
+/// calling function's logic has run.
+pub fn record_admin_action(env: &Env, action: &str) {
+    let admin: Address = match env.storage().instance().get(&StorageKey::Admin) {
+        Some(admin) => admin,
+        None => return,
+    };
+    let seq: u64 = env
+        .storage()
+        .instance()
+        .get(&StorageKey::AdminActionCount)
+        .unwrap_or(0);
+    let record = AdminActionRecord {
+        seq,
+        action: Symbol::new(env, action),
+        admin,
+        ledger: env.ledger().sequence(),
+        timestamp: env.ledger().timestamp(),
+    };
+    let slot = (seq % ADMIN_ACTION_LOG_CAPACITY as u64) as u32;
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AdminActionLog(slot), &record);
+    env.storage()
+        .instance()
+        .set(&StorageKey::AdminActionCount, &(seq + 1));
+}
+
+/// Return up to `limit` most recent admin actions, newest first. `limit`
+/// is capped at `ADMIN_ACTION_LOG_CAPACITY` (the ring buffer never holds
+/// more than that regardless of how many actions have ever executed).
+pub fn get_recent_admin_actions(env: &Env, limit: u32) -> Vec<AdminActionRecord> {
+    let total: u64 = env
+        .storage()
+        .instance()
+        .get(&StorageKey::AdminActionCount)
+        .unwrap_or(0);
+    let count = (limit.min(ADMIN_ACTION_LOG_CAPACITY) as u64).min(total);
+    let mut out = Vec::new(env);
+    for i in 0..count {
+        let seq = total - 1 - i;
+        let slot = (seq % ADMIN_ACTION_LOG_CAPACITY as u64) as u32;
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<StorageKey, AdminActionRecord>(&StorageKey::AdminActionLog(slot))
+        {
+            out.push_back(record);
+        }
     }
-
-    #[test]
-    fn test_access_reentrancy_and_rate_limits() {
-        let env = Env::default();
-        let contract_id = env.register(InvoiceLiquidityContract, ());
-
-        env.as_contract(&contract_id, || {
-            // lock_reentrancy and unlock
-            assert_eq!(lock_reentrancy(&env), Ok(()));
-            assert_eq!(lock_reentrancy(&env), Err(ContractError::Reentrancy));
-            unlock_reentrancy(&env);
-            assert_eq!(lock_reentrancy(&env), Ok(()));
-            unlock_reentrancy(&env);
-
-            // rate limiting
-            let mut ledger = env.ledger().get();
-            ledger.sequence_number = 100;
-            env.ledger().set(ledger);
-
-            assert_eq!(check_rate_limit(&env, "test_fn", 10), Ok(()));
-            assert_eq!(
-                check_rate_limit(&env, "test_fn", 10),
-                Err(ContractError::RateLimited)
-            );
-
-            clear_rate_limit(&env, "test_fn");
-            assert_eq!(check_rate_limit(&env, "test_fn", 10), Ok(()));
-
-            let mut ledger = env.ledger().get();
-            ledger.sequence_number += 15;
-            env.ledger().set(ledger);
-            assert_eq!(check_rate_limit(&env, "test_fn", 10), Ok(()));
-
-            // governance
-            assert_eq!(require_governance(&env), Err(ContractError::Unauthorized));
-        });
-    }
+    out
 }

@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, BytesN, Env,
 };
 
 // ----------------------------------------------------------------
@@ -462,7 +462,7 @@ fn test_update_invoice_emits_updated_event() {
 
     let events = t.env.events().all();
     assert!(
-        !events.events().is_empty(),
+        events.events().len() > 0,
         "InvoiceUpdated event should have been emitted"
     );
 }
@@ -1458,16 +1458,13 @@ fn test_upgrade_emits_correct_event() {
         crate::storage::get_admin(&t.env).unwrap()
     });
 
-    let _expected_event = crate::events::ContractUpgraded {
+    let expected_event = crate::events::ContractUpgraded {
         admin,
         new_wasm_hash: wasm_hash,
         timestamp: t.env.ledger().timestamp(),
     };
 
-    assert!(
-        !events.events().is_empty(),
-        "ContractUpgraded event should be emitted"
-    );
+    assert!(events.events().len() > 0, "ContractUpgraded event should be emitted");
 }
 
 #[test]

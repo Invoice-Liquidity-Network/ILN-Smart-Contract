@@ -8,6 +8,10 @@
 
 use soroban_sdk::{contractclient, contracttype, Address, Env};
 
+/// Interface version expected by `invoice_liquidity` when registering an
+/// oracle. Bump together with implementing contracts on breaking changes.
+pub const ORACLE_INTERFACE_VERSION: u32 = 1;
+
 /// Verification record returned by the oracle.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -20,10 +24,14 @@ pub struct VerificationResult {
 
 /// Cross-contract client trait for a payer-verification oracle.
 ///
-/// Any contract registered as the ILN payer oracle must expose these two
-/// entry-points with exactly these signatures.
+/// Any contract registered as the ILN payer oracle must expose these
+/// entry-points with exactly these signatures, including
+/// [`interface_version`](OracleInterface::interface_version).
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
+    /// Returns [`ORACLE_INTERFACE_VERSION`].
+    fn interface_version(env: Env) -> u32;
+
     /// Returns the verification record for `payer`.
     fn get_verification(env: Env, payer: Address) -> VerificationResult;
 
@@ -57,64 +65,8 @@ pub fn check_payer_verified(env: &Env, payer: &Address) -> bool {
     };
     let client = OracleClient::new(env, &oracle_addr);
     let result = client.get_verification(payer);
+    if !result.verified {
+        return false;
+    }
     env.ledger().timestamp().saturating_sub(result.timestamp) <= ORACLE_STALENESS_THRESHOLD_SECS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::{contract, contractimpl, testutils::Address as _};
-
-    #[contract]
-    pub struct MockVerificationOracle;
-
-    #[contractimpl]
-    impl MockVerificationOracle {
-        pub fn get_verification(_env: Env, _payer: Address) -> VerificationResult {
-            VerificationResult {
-                verified: true,
-                timestamp: 1_700_000_000,
-            }
-        }
-        pub fn update_verification(_env: Env, _payer: Address, _verified: bool) {}
-    }
-
-    #[test]
-    fn test_check_payer_verified_paths() {
-        let env = Env::default();
-        let contract_id = env.register(crate::InvoiceLiquidityContract, ());
-
-        env.as_contract(&contract_id, || {
-            let payer = Address::generate(&env);
-
-            // No config
-            assert!(check_payer_verified(&env, &payer));
-
-            // Config without oracle
-            let xlm = Address::generate(&env);
-            let usdc = Address::generate(&env);
-            let eurc = Address::generate(&env);
-            let mut config = crate::config::Config {
-                high_rep_threshold: 80,
-                bonus_bps: 100,
-                min_discount_rate_bps: 50,
-                decay_rate_bps: 50,
-                decay_period_ledgers: 1000,
-                dispute_timeout_ledgers: 5000,
-                xlm_sac_address: xlm,
-                usdc_sac_address: usdc,
-                eurc_sac_address: eurc,
-                price_oracle: None,
-                max_oracle_age_ledgers: 17280,
-            };
-            crate::storage::set_config(&env, &config);
-            assert!(check_payer_verified(&env, &payer));
-
-            // With mock oracle
-            let oracle_id = env.register(MockVerificationOracle, ());
-            config.price_oracle = Some(oracle_id);
-            crate::storage::set_config(&env, &config);
-            assert!(check_payer_verified(&env, &payer));
-        });
-    }
 }

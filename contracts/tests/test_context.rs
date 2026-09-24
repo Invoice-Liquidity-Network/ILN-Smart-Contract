@@ -8,11 +8,10 @@ use soroban_sdk::{
 };
 
 const DEFAULT_INVOICE_AMOUNT: i128 = 1_000_000_000;
-const _DEFAULT_DISCOUNT_RATE: u32 = 300;
+const DEFAULT_DISCOUNT_RATE: u32 = 300;
 const DEFAULT_DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
 const DEFAULT_LEDGER_TIMESTAMP: u64 = 1_700_000_000;
 
-#[allow(dead_code)]
 pub struct TestContext {
     pub env: Env,
     pub contract: InvoiceLiquidityContractClient<'static>,
@@ -24,7 +23,6 @@ pub struct TestContext {
     pub payer: Address,
 }
 
-#[allow(dead_code)]
 impl TestContext {
     pub fn new() -> Self {
         let env = Env::default();

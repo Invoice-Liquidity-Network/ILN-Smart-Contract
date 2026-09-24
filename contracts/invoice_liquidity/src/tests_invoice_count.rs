@@ -19,12 +19,11 @@ const INVOICE_AMOUNT: i128 = 1_000_000_000;
 const DISCOUNT_RATE: u32 = 300;
 const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
 
-#[allow(dead_code)]
 struct CountTestEnv {
     env: Env,
     contract: InvoiceLiquidityContractClient<'static>,
     token_addr: Address,
-    _admin: Address,
+    admin: Address,
     freelancer: Address,
     payer: Address,
 }
@@ -61,7 +60,7 @@ fn setup_count() -> CountTestEnv {
         env,
         contract,
         token_addr: usdc_addr,
-        _admin: usdc_admin,
+        admin: usdc_admin,
         freelancer,
         payer,
     }

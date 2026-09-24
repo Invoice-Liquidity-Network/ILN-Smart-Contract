@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::config::Config;
+use crate::invoice::InvoiceStatus;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
@@ -9,11 +10,10 @@ use soroban_sdk::{
 };
 use std::format;
 
-const _INVOICE_AMOUNT: i128 = 100_000_000;
-const _DISCOUNT_RATE: u32 = 300;
-const _DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
+const INVOICE_AMOUNT: i128 = 100_000_000;
+const DISCOUNT_RATE: u32 = 300;
+const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
 
-#[allow(dead_code)]
 struct TestEnv {
     env: Env,
     contract: InvoiceLiquidityContractClient<'static>,
@@ -62,14 +62,14 @@ fn setup() -> TestEnv {
     }
 }
 
-fn _submit_standard_invoice(t: &TestEnv) -> u64 {
-    let due_date = t.env.ledger().timestamp() + _DUE_DATE_OFFSET;
+fn submit_standard_invoice(t: &TestEnv) -> u64 {
+    let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
     t.contract.submit_invoice(
         &t.freelancer,
         &t.payer,
-        &_INVOICE_AMOUNT,
+        &INVOICE_AMOUNT,
         &due_date,
-        &_DISCOUNT_RATE,
+        &DISCOUNT_RATE,
         &t.token_address,
         &ReferralCode::None,
     )
@@ -209,7 +209,7 @@ fn test_get_payer_score_emits_reputation_updated_event() {
     let events = t.env.events().all();
     let reputation_event_exists = events
         .events()
-        .iter()
+        .into_iter()
         .any(|e| format!("{:?}", e).contains("reputation_updated"));
     assert!(
         reputation_event_exists,

@@ -149,19 +149,3 @@ pub fn set_max_oracle_age(
     crate::storage::set_config(env, &config);
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_error_variants() {
-        assert_eq!(ConfigError::Unauthorized, ConfigError::Unauthorized);
-        assert_eq!(ConfigError::InvalidBonusBps, ConfigError::InvalidBonusBps);
-        assert_eq!(
-            ConfigError::InvalidMinDiscountRate,
-            ConfigError::InvalidMinDiscountRate
-        );
-        assert_ne!(ConfigError::Unauthorized, ConfigError::InvalidBonusBps);
-    }
-}

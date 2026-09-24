@@ -1556,6 +1556,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "InsurancePoolInterfaceVersion"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "MaxDiscountRate"
                           }
                         ]

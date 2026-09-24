@@ -98,6 +98,7 @@ export {
   getTokenAddress,
   calculatePremiumRate,
   getTieredCoverage,
+  getPoolHealth,
   InsuranceContractError,
 } from "./methods/insurance.js";
 export type { InsurancePoolInfo } from "@invoice-liquidity/types";
