@@ -1,5 +1,7 @@
 # SDK Integration Guide
 
+> External protocol partners: see also [`integration-partner-onboarding.md`](integration-partner-onboarding.md) for stable surfaces, upgrade expectations, and the mainnet go-live checklist.
+
 A single, end-to-end integration guide for third-party builders working with the
 Invoice Liquidity Network (ILN) on Stellar/Soroban. Every flow below uses the
 official [`@iln/sdk`](../sdk/README.md) package and is exercised against the

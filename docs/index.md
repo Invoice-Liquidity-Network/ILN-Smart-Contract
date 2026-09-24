@@ -39,6 +39,8 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Mainnet Launch Notes](mainnet-launch-notes.md) | User-facing testnet-to-mainnet changes, known limitations, and migration notes. |
 | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) | Dry-run-verified procedure for deploying, verifying, and publishing mainnet contracts. |
 | [Pre-Audit Checklist](pre-audit-checklist.md) | Audit preparation tasks. |
+| [Formal Verification (lifecycle)](formal-verification.md) | Invoice/governance invariants. |
+| [Formal Verification (cross-contract)](formal-verification-cross-contract.md) | ILN × distribution × insurance system invariants. |
 
 ## Integrations
 
@@ -50,6 +52,17 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Oracle Integration](oracle-integration.md) | Deploying and registering compatible oracles. |
 | [Oracle Provider Vetting](oracle-provider-vetting.md) | Governance vetting criteria and proposal template for approving oracle providers. |
 | [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model of oracle manipulation at current parameters, with recommendations. |
+
+
+## Community, SCF, And Partners
+
+| Document | Description |
+|----------|-------------|
+| [Integration Partner Onboarding](integration-partner-onboarding.md) | Stable surfaces, upgrade expectations, support path, and mainnet go-live checklist for external integrators. |
+| [Public Audit Findings Summary](audit-findings-summary.md) | Template for publishing audit finding ID, severity, public excerpt, status, and remediation links. |
+| [SCF Grant Milestone Tracker](scf-grant-milestone-tracker.md) | Maps this batch’s issues to SCF-style deliverables via labels (no duplicated status). |
+| [Support Channels](support-channels.md) | Where to report bugs, ask questions, and disclose vulnerabilities. |
+| [SCF Technical Narrative](scf-technical-narrative.md) | Protocol overview and hardening summary for Community Fund reviewers. |
 
 ## Project Process
 

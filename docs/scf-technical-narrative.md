@@ -183,6 +183,9 @@ and emergency pause capability is available.
 ## Links
 
 - [Architecture](Architecture.md) — full system design
+- [SCF Grant Milestone Tracker](scf-grant-milestone-tracker.md) — issue→deliverable map for this batch (label-linked)
+- [Integration Partner Onboarding](integration-partner-onboarding.md) — external integrator go-live path
+- [Audit Findings Summary](audit-findings-summary.md) — public findings template
 - [Audit Readiness Dashboard](audit-readiness-dashboard.md) — audit tracking
 - [Threat Model](threat-model.md) — security assumptions
 - [Mainnet Launch Checklist](mainnet-launch-checklist.md) — launch readiness
