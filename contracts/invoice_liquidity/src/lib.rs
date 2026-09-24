@@ -2675,6 +2675,14 @@ pub fn transfer_lp_position(
             return Err(ContractError::NotFunded);
         }
 
+        // Issue #841: hoist the primary-funder lookup above all state writes
+        // and external transfers so the typed error path fires before any side
+        // effect, not after. The invariant (funders is non-empty, checked
+        // above) makes the .ok_or branch unreachable under normal execution.
+        let (primary_lp, primary_lp_funded) = funders
+            .get(0)
+            .ok_or(ContractError::FunderIndexOutOfBounds)?;
+
         let token = token_client(&env, &invoice.token);
         let contract_address = env.current_contract_address();
 
@@ -2734,11 +2742,10 @@ pub fn transfer_lp_position(
 
         let distribute_amount = invoice.amount.saturating_sub(protocol_fee);
 
-        // Legacy compatibility: use first LP for event emission
-        let primary_lp = funders.get(0).unwrap().0.clone();
-
-        // Total amount funded by primary LP
-        let primary_lp_funded = funders.get(0).unwrap().1;
+        // primary_lp / primary_lp_funded were hoisted above the state
+        // writes at the top of this function (Issue #841). The clone here
+        // preserves the previous ownership shape.
+        let primary_lp = primary_lp.clone();
 
         // LP payout after settlement distribution. A genuine multiplication
         // overflow here must surface as an error, not silently collapse to a
@@ -2766,9 +2773,15 @@ pub fn transfer_lp_position(
         save_invoice(&env, &invoice);
         crate::nft::sync_nft_state(&env, invoice_id)?;
 
-        // Distribute proportionally to funders
+        // Distribute proportionally to funders. Loop bound is 0..funders.len()
+        // so the .ok_or branch is unreachable under normal execution; the
+        // typed error only fires if the underlying invariant is broken,
+        // in which case the Soroban runtime reverts this entire invocation
+        // and rolls back the preceding save_invoice.
         for i in 0..funders.len() {
-            let (funder_addr, fund_amt) = funders.get(i).unwrap();
+            let (funder_addr, fund_amt) = funders
+                .get(i)
+                .ok_or(ContractError::FunderIndexOutOfBounds)?;
             let funder_share =
                 distribute_amount.checked_mul(fund_amt).unwrap_or(0) / invoice.amount;
             if funder_share > 0 {
@@ -3277,11 +3290,17 @@ pub fn resolve_dispute(
                 let token = token_client(&env, &invoice.token);
                 let contract_address = env.current_contract_address();
 
-                // Refund LPs if it was funded.
+                // Refund LPs if it was funded. Loop bound is 0..funders.len()
+                // so the .ok_or branch is unreachable under normal execution;
+                // the typed error only fires if the underlying invariant is
+                // broken, in which case the Soroban runtime reverts this
+                // invocation and rolls back the preceding save_invoice.
                 let funders = get_invoice_funders(&env, invoice_id);
                 if !funders.is_empty() {
                     for i in 0..funders.len() {
-                        let (funder_addr, fund_amt) = funders.get(i).unwrap();
+                        let (funder_addr, fund_amt) = funders
+                            .get(i)
+                            .ok_or(ContractError::FunderIndexOutOfBounds)?;
                         let fund_discount = fund_amt
                             .checked_mul(discount_rate_as_i128(invoice.discount_rate))
                             .unwrap_or(0)
