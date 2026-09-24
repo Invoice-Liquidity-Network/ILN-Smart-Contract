@@ -468,6 +468,87 @@ Emitted when the pool processes an insurance claim for a defaulted invoice, comp
 
 ---
 
+### `SolvencyCircuitTripped`
+
+Emitted when a claim payout leaves the pool's reserve ratio at or below the governance-configured minimum (`MinReserveRatioBps`), automatically tripping the solvency circuit breaker and pausing new claim payouts (Issue #826).
+
+**Trigger:** A claim on the insurance pool pays out its final bound payout and the resulting reserve ratio (`(balance + backstop) / coverage * 10_000`) is at or below the threshold. The tripping claim completes first because the sticky flag write must land on an invocation that returns `Ok` (in Soroban, a write followed by a panic in the same invocation is rolled back). Once tripped, payouts stay paused until governance calls `reset_solvency_circuit()`. Enrollments and premium deposits continue unaffected.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ratioBps` | `string` | Reserve ratio (bps) at the time of the trip (`(balance + backstop) / coverage * 10_000`) |
+| `reserveStroops` | `string` | Total claimable reserve (liquid balance + backstop) observed at the trip |
+
+**Example:**
+```json
+{
+  "type": "SolvencyCircuitTripped",
+  "contractId": "CAINSURANCE...",
+  "ledger": 54600,
+  "ledgerClosedAt": "2026-06-28T13:00:00Z",
+  "txHash": "d4e5f6a1b2c3...",
+  "ratioBps": "300",
+  "reserveStroops": "300000"
+}
+```
+
+---
+
+### `SolvencyCircuitReset`
+
+Emitted when governance resumes claim payouts after a solvency circuit trip (Issue #826).
+
+**Trigger:** Admin calls `reset_solvency_circuit()` on the insurance pool contract.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ratioBps` | `string` | Reserve ratio (bps) at the moment of the reset |
+| `reserveStroops` | `string` | Total claimable reserve (liquid balance + backstop) at the reset |
+
+---
+
+### `BackstopTopUp`
+
+Emitted when capital is added to the protocol's backstop fund — either a governance-led top-up or the automatic share of a premium deposit (when `BackstopFundingBps > 0`) (Issue #827).
+
+**Trigger:** Admin calls `top_up_backstop()`, or an LP calls `deposit_premium()` with backstop funding enabled.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `from` | `string` | G-address of the funding source |
+| `amountStroops` | `string` | Amount credited to the backstop in stroops |
+| `backstopBalanceStroops` | `string` | New backstop balance after the credit |
+
+---
+
+### `ClaimEvidence`
+
+Emitted when an evidence hash is attached to a claim's invoice (Issue #828).
+
+**Trigger:** Admin calls `submit_claim_evidence()` on the insurance pool contract.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `invoiceId` | `string` | ID of the defaulted invoice the evidence backs |
+| `evidenceHash` | `string` | 32-byte digest of the off-chain evidence (e.g. IPFS CID / document hash) |
+| `submittedAt` | `string` | Ledger timestamp of submission |
+
+---
+
+### `PairDefaultRecorded`
+
+Emitted when a confirmed default is recorded for a specific (LP, payer) pair, surfacing data for the off-chain collusion detector (Issue #829).
+
+**Trigger:** Admin calls `record_pair_default()` on the insurance pool contract.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lp` | `string` | G-address of the liquidity provider |
+| `payer` | `string` | G-address of the defaulting payer |
+| `pairCount` | `string` | Running default count for this (LP, payer) pair |
+
+---
+
 ## Governance events
 
 ### `AdminChanged`
@@ -545,5 +626,10 @@ Emitted when an admin changes a contract configuration parameter.
 | `Enrolled` | Insurance | ✓ | ✓ | ✓ |
 | `Premium` | Insurance | ✓ | ✓ | ✓ |
 | `Claimed` | Insurance | ✓ | ✓ | ✓ |
+| `SolvencyCircuitTripped` | Insurance | ✓ | ✓ | ✓ |
+| `SolvencyCircuitReset` | Insurance | ✓ | ✓ | ✓ |
+| `BackstopTopUp` | Insurance | ✓ | ✓ | ✓ |
+| `ClaimEvidence` | Insurance | ✓ | ✓ | ✓ |
+| `PairDefaultRecorded` | Insurance | ✓ | ✓ | ✓ |
 | `AdminChanged` | Governance | ✓ | ✓ | ✓ |
 | `ParameterUpdated` | Governance | ✓ | ✓ | ✓ |

@@ -18,11 +18,10 @@ struct MockToken {
     admin_client: StellarAssetClient<'static>,
 }
 
-#[allow(dead_code)]
 struct LifecycleTestEnv {
     env: Env,
     contract: InvoiceLiquidityContractClient<'static>,
-    _admin: Address,
+    admin: Address,
     freelancer: Address,
     payer: Address,
     lp: Address,
@@ -81,7 +80,7 @@ fn setup() -> LifecycleTestEnv {
     LifecycleTestEnv {
         env,
         contract,
-        _admin: admin,
+        admin,
         freelancer,
         payer,
         lp,
@@ -93,7 +92,7 @@ fn due_date(env: &LifecycleTestEnv) -> u64 {
     env.env.ledger().timestamp() + DUE_DATE_OFFSET
 }
 
-fn _expected_discount(amount: i128) -> i128 {
+fn expected_discount(amount: i128) -> i128 {
     amount * DISCOUNT_RATE as i128 / 10_000
 }
 
@@ -291,7 +290,7 @@ fn test_dispute_upheld_with_partial_payment_refunds_payer() {
     let events = env.env.events().all();
     let refund_event_exists = events
         .events()
-        .iter()
+        .into_iter()
         .any(|e| format!("{:?}", e).contains("dispute_upheld_payer_refund"));
     assert!(
         refund_event_exists,
@@ -359,7 +358,7 @@ fn test_dispute_upheld_with_zero_payment_no_payer_refund() {
     let events = env.env.events().all();
     let refund_event_exists = events
         .events()
-        .iter()
+        .into_iter()
         .any(|e| format!("{:?}", e).contains("dispute_upheld_payer_refund"));
     assert!(
         !refund_event_exists,

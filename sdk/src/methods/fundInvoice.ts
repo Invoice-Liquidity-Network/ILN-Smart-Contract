@@ -187,9 +187,7 @@ async function verifyOracle(
  * @param lpKeypair           - Keypair of the liquidity provider (signs all txs)
  * @param invoiceId           - ID of the invoice to fund
  * @param options             - Optional configuration and progress callbacks:
- *   - `requireOracleVerification` — reject if the contract has no price oracle;
- *     also forwarded to the contract as the `require_oracle_verification` bool
- *     so the on-chain oracle gate is enforced (Issue #594)
+ *   - `requireOracleVerification` — reject if the contract has no price oracle
  *   - `onApprovalRequired`        — fired before the approve tx is built
  *   - `onApprovalSent`            — fired after the approve tx is submitted
  *   - `onFunded`                  — fired after the fund tx is submitted
@@ -307,18 +305,12 @@ export async function fundInvoice(
   }
 
   // 6. Build the fund_invoice call
-  // Issue #594: the contract's fund_invoice accepts a 4th user argument,
-  // require_oracle_verification: bool. Omitting it caused either an argument
-  // count mismatch (transaction failure) or a silent oracle-verification
-  // bypass (Soroban deserialising the missing bool as false). Forward the
-  // option so the on-chain oracle gate is actually enforced when requested.
   const contract = new Contract(contractAddress);
   const fundOp = contract.call(
     "fund_invoice",
     new Address(lpAddress).toScVal(),
     nativeToScVal(invoiceId, { type: "u64" }),
-    nativeToScVal(invoice.amount, { type: "i128" }),
-    nativeToScVal(requireOracleVerification, { type: "bool" })
+    nativeToScVal(invoice.amount, { type: "i128" })
   );
 
   const fundTx = new TransactionBuilder(makeAccount(sequence), {

@@ -427,88 +427,11 @@ Emitted from `invoice.rs` whenever an address's reputation profile changes.
 ### Invoice NFT lifecycle
 
 Defined in `nft.rs`, emitted alongside the corresponding invoice lifecycle
-events. These events let indexers track invoice-NFT ownership changes (e.g.
-freelancer → LP on funding) and power NFT marketplace features.
+events:
 
-> **Deprecation note:** the current implementation emits these events with the
-deprecated `env.events().publish()` method. The project tracks the migration
-to the `#[contractevent]` macro in [Issue #26](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/26).
-Topic names and payload fields below are the target schemas and will not change
-with the migration.
-
-#### InvoiceNftMinted
-
-Emitted when an invoice NFT is created for a new invoice (`submit_invoice`).
-
-Topics: `["invoice_nft_minted", invoice_id, owner]`
-
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `invoice_id` | `u64` | Invoice the NFT represents |
-| `owner` | `Address` | Initial owner (the freelancer) |
-| `amount` | `i128` | Total invoice amount |
-| `due_date` | `u32` | Invoice due date |
-| `timestamp` | `u64` | Ledger timestamp of minting |
-
-Example payload:
-
-```json
-{
-  "invoice_id": 42,
-  "owner": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5",
-  "amount": 5000000000,
-  "due_date": 1767225600,
-  "timestamp": 1764633600
-}
-```
-
-#### InvoiceNftTransferred
-
-Emitted when an invoice NFT changes owner, e.g. freelancer → LP when the
-invoice is funded (`fund_invoice`).
-
-Topics: `["invoice_nft_transferred", invoice_id, from, to]`
-
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `invoice_id` | `u64` | Invoice the NFT represents |
-| `from` | `Address` | Previous owner |
-| `to` | `Address` | New owner |
-| `timestamp` | `u64` | Ledger timestamp of transfer |
-
-Example payload:
-
-```json
-{
-  "invoice_id": 42,
-  "from": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5",
-  "to": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z6",
-  "timestamp": 1764633605
-}
-```
-
-#### InvoiceNftBurned
-
-Emitted when an invoice NFT is destroyed, i.e. when the invoice is marked
-fully paid (`mark_paid`).
-
-Topics: `["invoice_nft_burned", invoice_id, owner]`
-
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `invoice_id` | `u64` | Invoice the NFT represented |
-| `owner` | `Address` | Owner at burn time (the LP holding the NFT) |
-| `timestamp` | `u64` | Ledger timestamp of burn |
-
-Example payload:
-
-```json
-{
-  "invoice_id": 42,
-  "owner": "GAAAAAAAACGC6W2H7Z2G4QZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z6",
-  "timestamp": 1767225600
-}
-```
+- **InvoiceNftMinted** — on `submit_invoice`: `invoice_id`, `owner`, `amount`, `due_date`, `timestamp`.
+- **InvoiceNftTransferred** — on `fund_invoice` (freelancer → LP): `invoice_id`, `from`, `to`, `timestamp`.
+- **InvoiceNftBurned** — on full `mark_paid`: `invoice_id`, `owner`, `timestamp`.
 
 ---
 
@@ -518,15 +441,23 @@ Example payload:
 | -------- | --------------- |
 | `initialize` | ✅ `init` topic, payload = coverage cap (added by this audit) |
 | `enroll` | ✅ `enrolled` topic |
-| `deposit_premium` | ✅ `premium` topic, payload = amount |
-| `claim` | ✅ `claimed` topic, payload = payout |
+| `deposit_premium` | ✅ `premium` topic, payload = amount; ⚠ secondary `back_top` when `BackstopFundingBps > 0` |
+| `claim` | ✅ `claimed` topic, payload = payout; emits `solv_trip` after a payout that breaches the reserve floor |
 | `propose_coverage_change` | ✅ `cov_prop` topic, payload = (new_coverage, eta) |
 | `execute_coverage_change` | ✅ `cov_exec` topic, payload = new_coverage |
 | `cancel_coverage_change` | ✅ `cov_cncl` topic |
 | `propose_admin_transfer` | ✅ `adm_prop` topic, payload = eta |
 | `execute_admin_transfer` | ✅ `adm_exec` topic, payload = new_admin |
 | `cancel_admin_transfer` | ✅ `adm_cncl` topic |
+| `set_min_reserve_ratio_bps` | ✅ `resv_min` topic, payload = bps |
+| `reset_solvency_circuit` | ✅ `solv_rst` topic, payload = `SolvencyCircuitReset` |
+| `set_backstop_funding_bps` | ✅ `back_bps` topic, payload = bps |
+| `top_up_backstop` | ✅ `back_top` topic (from), payload = `BackstopTopUp` |
+| `submit_claim_evidence` | ✅ `evidence` topic (invoice_id), payload = `ClaimEvidence` |
+| `set_review_window_seconds` | ✅ `rev_wnd` topic, payload = seconds |
+| `record_pair_default` | ✅ `pair_def` topic (lp, payer), payload = `PairDefaultRecorded` |
 | `get_*` / `is_*` | 🔍 read-only views |
+| `gate_solvency_circuit` / `trip_circuit_if_breached` (internal, on claim) | ✅ `solv_trip` topic, payload = `SolvencyCircuitTripped` (once per breach) |
 
 ### PoolInitialized
 
@@ -627,6 +558,101 @@ Topics: `["adm_cncl"]`
 
 The timelock propose/execute/cancel flow is documented in detail in
 [`insurance-pool-design.md`](./insurance-pool-design.md).
+
+### PendingSolvencyBreakerArmed / MinReserveRatioSet
+
+Emitted when governance sets the solvency circuit-breaker threshold (Issue #826).
+
+Topics: `["resv_min"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `bps` | `u32` | Minimum reserve ratio (bps, `0` = disabled) |
+
+### SolvencyCircuitTripped
+
+Emitted once when a payout leaves the pool's reserve ratio at or below the
+configured minimum, tripping the sticky breaker. The tripping claim completes
+its final bound payout first (the flag write must land on a call that returns
+Ok — a write followed by a panic in the same invocation is rolled back in
+Soroban); all subsequent claims are rejected with `SolvencyCircuitOpen`
+until governance resets (Issue #826).
+
+Topics: `["solv_trip"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `ratio_bps` | `u32` | Reserve ratio at trip time |
+| `reserve` | `i128` | Total claimable reserve (balance + backstop) |
+
+### SolvencyCircuitReset
+
+Emitted when governance resumes claim payouts after a trip (Issue #826).
+
+Topics: `["solv_rst"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `ratio_bps` | `u32` | Reserve ratio at reset time |
+| `reserve` | `i128` | Total claimable reserve at reset time |
+
+### BackstopFundingSet
+
+Emitted when governance changes the premium-to-backstop share (Issue #827).
+
+Topics: `["back_bps"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `bps` | `u32` | New backstop funding share (bps) |
+
+### BackstopTopUp
+
+Emitted when capital is added to the backstop (Issue #827) — either an
+explicit `top_up_backstop` or the diverted share of a premium deposit.
+
+Topics: `["back_top", from]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `from` | `Address` | Funding source |
+| `amount` | `i128` | Amount credited to the backstop |
+| `backstop_balance` | `i128` | New backstop balance |
+
+### ClaimEvidenceSubmitted
+
+Emitted when an evidence hash is attached to a claim (Issue #828).
+
+Topics: `["evidence", invoice_id]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Invoice the evidence backs |
+| `evidence_hash` | `BytesN<32>` | 32-byte digest of off-chain evidence |
+| `submitted_at` | `u64` | Ledger timestamp of submission |
+
+### ReviewWindowSet
+
+Emitted when governance changes the review window (Issue #828).
+
+Topics: `["rev_wnd"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `seconds` | `u64` | New review window (seconds, `0` = disabled) |
+
+### PairDefaultRecorded
+
+Emitted when a default is recorded for a specific (lp, payer) pair
+(Issue #829).
+
+Topics: `["pair_def", lp, payer]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `lp` | `Address` | Liquidity provider |
+| `payer` | `Address` | Defaulting payer |
+| `pair_count` | `u32` | Running default count for this pair |
 
 ---
 

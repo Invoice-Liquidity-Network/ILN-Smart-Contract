@@ -1,3 +1,5 @@
+import { PerRecipientRateLimiter } from './rateLimiter.js';
+
 export interface TelegramInvoiceEvent {
   type: 'invoice.submitted' | 'invoice.funded' | 'invoice.paid' | 'invoice.expiring_soon' | 'invoice.disputed';
   invoiceId: number;
@@ -18,7 +20,7 @@ const TOKEN_EMOJI: Record<string, string> = {
 };
 
 function tokenEmoji(token: string): string {
-  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default;
+  return TOKEN_EMOJI[token] ?? TOKEN_EMOJI.default ?? '▫️';
 }
 
 function formatAmount(amount: string, token: string): string {
@@ -74,12 +76,30 @@ export type TelegramHttpClient = (
   body: unknown,
 ) => Promise<{ ok: boolean; status: number }>;
 
+export interface TelegramDeliveryOptions {
+  /**
+   * Per-chat rate limiter. Defaults to a shared instance keyed by
+   * `botToken:chatId`, so one noisy chat cannot starve delivery to other
+   * chats (Issue #728). Inject your own instance in tests to control the
+   * clock.
+   */
+  rateLimiter?: PerRecipientRateLimiter | undefined;
+}
+
+const defaultTelegramRateLimiter = new PerRecipientRateLimiter();
+
 export async function deliverTelegramNotification(
   botToken: string,
   chatId: string,
   event: TelegramInvoiceEvent,
   http: TelegramHttpClient,
+  options: TelegramDeliveryOptions = {},
 ): Promise<{ ok: boolean; status: number }> {
+  const rateLimiter = options.rateLimiter ?? defaultTelegramRateLimiter;
+  if (!rateLimiter.tryConsume(`${botToken}:${chatId}`)) {
+    return { ok: false, status: 429 };
+  }
+
   const text = buildTelegramMessage(event);
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   const payload = {

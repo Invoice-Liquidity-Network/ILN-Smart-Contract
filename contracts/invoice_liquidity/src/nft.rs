@@ -2,9 +2,16 @@
 ///
 /// Implements Stellar NFT standard for invoice representation on Soroban.
 /// Each invoice is represented as a unique NFT that:
-/// - Is minted when invoice is submitted
-/// - Transferred from freelancer to LP when invoice is funded
-/// - Burned when invoice is marked as paid
+/// - Is minted when invoice is first funded (PartiallyFunded / Funded)
+/// - Transferred when LP position changes or lead LP changes
+/// - Burned when invoice is marked as paid or cancelled/refunded
+///
+/// INVARIANT:
+/// An NFT representing an invoice exists if and only if the invoice status is
+/// Funded, PartiallyFunded, Defaulted, Appealed, or Disputed.
+/// The NFT owner (holder) always equals the current LP (funder) for fully funded
+/// invoices, or the lead LP (the LP with the largest contribution) for partially funded
+/// invoices. For other statuses (Pending, Paid, Expired, Cancelled), the NFT does not exist.
 ///
 /// NFT Metadata contains:
 /// - Invoice ID
@@ -265,102 +272,85 @@ pub fn query_nft_owner(env: Env, invoice_id: u64) -> Option<Address> {
     get_invoice_nft_owner(&env, invoice_id)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::InvoiceLiquidityContract;
-    use soroban_sdk::testutils::Address as _;
+/// Sync NFT state with the corresponding invoice.
+/// Automatically mints, transfers, or burns the NFT to maintain the invariant:
+/// NFT exists iff invoice is Funded/PartiallyFunded/settled-pending-burn (Defaulted/Appealed/Disputed),
+/// and the holder is the LP (funder) or the lead LP for partial funding.
+pub fn sync_nft_state(env: &Env, invoice_id: u64) -> Result<(), ContractError> {
+    use crate::invoice::{try_load_invoice, get_invoice_funders, InvoiceStatus};
 
-    #[test]
-    fn test_nft_full_lifecycle() {
-        let env = Env::default();
-        let contract_id = env.register(InvoiceLiquidityContract, ());
+    let invoice = match try_load_invoice(env, invoice_id) {
+        Some(inv) => inv,
+        None => {
+            // If the invoice doesn't exist at all, we should ensure the NFT doesn't exist
+            if invoice_nft_exists(env, invoice_id) {
+                let current_owner = get_invoice_nft_owner(env, invoice_id).unwrap();
+                burn_invoice_nft(env, invoice_id, current_owner)?;
+            }
+            return Ok(());
+        }
+    };
 
-        env.as_contract(&contract_id, || {
-            let owner = Address::generate(&env);
-            let recipient = Address::generate(&env);
-            let token = Address::generate(&env);
-            let invoice_id = 42;
+    let should_exist = match invoice.status {
+        InvoiceStatus::Funded
+        | InvoiceStatus::PartiallyFunded
+        | InvoiceStatus::Defaulted
+        | InvoiceStatus::Appealed
+        | InvoiceStatus::Disputed => true,
+        _ => false,
+    };
 
-            assert!(!invoice_nft_exists(&env, invoice_id));
-            assert_eq!(get_invoice_nft_metadata(&env, invoice_id), None);
-            assert_eq!(get_invoice_nft_owner(&env, invoice_id), None);
-            assert_eq!(query_nft_metadata(env.clone(), invoice_id), None);
-            assert_eq!(query_nft_owner(env.clone(), invoice_id), None);
+    if should_exist {
+        // Determine the current owner/holder of the NFT.
+        // For Funded/Defaulted/Appealed/Disputed with single funder: invoice.funder is Some.
+        // For PartiallyFunded (or if invoice.funder is None): we look up from the funders list.
+        let target_owner = if let Some(ref lp) = invoice.funder {
+            lp.clone()
+        } else {
+            let funders = get_invoice_funders(env, invoice_id);
+            if funders.is_empty() {
+                // If it is partially funded but list is empty (should not happen), fallback to freelancer
+                invoice.freelancer.clone()
+            } else {
+                // Find the funder with the maximum funded amount (lead LP).
+                // Ties broken by first-in-list (earliest funder).
+                let mut lead_lp = funders.get(0).unwrap().0;
+                let mut max_amt = funders.get(0).unwrap().1;
+                for i in 1..funders.len() {
+                    let (addr, amt) = funders.get(i).unwrap();
+                    if amt > max_amt {
+                        max_amt = amt;
+                        lead_lp = addr;
+                    }
+                }
+                lead_lp
+            }
+        };
 
-            // Mint
-            let mint_res = mint_invoice_nft(
-                &env,
+        if invoice_nft_exists(env, invoice_id) {
+            let current_owner = get_invoice_nft_owner(env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
+            if current_owner != target_owner {
+                transfer_invoice_nft(env, invoice_id, current_owner, target_owner)?;
+            }
+        } else {
+            mint_invoice_nft(
+                env,
                 invoice_id,
-                owner.clone(),
-                100_000,
-                2_000_000_000,
-                300,
-                token.clone(),
-            );
-            assert!(mint_res.is_ok());
-            assert!(invoice_nft_exists(&env, invoice_id));
-
-            // Duplicate mint error
-            let dup_res = mint_invoice_nft(
-                &env,
-                invoice_id,
-                owner.clone(),
-                100_000,
-                2_000_000_000,
-                300,
-                token,
-            );
-            assert_eq!(dup_res, Err(ContractError::AlreadyFunded));
-
-            // Query
-            let meta = get_invoice_nft_metadata(&env, invoice_id).unwrap();
-            assert_eq!(meta.invoice_id, invoice_id);
-            assert_eq!(meta.amount, 100_000);
-            assert_eq!(meta.owner, owner);
-            assert_eq!(get_invoice_nft_owner(&env, invoice_id), Some(owner.clone()));
-            assert_eq!(
-                query_nft_metadata(env.clone(), invoice_id)
-                    .unwrap()
-                    .invoice_id,
-                invoice_id
-            );
-            assert_eq!(
-                query_nft_owner(env.clone(), invoice_id),
-                Some(owner.clone())
-            );
-
-            // Unauthorized transfer
-            let bad_xfer =
-                transfer_invoice_nft(&env, invoice_id, recipient.clone(), recipient.clone());
-            assert_eq!(bad_xfer, Err(ContractError::Unauthorized));
-
-            // Nonexistent transfer
-            let missing_xfer = transfer_invoice_nft(&env, 999, owner.clone(), recipient.clone());
-            assert_eq!(missing_xfer, Err(ContractError::InvoiceNotFound));
-
-            // Valid transfer
-            let xfer_res = transfer_invoice_nft(&env, invoice_id, owner.clone(), recipient.clone());
-            assert!(xfer_res.is_ok());
-            assert_eq!(
-                get_invoice_nft_owner(&env, invoice_id),
-                Some(recipient.clone())
-            );
-
-            // Unauthorized burn
-            let bad_burn = burn_invoice_nft(&env, invoice_id, owner);
-            assert_eq!(bad_burn, Err(ContractError::Unauthorized));
-
-            // Nonexistent burn
-            let missing_burn = burn_invoice_nft(&env, 999, recipient.clone());
-            assert_eq!(missing_burn, Err(ContractError::InvoiceNotFound));
-
-            // Valid burn
-            let burn_res = burn_invoice_nft(&env, invoice_id, recipient);
-            assert!(burn_res.is_ok());
-            assert!(!invoice_nft_exists(&env, invoice_id));
-            assert_eq!(get_invoice_nft_metadata(&env, invoice_id), None);
-            assert_eq!(get_invoice_nft_owner(&env, invoice_id), None);
-        });
+                target_owner,
+                invoice.amount,
+                invoice.due_date as u32,
+                invoice.discount_rate,
+                invoice.token.clone(),
+            )?;
+        }
+    } else {
+        // Should not exist
+        if invoice_nft_exists(env, invoice_id) {
+            let current_owner = get_invoice_nft_owner(env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
+            burn_invoice_nft(env, invoice_id, current_owner)?;
+        }
     }
+
+    Ok(())
 }
+

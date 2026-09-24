@@ -163,11 +163,15 @@ pub struct ReputationScore {
 
 /// Detailed reputation profile for an address (Issue #26).
 ///
-/// Foundational data model for the reputation system. The existing
-/// [`ReputationScore`] holds the lightweight decaying score used by the
-/// payer/LP scoring path; this profile records the richer counters that future
-/// reputation logic builds on. Unknown addresses resolve to a zeroed profile
-/// (see [`get_reputation`]) rather than panicking.
+/// **Protocol source of truth** for ILN reputation counters used by funding
+/// gates, defaults, and appeals. This is independent of the
+/// `reputation_bonus` crate's own `ReputationScore` storage — the two never
+/// sync (see `docs/adr/ADR-011-reputation-state-source-of-truth.md`).
+///
+/// The lightweight [`ReputationScore`] holds the decaying score used by the
+/// payer/LP scoring path; this profile records the richer counters. Unknown
+/// addresses resolve to a zeroed profile (see [`get_reputation`]) rather than
+/// panicking.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReputationProfile {
@@ -189,6 +193,38 @@ pub struct ContractStats {
     pub total_volume_xlm: i128,
     pub token_volumes: soroban_sdk::Vec<(Address, i128)>,
     pub total_volume_usd_normalized: i128,
+}
+
+/// Issue #775: operationally-relevant protocol state in a single read, for a
+/// public "is the protocol paused, and why" status view (contract-side) and
+/// the indexer's public `/protocol-status` endpoint (off-chain).
+///
+/// This is deliberately distinct from the admin-only dashboard data — every
+/// field here is safe to expose publicly and is what a user or an on-call
+/// responder needs during an incident.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProtocolStatus {
+    /// Whether all mutating entry points are currently halted (`pause()`).
+    pub paused: bool,
+    /// Ledger timestamp of the most recent `pause()`; `0` if never paused.
+    pub last_pause_timestamp: u64,
+    /// The address `require_admin` authorizes against today (may itself be a
+    /// Stellar account-level multisig — the contract cannot tell).
+    pub admin: Address,
+    /// Whether the contract-level multisig admin has been bootstrapped
+    /// (`initialize_multisig_admin`).
+    pub multisig_configured: bool,
+    /// Signatures required to execute a multisig admin action; `0` when the
+    /// multisig is not configured.
+    pub multisig_threshold: u32,
+    /// Number of authorized multisig signers; `0` when not configured.
+    pub multisig_signer_count: u32,
+    /// Whether at least one oracle circuit breaker (feed type + token) is
+    /// currently tripped, halting oracle-gated funding on that channel.
+    pub oracle_circuit_tripped: bool,
+    /// How many (feed type, token) oracle circuit breakers are tripped.
+    pub oracle_circuits_tripped: u32,
 }
 
 // ----------------------------------------------------------------
@@ -478,7 +514,7 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                 {
                     // Calculate number of decay periods that have passed
                     let periods_passed =
-                        u64::from(ledgers_since_activity) / decay_config.decay_period_ledgers;
+                        u64::from(ledgers_since_activity).saturating_div(decay_config.decay_period_ledgers);
 
                     // Apply decay: score = score * (1 - decay_rate/10000)^periods
                     // Issue #601: periods_passed is unbounded (governance-
@@ -491,7 +527,7 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                             let mut decayed_score = rep.score as u64;
                             for _ in 0..periods_passed {
                                 let mut decay_amount =
-                                    (decayed_score * decay_config.decay_rate_bps as u64) / 10_000;
+                                    decayed_score.saturating_mul(decay_config.decay_rate_bps as u64).saturating_div(10_000);
                                 if decay_amount == 0 && decayed_score > 0 {
                                     decay_amount = 1;
                                 }
@@ -499,6 +535,7 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                             }
                             decayed_score
                         };
+
 
                     let new_score = (decayed_score.min(100)) as u32;
                     if new_score != rep.score {
@@ -656,6 +693,56 @@ pub fn set_min_payer_reputation(env: &Env, value: u32) {
     env.storage()
         .instance()
         .set(&StorageKey::MinPayerReputation, &value);
+}
+
+// ----------------------------------------------------------------
+// Issue #655: staged mainnet rollout caps
+// ----------------------------------------------------------------
+//
+// Two governance-configurable caps, both `0` (uncapped) by default, that
+// can be raised over time as confidence in a fresh mainnet deployment
+// grows: a per-invoice size cap, and a per-token cumulative funded-volume
+// cap checked against the same `TokenVolume` counter `add_volume` already
+// maintains for stats — no new hot-path dependency (e.g. an oracle call)
+// is introduced to enforce it.
+
+/// Maximum `amount` allowed for a single invoice. Defaults to 0 (uncapped).
+pub fn get_max_invoice_amount(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::MaxInvoiceAmount)
+        .unwrap_or(0)
+}
+
+/// Set the maximum single-invoice amount.
+pub fn set_max_invoice_amount(env: &Env, value: i128) {
+    env.storage()
+        .instance()
+        .set(&StorageKey::MaxInvoiceAmount, &value);
+}
+
+/// Cumulative funded-volume cap for `token`. Defaults to 0 (uncapped).
+pub fn get_token_volume_cap(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::TokenVolumeCap(token.clone()))
+        .unwrap_or(0)
+}
+
+/// Set the cumulative funded-volume cap for `token`.
+pub fn set_token_volume_cap(env: &Env, token: &Address, value: i128) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::TokenVolumeCap(token.clone()), &value);
+}
+
+/// Current cumulative funded volume recorded for `token` (the same counter
+/// `add_volume` increments on every `fund_invoice` call).
+pub fn get_token_volume(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::TokenVolume(token.clone()))
+        .unwrap_or(0)
 }
 
 // ----------------------------------------------------------------
@@ -968,4 +1055,21 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&StorageKey::Paused, &paused);
+    // Issue #775: record when the protocol was last halted so the public
+    // status view can answer "paused since when". Only advanced on a
+    // pause; `unpause()` leaves the last value in place as a reference.
+    if paused {
+        env.storage()
+            .instance()
+            .set(&StorageKey::LastPauseTimestamp, &env.ledger().timestamp());
+    }
+}
+
+/// Ledger timestamp of the most recent `pause()`, or `0` if the contract
+/// has never been paused (Issue #775).
+pub fn get_last_pause_timestamp(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&StorageKey::LastPauseTimestamp)
+        .unwrap_or(0)
 }

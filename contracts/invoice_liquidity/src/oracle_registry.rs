@@ -24,9 +24,20 @@ use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 
 use crate::access::require_admin;
 use crate::errors::ContractError;
-use crate::events::{OracleHealthRecorded, OracleRegistered, OracleUnregistered};
+use crate::events::{
+    OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded, OracleRegistered,
+    OracleUnregistered, PriceOutlierRejected, PriceSourceAdded, PriceSourceRemoved,
+};
+use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
 use crate::storage::DataKey;
 use crate::OracleVerificationResponse;
+
+/// Number of consecutive stale queries against the same oracle before its
+/// resolution channel is automatically circuit-tripped: further oracle-gated
+/// funding treats it as unavailable and falls back through the priority
+/// chain (or is rejected if nothing else resolves) until governance calls
+/// `reset_oracle_circuit`.
+pub const MAX_CONSECUTIVE_STALE_QUERIES: u32 = 3;
 
 /// The kind of off-chain data an oracle provides.
 #[contracttype]
@@ -69,15 +80,19 @@ pub struct OracleHealthStatus {
 /// Access: Admin only (in production, the ILN contract's stored admin is set
 /// to the governance contract's address, so this is effectively
 /// governance-controlled via a proposal).
+///
+/// Rejects oracles that do not report a compatible [`ORACLE_INTERFACE_VERSION`].
 pub fn register_oracle(
     env: &Env,
     feed_type: OracleFeedType,
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .instance()
         .set(&DataKey::OracleRegistry(feed_type), &oracle);
+    crate::storage::set_oracle_interface_version(env, feed_type, version);
     env.events().publish(
         (
             soroban_sdk::Symbol::new(env, "oracle_registered"),
@@ -116,6 +131,8 @@ pub fn remove_oracle(env: &Env, feed_type: OracleFeedType) -> Result<(), Contrac
 /// this exact token.
 ///
 /// Access: Admin only.
+///
+/// Rejects oracles that do not report a compatible [`ORACLE_INTERFACE_VERSION`].
 pub fn register_token_oracle(
     env: &Env,
     feed_type: OracleFeedType,
@@ -123,9 +140,11 @@ pub fn register_token_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .persistent()
         .set(&DataKey::TokenOracle(feed_type, token.clone()), &oracle);
+    crate::storage::set_oracle_interface_version(env, feed_type, version);
     env.events().publish(
         (
             soroban_sdk::Symbol::new(env, "oracle_registered"),
@@ -223,8 +242,14 @@ pub fn record_oracle_health(
 
     let key = DataKey::OracleHealth(feed_type, token.clone());
     let previous: Option<OracleHealthStatus> = env.storage().persistent().get(&key);
-    let consecutive_stale_count = match previous {
-        Some(prev) if is_stale => prev.consecutive_stale_count.saturating_add(1),
+    // A streak only counts against the *same* oracle address: if resolution
+    // just fell back to a different oracle (e.g. because the prior one
+    // tripped the circuit breaker below), that oracle's own reliability
+    // hasn't been observed yet and shouldn't inherit the old one's count.
+    let consecutive_stale_count = match &previous {
+        Some(prev) if prev.oracle == *oracle && is_stale => {
+            prev.consecutive_stale_count.saturating_add(1)
+        }
         _ if is_stale => 1,
         _ => 0,
     };
@@ -252,6 +277,164 @@ pub fn record_oracle_health(
             consecutive_stale_count,
         },
     );
+
+    // Circuit breaker: trip the first time the streak crosses the
+    // threshold. Guarded on the *currently persisted* flag (read fresh here,
+    // not inferred from the numeric streak) so this fires once per trip —
+    // not on every subsequent stale query while already tripped — but
+    // still fires again promptly if governance resets the breaker and the
+    // very next query is still stale, even though the raw counter (which
+    // `reset_oracle_circuit` deliberately doesn't touch) never dipped below
+    // threshold in between. The breaker stays tripped after firing
+    // regardless of what consecutive_stale_count does next (including
+    // resetting to 0 on a later fresh query) until that explicit reset.
+    let already_tripped = is_oracle_circuit_tripped(env, feed_type, token);
+    if is_stale && consecutive_stale_count >= MAX_CONSECUTIVE_STALE_QUERIES && !already_tripped {
+        let circuit_key = DataKey::OracleCircuitTripped(feed_type, token.clone());
+        env.storage().persistent().set(&circuit_key, &true);
+        env.events().publish(
+            (
+                soroban_sdk::Symbol::new(env, "oracle_circuit_tripped"),
+                feed_type,
+            ),
+            OracleCircuitTripped {
+                feed_type,
+                token: token.clone(),
+                consecutive_stale_count,
+            },
+        );
+    }
+}
+
+/// Whether the oracle circuit breaker for `feed_type` + `token` is
+/// currently tripped. Sticky — sees only `reset_oracle_circuit`, never a
+/// fresh query, per Issue requirement to avoid flapping.
+pub fn is_oracle_circuit_tripped(env: &Env, feed_type: OracleFeedType, token: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OracleCircuitTripped(feed_type, token.clone()))
+        .unwrap_or(false)
+}
+
+/// Governance-gated reset of a tripped oracle circuit breaker. Requires an
+/// explicit call — there is no automatic recovery on a single fresh query,
+/// so a flapping oracle can't quietly resume being trusted without someone
+/// (governance, in production, via the admin=governance-contract
+/// convention used throughout this registry) affirmatively deciding it's
+/// safe again.
+///
+/// Access: Admin only.
+pub fn reset_oracle_circuit(
+    env: &Env,
+    feed_type: OracleFeedType,
+    token: Address,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    env.storage()
+        .persistent()
+        .remove(&DataKey::OracleCircuitTripped(feed_type, token.clone()));
+    env.events().publish(
+        (
+            soroban_sdk::Symbol::new(env, "oracle_circuit_reset"),
+            feed_type,
+        ),
+        OracleCircuitReset { feed_type, token },
+    );
+    Ok(())
+}
+
+/// Resolution outcome for `fund_invoice`'s oracle-gated funding check
+/// specifically. Unlike the plain `resolve_oracle` (used for read-only
+/// views and `check_oracle_health`, which must stay circuit-agnostic so
+/// monitoring keeps observing through failures instead of going blind the
+/// moment a breaker trips), this respects an open circuit and falls back
+/// to the next entry in the priority chain — or signals that funding must
+/// be rejected outright if nothing usable remains.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OracleResolution {
+    /// Nothing registered at any priority level — existing fail-open
+    /// behavior applies (verification is a no-op).
+    Unconfigured,
+    /// A usable (not circuit-tripped) oracle resolved.
+    Available(Address),
+    /// Every candidate in the priority chain is circuit-tripped, with
+    /// nothing left to fall back to.
+    CircuitOpen,
+}
+
+/// Circuit-aware counterpart to `resolve_oracle`, used only by
+/// `fund_invoice`. Walks the same three-level priority chain
+/// (per-token override, feed-type default, legacy `price_oracle` for
+/// `Identity`), skipping exactly the oracle address recorded as having
+/// caused the trip (if any), and returning the first candidate that isn't
+/// it.
+///
+/// Known simplification: if governance replaces the tripped registration
+/// with a new address *without* also calling `reset_oracle_circuit`, this
+/// correctly resolves to the new address immediately (it's never been
+/// observed stale), but `is_oracle_circuit_tripped` keeps reporting `true`
+/// until the explicit reset call — a harmless staleness in the flag itself,
+/// not in funding behavior.
+pub fn resolve_oracle_for_verification(
+    env: &Env,
+    feed_type: OracleFeedType,
+    token: &Address,
+) -> OracleResolution {
+    let tripped = is_oracle_circuit_tripped(env, feed_type, token);
+    let tripped_oracle: Option<Address> = if tripped {
+        get_oracle_health(env.clone(), feed_type, token.clone()).map(|h| h.oracle)
+    } else {
+        None
+    };
+    // Fail closed if we somehow can't identify what tripped — see doc above.
+    let is_excluded = |addr: &Address| -> bool {
+        if !tripped {
+            return false;
+        }
+        match &tripped_oracle {
+            Some(bad) => addr == bad,
+            None => true,
+        }
+    };
+
+    let mut saw_candidate = false;
+
+    if let Some(addr) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Address>(&DataKey::TokenOracle(feed_type, token.clone()))
+    {
+        saw_candidate = true;
+        if !is_excluded(&addr) {
+            return OracleResolution::Available(addr);
+        }
+    }
+
+    if let Some(addr) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Address>(&DataKey::OracleRegistry(feed_type))
+    {
+        saw_candidate = true;
+        if !is_excluded(&addr) {
+            return OracleResolution::Available(addr);
+        }
+    }
+
+    if feed_type == OracleFeedType::Identity {
+        if let Some(addr) = crate::storage::get_config(env).and_then(|c| c.price_oracle) {
+            saw_candidate = true;
+            if !is_excluded(&addr) {
+                return OracleResolution::Available(addr);
+            }
+        }
+    }
+
+    if saw_candidate {
+        OracleResolution::CircuitOpen
+    } else {
+        OracleResolution::Unconfigured
+    }
 }
 
 /// Public getter for the last recorded health snapshot of `feed_type` +
@@ -302,4 +485,459 @@ pub fn check_oracle_health(
     env.storage()
         .persistent()
         .get(&DataKey::OracleHealth(feed_type, token))
+}
+
+/// Query `oracle.interface_version()` and reject incompatible / missing
+/// implementations before persisting a registry entry.
+fn verify_oracle_interface_version(env: &Env, oracle: &Address) -> Result<u32, ContractError> {
+    let client = OracleClient::new(env, oracle);
+    let version = match client.try_interface_version() {
+        Ok(Ok(v)) => v,
+        _ => return Err(ContractError::IncompatibleInterfaceVersion),
+    };
+    if version != ORACLE_INTERFACE_VERSION {
+        return Err(ContractError::IncompatibleInterfaceVersion);
+    }
+    Ok(version)
+}
+
+// ── Multi-source price deviation checking (Issue #price-deviation) ────────────
+//
+// The single-oracle-per-resolution model above (register_oracle /
+// register_token_oracle, resolve_oracle) is appropriate for the boolean
+// Identity-feed payer-verification case, but offers no defense against a
+// single misbehaving or compromised oracle reporting a wildly incorrect
+// PRICE: there's nothing on-chain to compare it against. This section adds
+// an optional, separate multi-source registration list per feed type
+// specifically for numeric price data, so any one registered source's
+// report can be cross-checked against the median of every other
+// registered source before being trusted.
+//
+// **Single-source risk is explicit, not silent.** If only one price
+// source is ever registered for a feed type, `get_verified_price` returns
+// that source's price unchecked — there is nothing else to compare it
+// against, and no amount of code here can manufacture a second opinion
+// out of one data point. This is an accepted, documented risk of running a
+// single-source price feed (see docs/oracle-attack-economics.md for the
+// broader single-source oracle-manipulation cost/benefit model this
+// compounds with), not an oversight — registering at least two independent
+// price sources is what actually activates this module's protection.
+//
+// **Degenerate two-source case.** With exactly two sources, "median" is
+// their average, and a single outlier deviates from that average by
+// exactly the same amount the honest source does (the average sits
+// equidistant from both, by construction) — there is no way to tell which
+// of two disagreeing sources is lying from two data points alone. Past the
+// configured threshold this correctly rejects *both* rather than guessing
+// (`AllPriceSourcesRejected`), which is safer than arbitrarily trusting
+// one; it does not selectively exclude "the" outlier the way three or more
+// sources allows.
+
+/// Default deviation threshold (5%, 500 bps) applied when no governance
+/// value has been configured yet.
+pub const DEFAULT_MAX_PRICE_DEVIATION_BPS: u32 = 500;
+
+/// Register `oracle` as an additional price source for `feed_type`. A
+/// no-op (not an error) if already registered. Unlike
+/// `register_oracle`/`register_token_oracle`, this performs no
+/// interface-version handshake — price sources are queried dynamically via
+/// `try_invoke_contract` and a non-responding/incompatible source is
+/// simply excluded from the sample at query time (see `query_price`)
+/// rather than rejected at registration.
+///
+/// Access: Admin only (governance-controlled via the same
+/// admin=governance-contract convention used throughout this registry).
+pub fn add_price_source(
+    env: &Env,
+    feed_type: OracleFeedType,
+    oracle: Address,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    let key = DataKey::PriceSources(feed_type);
+    let mut sources: soroban_sdk::Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    if !sources.iter().any(|existing| existing == oracle) {
+        sources.push_back(oracle.clone());
+        env.storage().instance().set(&key, &sources);
+    }
+    env.events().publish(
+        (
+            soroban_sdk::Symbol::new(env, "price_source_added"),
+            feed_type,
+        ),
+        PriceSourceAdded { feed_type, oracle },
+    );
+    Ok(())
+}
+
+/// Remove `oracle` from `feed_type`'s price source list. A no-op if it
+/// wasn't registered.
+///
+/// Access: Admin only.
+pub fn remove_price_source(
+    env: &Env,
+    feed_type: OracleFeedType,
+    oracle: Address,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    let key = DataKey::PriceSources(feed_type);
+    let sources: soroban_sdk::Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    let mut remaining: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
+    for existing in sources.iter() {
+        if existing != oracle {
+            remaining.push_back(existing);
+        }
+    }
+    env.storage().instance().set(&key, &remaining);
+    env.events().publish(
+        (
+            soroban_sdk::Symbol::new(env, "price_source_removed"),
+            feed_type,
+        ),
+        PriceSourceRemoved { feed_type, oracle },
+    );
+    Ok(())
+}
+
+/// The currently registered price sources for `feed_type`.
+pub fn get_price_sources(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::PriceSources(feed_type))
+        .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+}
+
+/// Update the governance-configurable maximum deviation (basis points) a
+/// price source may differ from the cross-source median before being
+/// rejected as an outlier. Rejects `0` (would reject every source but an
+/// exact median match) and values above `10_000` (100% — meaningless as a
+/// deviation cap).
+///
+/// Access: Admin only.
+pub fn set_max_price_deviation_bps(env: &Env, bps: u32) -> Result<(), ContractError> {
+    require_admin(env)?;
+    if bps == 0 || bps > 10_000 {
+        return Err(ContractError::InvalidAmount);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxPriceDeviationBps, &bps);
+    Ok(())
+}
+
+/// The currently configured maximum price deviation, in basis points.
+pub fn get_max_price_deviation_bps(env: Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxPriceDeviationBps)
+        .unwrap_or(DEFAULT_MAX_PRICE_DEVIATION_BPS)
+}
+
+/// Query `oracle.get_price(token)`, returning `None` (rather than
+/// propagating a panic) if the call fails, traps, or returns a value that
+/// doesn't decode as `i128` — a single bad price source degrades to "no
+/// opinion" instead of taking down the whole aggregation.
+fn query_price(env: &Env, oracle: &Address, token: &Address) -> Option<i128> {
+    // Turbofish on T/E only (matching iln_governance::invoke_and_check's
+    // established pattern) — T's own TryFromVal::Error (ConversionError for
+    // i128) is inferred, not spelled out, and E is never actually
+    // constructed here since we only match on the outer shape.
+    let result = env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        oracle,
+        &Symbol::new(env, "get_price"),
+        vec![env, token.into_val(env)],
+    );
+    match result {
+        Ok(Ok(price)) => Some(price),
+        _ => None,
+    }
+}
+
+/// Sorts a copy of `values` (simple insertion sort — the expected number of
+/// price sources is small) and returns the median: the middle element for
+/// an odd count, or the average (integer division, floored) of the two
+/// middle elements for an even count. Panics only if `values` is empty —
+/// every caller below checks that first.
+fn median(values: &soroban_sdk::Vec<i128>) -> i128 {
+    let len = values.len();
+    let mut sorted: soroban_sdk::Vec<i128> = values.clone();
+    for i in 1..len {
+        let key = sorted.get(i).unwrap();
+        let mut j = i;
+        while j > 0 && sorted.get(j - 1).unwrap() > key {
+            let prev = sorted.get(j - 1).unwrap();
+            sorted.set(j, prev);
+            j -= 1;
+        }
+        sorted.set(j, key);
+    }
+    if len % 2 == 1 {
+        sorted.get(len / 2).unwrap()
+    } else {
+        let a = sorted.get(len / 2 - 1).unwrap();
+        let b = sorted.get(len / 2).unwrap();
+        (a + b) / 2
+    }
+}
+
+/// Deviation of `price` from `reference`, in basis points. `reference == 0`
+/// is a degenerate case handled explicitly: only `price == 0` is
+/// considered non-deviating — any nonzero price against a zero reference
+/// is treated as maximally deviant, guaranteed to exceed any valid
+/// governance-configured threshold (those are capped at `10_000`).
+fn deviation_bps(price: i128, reference: i128) -> u32 {
+    if reference == 0 {
+        return if price == 0 { 0 } else { u32::MAX };
+    }
+    let diff = (price - reference).abs();
+    let bps = diff.saturating_mul(10_000) / reference.abs();
+    bps.clamp(0, u32::MAX as i128) as u32
+}
+
+/// Query every registered price source for `feed_type` + `token` and
+/// return a cross-validated price, defending against a single misbehaving
+/// or compromised source reporting a wildly incorrect value.
+///
+/// - **Zero sources** (or every registered source failed to respond):
+///   `Err(ContractError::NoPriceSource)`.
+/// - **Exactly one source**: its price is returned **unchecked** — the
+///   documented, accepted single-point-of-failure risk described in this
+///   module's header comment, not a bug. There is nothing to cross-check a
+///   single source against.
+/// - **Two or more sources**: the median of all successfully-queried
+///   prices is computed; any individual source deviating from that median
+///   by more than `get_max_price_deviation_bps()` is excluded (emitting
+///   `PriceOutlierRejected` per exclusion), and the median of the
+///   *surviving* sources is returned. If every source is mutually
+///   rejected (pathological — no cluster of agreement at all), returns
+///   `Err(ContractError::AllPriceSourcesRejected)`.
+pub fn get_verified_price(
+    env: Env,
+    feed_type: OracleFeedType,
+    token: Address,
+) -> Result<i128, ContractError> {
+    // Issue #816: per-feed opt-in — when TWAP is enabled and enough
+    // in-window samples exist, read the windowed average instead of spot.
+    // Falls through to the spot path below while samples backfill.
+    if is_twap_enabled(&env, feed_type) {
+        if let Some(avg) = get_twap_price(&env, feed_type, &token) {
+            return Ok(avg);
+        }
+    }
+    let sources = get_price_sources(env.clone(), feed_type);
+    let mut prices: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
+    let mut priced_sources: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for oracle in sources.iter() {
+        if let Some(price) = query_price(&env, &oracle, &token) {
+            prices.push_back(price);
+            priced_sources.push_back(oracle);
+        }
+    }
+
+    if prices.is_empty() {
+        return Err(ContractError::NoPriceSource);
+    }
+    if prices.len() == 1 {
+        // Single source: nothing to cross-check against. Documented,
+        // accepted risk — see this module's header comment.
+        return Ok(prices.get(0).unwrap());
+    }
+
+    let overall_median = median(&prices);
+    let max_deviation = get_max_price_deviation_bps(env.clone());
+
+    let mut survivors: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
+    for i in 0..prices.len() {
+        let price = prices.get(i).unwrap();
+        let oracle = priced_sources.get(i).unwrap();
+        let dev = deviation_bps(price, overall_median);
+        if dev > max_deviation {
+            env.events().publish(
+                (
+                    soroban_sdk::Symbol::new(&env, "price_outlier_rejected"),
+                    feed_type,
+                ),
+                PriceOutlierRejected {
+                    feed_type,
+                    token: token.clone(),
+                    oracle,
+                    reported_price: price,
+                    median_price: overall_median,
+                    deviation_bps: dev,
+                },
+            );
+        } else {
+            survivors.push_back(price);
+        }
+    }
+
+    if survivors.is_empty() {
+        return Err(ContractError::AllPriceSourcesRejected);
+    }
+    Ok(median(&survivors))
+}
+
+// ── TWAP opt-in per feed (Issues #815/#816/#817) ─────────────────────────
+//
+// The accumulator math lives in `crate::twap` (ported from
+// `contracts/examples/twap_oracle`). This section owns the production
+// wiring: a governance-settable per-feed opt-in flag plus a bounded,
+// governance-configurable window. Default is spot (existing behavior) until
+// a feed explicitly opts in, so this is not a breaking change.
+//
+// `fund_invoice`'s payer-verification (`Identity`) path stays boolean spot
+// verification — TWAP applies to numeric `Price` reads via
+// `get_verified_price`, which branches below. Enabling TWAP on `Identity`
+// is stored but has no effect on verification today (documented, not an
+// error, so governance can stage configuration in any order).
+
+/// Seconds per ledger on Stellar (~5s), used to convert the ledger-based
+/// TWAP window into the timestamp-based window `twap::twap_average` expects.
+pub const LEDGER_SECONDS: u64 = 5;
+
+/// Issue #817: minimum TWAP window = 360 ledgers ≈ 30 minutes. Rationale
+/// (see `docs/oracle-attack-economics.md` §4–§5 methodology): a sandwich
+/// attack manipulates price within a single block/ledger at near-zero
+/// on-chain cost, so the window must span *many* ledgers to dilute any one
+/// manipulated sample — 30 minutes is the example crate's recommended floor
+/// and matches `twap-oracle-recommendations.md`'s minimum.
+pub const MIN_TWAP_WINDOW_LEDGERS: u64 = 360;
+
+/// Issue #817: maximum TWAP window = 17_280 ledgers ≈ 24 hours. Rationale:
+/// beyond the default `max_oracle_age_ledgers` staleness bound (also
+/// 17_280) the average would bake in data the freshness check itself
+/// rejects as stale, making staleness worse without adding sandwich
+/// resistance. Distinct bound, same order of magnitude, deliberately.
+pub const MAX_TWAP_WINDOW_LEDGERS: u64 = 17_280;
+
+/// Default TWAP window = 720 ledgers ≈ 1 hour (the example crate's default
+/// `get_price` window), applied until governance sets an explicit value.
+pub const DEFAULT_TWAP_WINDOW_LEDGERS: u64 = 720;
+
+/// Whether `feed_type` routes `Price` reads through the TWAP windowed
+/// average. Defaults to `false` (raw spot, current behavior).
+pub fn is_twap_enabled(env: &Env, feed_type: OracleFeedType) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::TwapEnabled(feed_type))
+        .unwrap_or(false)
+}
+
+/// Enable or disable the TWAP path for `feed_type`.
+///
+/// Access: Admin only (governance-controlled via the same
+/// admin=governance-contract convention used throughout this registry).
+pub fn set_twap_enabled(
+    env: &Env,
+    feed_type: OracleFeedType,
+    enabled: bool,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::TwapEnabled(feed_type), &enabled);
+    Ok(())
+}
+
+/// The currently configured TWAP window in ledgers.
+pub fn get_twap_window_ledgers(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TwapWindowLedgers)
+        .unwrap_or(DEFAULT_TWAP_WINDOW_LEDGERS)
+}
+
+/// Update the TWAP window, rejecting values outside
+/// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` with the dedicated
+/// `ContractError::InvalidTwapWindow`.
+///
+/// Access: Admin only.
+pub fn set_twap_window_ledgers(env: &Env, window_ledgers: u64) -> Result<(), ContractError> {
+    require_admin(env)?;
+    if window_ledgers < MIN_TWAP_WINDOW_LEDGERS || window_ledgers > MAX_TWAP_WINDOW_LEDGERS {
+        return Err(ContractError::InvalidTwapWindow);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::TwapWindowLedgers, &window_ledgers);
+    Ok(())
+}
+
+/// Record a price observation for `feed_type` + `token` at the current
+/// ledger timestamp, for later windowed averaging.
+///
+/// Access: Admin only (keeper/governance pushes samples; the example
+/// crate's `update_price` was likewise admin-gated).
+pub fn record_twap_sample(
+    env: &Env,
+    feed_type: OracleFeedType,
+    token: Address,
+    price: i128,
+) -> Result<(), ContractError> {
+    require_admin(env)?;
+    if price <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    let key = DataKey::TwapSamples(feed_type, token);
+    let mut samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    crate::twap::push_sample(
+        &mut samples,
+        crate::twap::TwapSample {
+            timestamp: env.ledger().timestamp(),
+            price,
+        },
+        crate::twap::MAX_TWAP_SAMPLES,
+    );
+    env.storage().persistent().set(&key, &samples);
+    Ok(())
+}
+
+/// Windowed TWAP average for `feed_type` + `token` over the configured
+/// window, or `None` when fewer than two in-window samples exist.
+pub fn get_twap_price(env: &Env, feed_type: OracleFeedType, token: &Address) -> Option<i128> {
+    let samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TwapSamples(feed_type, token.clone()))?;
+    if samples.len() < 2 {
+        return None;
+    }
+    let window_ledgers = get_twap_window_ledgers(env);
+    let window_seconds = window_ledgers.saturating_mul(LEDGER_SECONDS);
+    let current_time = env.ledger().timestamp();
+    let window_start = current_time.saturating_sub(window_seconds);
+    crate::twap::twap_average(&samples, window_start, current_time)
+}
+
+/// TWAP-aware price read used by numeric `Price` consumers.
+///
+/// - TWAP disabled (default): behaves exactly as before (spot median with
+///   outlier rejection).
+/// - TWAP enabled: returns the windowed average when at least two
+///   in-window samples exist; otherwise falls back to the spot path so a
+///   freshly-enabled feed stays live while keepers backfill samples. The
+///   fallback is documented, not silent — callers can distinguish it via
+///   `get_twap_price` returning `None`.
+pub fn get_twap_aware_price(
+    env: Env,
+    feed_type: OracleFeedType,
+    token: Address,
+) -> Result<i128, ContractError> {
+    if is_twap_enabled(&env, feed_type) {
+        if let Some(avg) = get_twap_price(&env, feed_type, &token) {
+            return Ok(avg);
+        }
+    }
+    get_verified_price(env, feed_type, token)
 }

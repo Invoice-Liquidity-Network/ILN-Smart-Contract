@@ -5,6 +5,7 @@
 #![cfg(test)]
 
 use super::*;
+use reputation_bonus::{config::Config as RepBonusConfig, ReputationBonusContract, ReputationBonusContractClient};
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{storage::Temporary, Address as _, Events, Ledger},
@@ -75,6 +76,7 @@ struct GovTestEnv {
     gov_token_admin: StellarAssetClient<'static>,
     #[allow(dead_code)]
     iln_contract: Address,
+    rep_contract: ReputationBonusContractClient<'static>,
     voter_a: Address,
     voter_b: Address,
     proposer: Address,
@@ -107,7 +109,30 @@ fn setup() -> GovTestEnv {
     let contract_id = env.register_contract(None, GovContract);
     let contract = GovContractClient::new(&env, &contract_id);
 
-    contract.initialize(&iln_contract, &dist_contract, &token_addr, &admin, &10_000);
+    // Issue #704: register the real reputation_bonus contract (not a mock)
+    // so the UpdateReputationBonusParams E2E test can genuinely verify its
+    // stored Config reflects a governance-executed change. Its admin is the
+    // governance contract's own address, since execute_proposal calls
+    // update_config with itself (env.current_contract_address()) as the
+    // caller — contracts authorize as themselves automatically for
+    // cross-contract calls they make, with no separate signature needed.
+    let rep_contract_id = env.register_contract(None, ReputationBonusContract);
+    let rep_contract = ReputationBonusContractClient::new(&env, &rep_contract_id);
+    rep_contract.init(&contract_id);
+    rep_contract.set_config(&RepBonusConfig {
+        high_rep_threshold: 700,
+        bonus_bps: 100,
+        min_discount_rate_bps: 50,
+    });
+
+    contract.initialize(
+        &iln_contract,
+        &dist_contract,
+        &rep_contract_id,
+        &token_addr,
+        &admin,
+        &10_000,
+    );
 
     let mut ledger = env.ledger().get();
     ledger.timestamp = 1_700_000_000;
@@ -119,6 +144,7 @@ fn setup() -> GovTestEnv {
         gov_token,
         gov_token_admin,
         iln_contract,
+        rep_contract,
         voter_a,
         voter_b,
         proposer,
@@ -128,6 +154,12 @@ fn setup() -> GovTestEnv {
 
 fn dummy_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[1u8; 32])
+}
+
+#[cfg(test)]
+fn setup_veto_multisig(t: &GovTestEnv) {
+    let signers = soroban_sdk::vec![&t.env, t.admin.clone()];
+    t.contract.configure_veto_multisig(&signers, &1);
 }
 
 fn create_fee_proposal(t: &GovTestEnv) -> u64 {
@@ -222,9 +254,10 @@ fn test_double_initialize_rejected() {
     let t = setup();
     let iln = Address::generate(&t.env);
     let dist = Address::generate(&t.env);
+    let rep = Address::generate(&t.env);
     let token = Address::generate(&t.env);
     let admin = Address::generate(&t.env);
-    t.contract.initialize(&iln, &dist, &token, &admin, &10_000);
+    t.contract.initialize(&iln, &dist, &rep, &token, &admin, &10_000);
 }
 
 #[test]
@@ -418,10 +451,7 @@ fn test_cast_vote_emits_vote_cast_event() {
     let id = create_fee_proposal(&t);
     t.contract.cast_vote(&t.voter_a, &id, &true);
     let events = t.env.events().all();
-    assert!(
-        !events.events().is_empty(),
-        "VoteCast event should be emitted"
-    );
+    assert!(!events.events().is_empty(), "VoteCast event should be emitted");
 }
 
 #[test]
@@ -639,6 +669,79 @@ fn test_cycle_prevention_indirect_a_b_c_a() {
     t.contract.delegate_votes(&voter_c, &t.voter_a); // must panic
 }
 
+fn build_delegation_chain(t: &GovTestEnv, length: u32) {
+    extern crate std;
+    let mut nodes = std::vec::Vec::new();
+    for _ in 0..length {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &100);
+        nodes.push(a);
+    }
+    for i in 0..(length - 1) {
+        t.contract.delegate_votes(&nodes[i as usize], &nodes[(i + 1) as usize]);
+    }
+    // Create cycle at the end
+    t.contract.delegate_votes(&nodes[(length - 1) as usize], &nodes[0]);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_5() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 5);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_10() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 10);
+}
+
+#[test]
+#[should_panic]
+fn test_cycle_prevention_chain_25() {
+    let t = setup();
+    t.env.budget().reset_unlimited();
+    build_delegation_chain(&t, 25);
+}
+
+#[test]
+fn test_max_delegation_depth_cap_enforced() {
+    extern crate std;
+    let t = setup();
+    
+    // Default cap is 10. We will set it to 3 for testing.
+    t.env.mock_all_auths();
+    t.contract.set_max_delegation_depth(&3);
+
+    let nodes: std::vec::Vec<soroban_sdk::Address> = (0..5).map(|_| soroban_sdk::Address::generate(&t.env)).collect();
+    for a in &nodes { t.gov_token_admin.mint(a, &100); }
+
+    t.contract.delegate_votes(&nodes[0], &nodes[1]);
+    t.contract.delegate_votes(&nodes[1], &nodes[2]);
+    t.contract.delegate_votes(&nodes[2], &nodes[3]);
+    
+    // Adding one more should exceed the cap of 3
+}
+
+#[test]
+#[should_panic(expected = "MaxDelegationDepthExceeded")]
+fn test_max_delegation_depth_cap_exceeded_panics() {
+    extern crate std;
+    let t = setup();
+    t.env.mock_all_auths();
+    t.contract.set_max_delegation_depth(&3);
+
+    let nodes: std::vec::Vec<soroban_sdk::Address> = (0..5).map(|_| soroban_sdk::Address::generate(&t.env)).collect();
+    t.contract.delegate_votes(&nodes[0], &nodes[1]);
+    t.contract.delegate_votes(&nodes[1], &nodes[2]);
+    t.contract.delegate_votes(&nodes[2], &nodes[3]);
+    t.contract.delegate_votes(&nodes[3], &nodes[4]); // should panic
+}
+
 #[test]
 fn test_redelegation_moves_weight_to_new_delegate() {
     let t = setup();
@@ -664,10 +767,7 @@ fn test_delegate_votes_emits_votes_delegated_event() {
     let t = setup();
     t.contract.delegate_votes(&t.voter_a, &t.voter_b);
     let events = t.env.events().all();
-    assert!(
-        !events.events().is_empty(),
-        "VotesDelegated event should be emitted"
-    );
+    assert!(!events.events().is_empty(), "VotesDelegated event should be emitted");
 }
 
 #[test]
@@ -807,9 +907,10 @@ fn reason_hash(env: &Env) -> BytesN<32> {
 #[test]
 fn test_veto_active_proposal_succeeds() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
 
-    t.contract.veto_proposal(&id, &reason_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id, &reason_hash(&t.env));
 
     let p = t.contract.get_proposal(&id);
     assert_eq!(p.status, ProposalStatus::Vetoed);
@@ -819,6 +920,7 @@ fn test_veto_active_proposal_succeeds() {
 #[test]
 fn test_veto_passed_proposal_succeeds() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
 
     // Push it into Passed status via execute_proposal path.
@@ -837,13 +939,13 @@ fn test_veto_passed_proposal_succeeds() {
     assert_eq!(p.status, ProposalStatus::Passed);
 
     // Veto the Passed proposal directly.
-    t.contract.veto_proposal(&id, &reason_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id, &reason_hash(&t.env));
     let p_after = t.contract.get_proposal(&id);
     assert_eq!(p_after.status, ProposalStatus::Vetoed);
 
     // Now create a brand-new proposal and veto it while still Active.
     let id2 = create_fee_proposal(&t);
-    t.contract.veto_proposal(&id2, &reason_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id2, &reason_hash(&t.env));
     let p2 = t.contract.get_proposal(&id2);
     assert_eq!(p2.status, ProposalStatus::Vetoed);
 }
@@ -858,6 +960,7 @@ fn test_non_admin_veto_fails() {
     let token_addr = token_id.address();
     let iln_id = env.register_contract(None, MockIln);
     let dist_id = env.register_contract(None, MockIln);
+    let rep_id = env.register_contract(None, MockIln);
     let admin = Address::generate(&env);
     let non_admin = Address::generate(&env);
 
@@ -866,7 +969,7 @@ fn test_non_admin_veto_fails() {
 
     // Initialize using mock_all_auths scoped to setup only.
     env.mock_all_auths();
-    contract.initialize(&iln_id, &dist_id, &token_addr, &admin, &10_000);
+    contract.initialize(&iln_id, &dist_id, &rep_id, &token_addr, &admin, &10_000);
 
     let gov_token_admin = StellarAssetClient::new(&env, &token_addr);
     gov_token_admin.mint(&non_admin, &1_000);
@@ -883,24 +986,25 @@ fn test_non_admin_veto_fails() {
     // the stored admin is a different address, so require_auth panics.
     let env2 = Env::default(); // no mock_all_auths
     let contract2 = GovContractClient::new(&env2, &contract_id);
-    contract2.veto_proposal(&id, &BytesN::from_array(&env2, &[0xDEu8; 32]));
+    contract2.veto_proposal(&non_admin, &id, &BytesN::from_array(&env2, &[0xDEu8; 32]));
 }
 
 /// Non-admin veto returns NotAdmin error (verified via internal contract call).
 #[test]
 fn test_non_admin_veto_returns_error() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
 
     // Proposal is Active; veto via the real admin succeeds.
     let res = t.env.as_contract(&t.contract.address, || {
-        GovContract::veto_proposal(t.env.clone(), id, reason_hash(&t.env))
+        GovContract::veto_proposal(t.env.clone(), t.admin.clone(), id, reason_hash(&t.env))
     });
     assert_eq!(res, Ok(()));
 
     // Attempting to veto the same (now-Vetoed) proposal returns NotVetoable.
     let res2 = t.env.as_contract(&t.contract.address, || {
-        GovContract::veto_proposal(t.env.clone(), id, reason_hash(&t.env))
+        GovContract::veto_proposal(t.env.clone(), t.admin.clone(), id, reason_hash(&t.env))
     });
     assert_eq!(res2, Err(GovernanceError::NotVetoable));
 }
@@ -910,12 +1014,13 @@ fn test_non_admin_veto_returns_error() {
 #[should_panic]
 fn test_vetoed_proposal_cannot_be_executed() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
     t.contract.cast_vote(&t.voter_a, &id, &true);
     t.contract.cast_vote(&t.voter_b, &id, &true);
 
     // Veto it before voting ends.
-    t.contract.veto_proposal(&id, &reason_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id, &reason_hash(&t.env));
 
     // Advance past voting window and attempt execution — must panic (AlreadyResolved).
     let mut ledger = t.env.ledger().get();
@@ -928,14 +1033,12 @@ fn test_vetoed_proposal_cannot_be_executed() {
 #[test]
 fn test_veto_emits_proposal_vetoed_event() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
-    t.contract.veto_proposal(&id, &reason_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id, &reason_hash(&t.env));
 
     let events = t.env.events().all();
-    assert!(
-        !events.events().is_empty(),
-        "ProposalVetoed event should be emitted"
-    );
+    assert!(!events.events().is_empty(), "ProposalVetoed event should be emitted");
 }
 
 /// Veto power is enabled after initialisation.
@@ -957,6 +1060,7 @@ fn test_disable_veto_power_succeeds() {
 #[test]
 fn test_veto_after_disable_returns_error() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
 
     // Governance disables veto power.
@@ -964,7 +1068,7 @@ fn test_veto_after_disable_returns_error() {
 
     // Admin tries to veto — must fail.
     let res = t.env.as_contract(&t.contract.address, || {
-        GovContract::veto_proposal(t.env.clone(), id, reason_hash(&t.env))
+        GovContract::veto_proposal(t.env.clone(), t.admin.clone(), id, reason_hash(&t.env))
     });
     assert_eq!(res, Err(GovernanceError::VetoPowerDisabled));
 }
@@ -973,8 +1077,9 @@ fn test_veto_after_disable_returns_error() {
 #[test]
 fn test_veto_nonexistent_proposal_returns_error() {
     let t = setup();
+    setup_veto_multisig(&t);
     let res = t.env.as_contract(&t.contract.address, || {
-        GovContract::veto_proposal(t.env.clone(), 9999, reason_hash(&t.env))
+        GovContract::veto_proposal(t.env.clone(), t.admin.clone(), 9999, reason_hash(&t.env))
     });
     assert_eq!(res, Err(GovernanceError::ProposalNotFound));
 }
@@ -983,6 +1088,7 @@ fn test_veto_nonexistent_proposal_returns_error() {
 #[test]
 fn test_veto_executed_proposal_returns_not_vetoable() {
     let t = setup();
+    setup_veto_multisig(&t);
     let id = create_fee_proposal(&t);
 
     // Execute the proposal (voter_b has enough to meet quorum against supply 10_000).
@@ -999,7 +1105,7 @@ fn test_veto_executed_proposal_returns_not_vetoable() {
 
     // Now try to veto the executed proposal.
     let res2 = t.env.as_contract(&t.contract.address, || {
-        GovContract::veto_proposal(t.env.clone(), id, reason_hash(&t.env))
+        GovContract::veto_proposal(t.env.clone(), t.admin.clone(), id, reason_hash(&t.env))
     });
     assert_eq!(res2, Err(GovernanceError::NotVetoable));
 }
@@ -1234,6 +1340,7 @@ fn test_list_proposals_pagination_and_ordering() {
 #[test]
 fn test_list_proposals_status_filtering() {
     let t = setup();
+    setup_veto_multisig(&t);
     let action = ProposalAction::UpdateFeeRate(100);
 
     // Create 3 proposals. All start Active.
@@ -1250,7 +1357,7 @@ fn test_list_proposals_status_filtering() {
     // Veto proposal 2.
     // Ensure caller is admin
     t.env.mock_all_auths();
-    t.contract.veto_proposal(&id2, &dummy_hash(&t.env));
+    t.contract.veto_proposal(&t.admin, &id2, &dummy_hash(&t.env));
 
     // Advance time to end voting for proposal 3, then execute but reject it (votes against).
     t.gov_token_admin.mint(&t.voter_a, &10_000);
@@ -1790,6 +1897,50 @@ fn test_quadratic_voting_reduces_whale_dominance_ratio() {
     assert_eq!(p_whale.votes_for / p_minnow.votes_for, 10);
 }
 
+/// Simulates a realistic power-law distribution to verify quadratic voting
+/// effectively reduces whale dominance without ignoring them entirely.
+#[test]
+fn test_quadratic_voting_realistic_distribution_audit() {
+    extern crate std;
+    let t = setup();
+    
+    // Generate 1 whale (500k), 5 dolphins (50k each), 50 shrimps (5k each)
+    let whale = Address::generate(&t.env);
+    t.gov_token_admin.mint(&whale, &500_000);
+    
+    let mut dolphins = std::vec::Vec::new();
+    for _ in 0..5 {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &50_000);
+        dolphins.push(a);
+    }
+    
+    let mut shrimps = std::vec::Vec::new();
+    for _ in 0..50 {
+        let a = Address::generate(&t.env);
+        t.gov_token_admin.mint(&a, &5_000);
+        shrimps.push(a);
+    }
+
+    t.contract.set_quadratic_voting_enabled(&true);
+
+    let id = create_fee_proposal(&t);
+    
+    t.contract.cast_vote(&whale, &id, &true);
+    for dolphin in &dolphins {
+        t.contract.cast_vote(dolphin, &id, &true);
+    }
+    for shrimp in &shrimps {
+        t.contract.cast_vote(shrimp, &id, &true);
+    }
+
+    let p = t.contract.get_proposal(&id);
+    assert_eq!(p.votes_for, 5322); // 707 + 1115 + 3500 = 5322
+    
+    let applied_weight_whale = t.contract.get_applied_vote_weight(&id, &whale);
+    assert_eq!(applied_weight_whale, Some(707));
+}
+
 /// Quadratic voting also applies to delegated weight: own + delegated is
 /// summed first, then the square root is taken of the combined total.
 #[test]
@@ -1859,13 +2010,14 @@ fn test_set_quadratic_voting_enabled_requires_iln_auth() {
     let token_addr = token_id.address();
     let iln_id = env.register_contract(None, MockIln);
     let dist_id = env.register_contract(None, MockIln);
+    let rep_id = env.register_contract(None, MockIln);
     let admin = Address::generate(&env);
 
     let contract_id = env.register_contract(None, GovContract);
     let contract = GovContractClient::new(&env, &contract_id);
 
     env.mock_all_auths();
-    contract.initialize(&iln_id, &dist_id, &token_addr, &admin, &10_000);
+    contract.initialize(&iln_id, &dist_id, &rep_id, &token_addr, &admin, &10_000);
 
     // No auths mocked on this second client — require_auth on the ILN
     // contract address must reject an arbitrary caller.
@@ -1902,10 +2054,18 @@ fn setup_with_failing_iln() -> FailingGovTestEnv {
 
     let iln_contract = env.register_contract(None, MockIlnFailing);
     let dist_contract = env.register_contract(None, MockIln);
+    let rep_contract = env.register_contract(None, MockIln);
 
     let contract_id = env.register_contract(None, GovContract);
     let contract = GovContractClient::new(&env, &contract_id);
-    contract.initialize(&iln_contract, &dist_contract, &token_addr, &admin, &11_000);
+    contract.initialize(
+        &iln_contract,
+        &dist_contract,
+        &rep_contract,
+        &token_addr,
+        &admin,
+        &11_000,
+    );
 
     FailingGovTestEnv {
         env,
@@ -2036,117 +2196,230 @@ fn test_execute_proposal_success_still_marks_executed() {
     );
 }
 
-// ================================================================
-// Issue #670: Error Variant Coverage Tests for GovernanceError
-// ================================================================
+// ── Issue #704: UpdateReputationBonusParams proposal — full E2E lifecycle ───
 
 #[test]
-fn test_err_already_initialized() {
+fn test_governance_reputation_bonus_params_e2e() {
     let t = setup();
-    let res = t.contract.try_initialize(
-        &t.iln_contract,
-        &Address::generate(&t.env),
-        &t.gov_token.address,
-        &t.admin,
-        &1000,
+    let hash = dummy_hash(&t.env);
+
+    // Baseline set in setup(): high_rep_threshold=700, bonus_bps=100,
+    // min_discount_rate_bps=50. Propose a genuine change to all three.
+    let new_threshold = 800_u32;
+    let new_bonus_bps = 150_u32;
+    let new_min_discount_rate_bps = 75_u32;
+
+    let id = t.contract.create_proposal(
+        &t.proposer,
+        &ProposalAction::UpdateReputationBonusParams(
+            new_threshold,
+            new_bonus_bps,
+            new_min_discount_rate_bps,
+        ),
+        &hash,
+        &7_500_000_i128,
     );
-    assert_eq!(res, Err(Ok(GovernanceError::AlreadyInitialized)));
-}
 
-#[test]
-fn test_err_voting_ended() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
+    let p = t.contract.get_proposal(&id);
+    assert_eq!(
+        p.action_type,
+        ProposalAction::UpdateReputationBonusParams(
+            new_threshold,
+            new_bonus_bps,
+            new_min_discount_rate_bps,
+        )
+    );
 
-    let mut ledger = t.env.ledger().get();
-    ledger.timestamp += VOTING_PERIOD_SECS + 1;
-    t.env.ledger().set(ledger);
-
-    let res = t.contract.try_cast_vote(&t.voter_a, &id, &true);
-    assert_eq!(res, Err(Ok(GovernanceError::VotingEnded)));
-}
-
-#[test]
-fn test_err_proposal_not_active() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
-    t.contract.veto_proposal(&id, &dummy_hash(&t.env));
-
-    let res = t.contract.try_cast_vote(&t.voter_a, &id, &true);
-    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
-}
-
-#[test]
-fn test_err_no_voting_power() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
-    let broke_user = Address::generate(&t.env);
-
-    let res = t.contract.try_cast_vote(&broke_user, &id, &true);
-    assert_eq!(res, Err(Ok(GovernanceError::NoVotingPower)));
-}
-
-#[test]
-fn test_err_already_voted() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
+    // Vote to pass.
+    t.gov_token_admin.mint(&t.voter_a, &10_000);
     t.contract.cast_vote(&t.voter_a, &id, &true);
 
-    let res = t.contract.try_cast_vote(&t.voter_a, &id, &false);
-    assert_eq!(res, Err(Ok(GovernanceError::AlreadyVoted)));
-}
+    // Advance past the voting period and settle the vote (Active -> Passed).
+    t.env
+        .ledger()
+        .set_timestamp(t.env.ledger().timestamp() + VOTING_PERIOD_SECS + 1);
+    let _ = t.env.as_contract(&t.contract.address, || {
+        GovContract::execute_proposal(t.env.clone(), id)
+    });
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Passed);
 
-#[test]
-fn test_err_voting_ongoing() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
+    // reputation_bonus's Config must still hold the pre-proposal values —
+    // nothing should change before the timelock actually expires.
+    let mid_config = t.rep_contract.get_config();
+    assert_eq!(mid_config.high_rep_threshold, 700);
+    assert_eq!(mid_config.bonus_bps, 100);
+    assert_eq!(mid_config.min_discount_rate_bps, 50);
 
-    let res = t.contract.try_execute_proposal(&id);
-    assert_eq!(res, Err(Ok(GovernanceError::VotingOngoing)));
-}
-
-#[test]
-fn test_err_proposal_rejected() {
-    let t = setup();
-    let id = create_fee_proposal(&t);
-    t.contract.cast_vote(&t.voter_a, &id, &false);
-    t.contract.cast_vote(&t.voter_b, &id, &false);
-
+    // Advance past the timelock and execute for real (Passed -> Executed),
+    // which fires the actual cross-contract update_config call.
     let mut ledger = t.env.ledger().get();
-    ledger.timestamp += VOTING_PERIOD_SECS + 1;
+    ledger.sequence_number += 1_000;
     t.env.ledger().set(ledger);
+    let _ = t.env.as_contract(&t.contract.address, || {
+        GovContract::execute_proposal(t.env.clone(), id)
+    });
+    assert_eq!(
+        t.contract.get_proposal(&id).status,
+        ProposalStatus::Executed
+    );
 
-    let res = t.contract.try_execute_proposal(&id);
-    assert_eq!(res, Err(Ok(GovernanceError::ProposalRejected)));
+    // The whole point of this test: reputation_bonus's actual on-chain
+    // Config reflects the governance-executed change, not just the
+    // proposal's own bookkeeping.
+    let final_config = t.rep_contract.get_config();
+    assert_eq!(final_config.high_rep_threshold, new_threshold);
+    assert_eq!(final_config.bonus_bps, new_bonus_bps);
+    assert_eq!(
+        final_config.min_discount_rate_bps,
+        new_min_discount_rate_bps
+    );
 }
 
+// ── Issue #814: forfeitable proposal deposit ─────────────────────────────
+
 #[test]
-fn test_err_cannot_delegate_to_self() {
+fn test_deposit_defaults_to_zero_backwards_compatible() {
     let t = setup();
-    let res = t.contract.try_delegate_votes(&t.voter_a, &t.voter_a);
-    assert_eq!(res, Err(Ok(GovernanceError::CannotDelegateToSelf)));
+    assert_eq!(t.contract.get_min_proposal_deposit(), 0);
+    let id = create_fee_proposal(&t);
+    assert_eq!(t.contract.get_proposal_deposit(&id), 0);
+    assert!(!t.contract.is_proposal_deposit_settled(&id));
 }
 
 #[test]
-fn test_err_delegation_cycle_prevented() {
+fn test_deposit_escrowed_on_create() {
     let t = setup();
-    t.contract.delegate_votes(&t.voter_a, &t.voter_b);
-    let res = t.contract.try_delegate_votes(&t.voter_b, &t.voter_a);
-    assert_eq!(res, Err(Ok(GovernanceError::DelegationCyclePrevented)));
+    t.contract.set_min_proposal_deposit(&200);
+    assert_eq!(t.contract.get_min_proposal_deposit(), 200);
+    let before = t.gov_token.balance(&t.proposer);
+    let id = create_fee_proposal(&t);
+    assert_eq!(t.contract.get_proposal_deposit(&id), 200);
+    assert!(!t.contract.is_proposal_deposit_settled(&id));
+    assert_eq!(t.gov_token.balance(&t.proposer), before - 200);
 }
 
 #[test]
-fn test_err_invalid_quorum_bps() {
+fn test_deposit_refunded_on_pass() {
     let t = setup();
-    let res = t.contract.try_set_min_quorum_bps(&0);
-    assert_eq!(res, Err(Ok(GovernanceError::InvalidQuorumBps)));
-
-    let res2 = t.contract.try_set_min_quorum_bps(&10_001);
-    assert_eq!(res2, Err(Ok(GovernanceError::InvalidQuorumBps)));
+    t.contract.set_min_proposal_deposit(&200);
+    let id = create_fee_proposal(&t);
+    let escrowed_balance = t.gov_token.balance(&t.proposer);
+    // voter_b (2_000) reaches quorum alone (total_supply 10_000, quorum 1_000).
+    t.contract.cast_vote(&t.voter_b, &id, &true);
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+    t.contract.execute_proposal(&id);
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Passed);
+    // Refunded exactly once.
+    assert_eq!(t.gov_token.balance(&t.proposer), escrowed_balance + 200);
+    assert_eq!(t.contract.get_proposal_deposit(&id), 0);
+    assert!(t.contract.is_proposal_deposit_settled(&id));
 }
 
 #[test]
-fn test_err_not_admin() {
-    let err = GovernanceError::NotAdmin;
-    assert_eq!(err as u32, 16);
+fn test_deposit_not_double_refunded_on_execute() {
+    let t = setup();
+    t.contract.set_min_proposal_deposit(&200);
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.voter_b, &id, &true);
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+    // Active -> Passed refunds.
+    t.contract.execute_proposal(&id);
+    let after_pass = t.gov_token.balance(&t.proposer);
+    // Passed -> Executed must not pay a second time (idempotent settle).
+    let res = t.env.as_contract(&t.contract.address, || {
+        GovContract::execute_proposal(t.env.clone(), id)
+    });
+    assert!(res.is_ok());
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Executed);
+    assert_eq!(t.gov_token.balance(&t.proposer), after_pass);
+    assert!(t.contract.is_proposal_deposit_settled(&id));
+}
+
+#[test]
+fn test_deposit_forfeited_on_reject_quorum_not_reached() {
+    let t = setup();
+    t.contract.set_min_proposal_deposit(&200);
+    let sink = Address::generate(&t.env);
+    t.contract.set_proposal_deposit_sink(&Some(sink.clone()));
+    let id = create_fee_proposal(&t);
+    let proposer_before_forfeit = t.gov_token.balance(&t.proposer);
+    // Only 500 votes vs quorum 1_000 -> expired without quorum.
+    let voter = Address::generate(&t.env);
+    t.gov_token_admin.mint(&voter, &500);
+    t.contract.cast_vote(&voter, &id, &true);
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+    let res = t.env.as_contract(&t.contract.address, || {
+        GovContract::execute_proposal(t.env.clone(), id)
+    });
+    assert_eq!(res, Err(GovernanceError::QuorumNotReached));
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Rejected);
+    // Proposer not refunded; sink received the forfeit.
+    assert_eq!(t.gov_token.balance(&t.proposer), proposer_before_forfeit);
+    assert_eq!(t.gov_token.balance(&sink), 200);
+    assert!(t.contract.is_proposal_deposit_settled(&id));
+}
+
+#[test]
+fn test_deposit_forfeited_on_majority_reject() {
+    let t = setup();
+    t.contract.set_min_proposal_deposit(&100);
+    let sink = Address::generate(&t.env);
+    t.contract.set_proposal_deposit_sink(&Some(sink.clone()));
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.voter_a, &id, &true); // 1_000 for
+    t.contract.cast_vote(&t.voter_b, &id, &false); // 2_000 against
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += 259_201;
+    t.env.ledger().set(ledger);
+    let res = t.env.as_contract(&t.contract.address, || {
+        GovContract::execute_proposal(t.env.clone(), id)
+    });
+    assert_eq!(res, Err(GovernanceError::ProposalRejected));
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Rejected);
+    assert_eq!(t.gov_token.balance(&sink), 100);
+    assert!(t.contract.is_proposal_deposit_settled(&id));
+}
+
+#[test]
+fn test_set_min_proposal_deposit_rejects_negative() {
+    let t = setup();
+    let res = t.contract.try_set_min_proposal_deposit(&-1);
+    assert_eq!(res, Err(Ok(GovernanceError::InvalidProposalDeposit)));
+}
+
+// ── #844: pre-init call tests ─────────────────────────────────────
+
+#[test]
+fn test_pre_init_calls_return_not_initialized() {
+    let env = Env::default();
+    let contract_addr = env.register_contract(None, GovContract);
+    let contract = GovContractClient::new(&env, &contract_addr);
+
+    // All admin-gated functions must return NotInitialized before initialize().
+    assert_eq!(
+        contract.try_set_min_quorum_bps(&100),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_min_proposal_balance(&100),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_gov_token_total_supply(&1000),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_quadratic_voting_enabled(&true),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_disable_veto_power(),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
 }

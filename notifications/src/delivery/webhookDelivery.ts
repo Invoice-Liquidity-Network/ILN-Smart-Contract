@@ -1,5 +1,5 @@
 import { CircuitBreaker, type CircuitState } from './circuitBreaker.js';
-import { SlidingWindowRateLimiter } from './rateLimiter.js';
+import { SlidingWindowRateLimiter, type RateLimiterOptions } from './rateLimiter.js';
 import { signPayload } from './signature.js';
 import type { RetryQueue } from '../queue/retryQueue.js';
 import type { DeliveryHistoryStore } from './deliveryHistory.js';
@@ -27,6 +27,13 @@ export interface WebhookDeliveryOptions {
   now?: () => number;
   retryQueue?: RetryQueue;
   historyStore?: DeliveryHistoryStore;
+  /**
+   * Per-endpoint rate-limit policy. Limits are already scoped per webhook
+   * endpoint (one limiter per endpoint id / URL), so a misconfigured
+   * high-volume subscriber can never starve delivery to other subscribers
+   * (Issue #728). These options only tune the budget for each endpoint.
+   */
+  limiterOptions?: RateLimiterOptions;
 }
 
 interface EndpointState {
@@ -67,6 +74,12 @@ export class WebhookDeliveryService {
 
     const body = JSON.stringify(payload);
     const signature = signPayload(endpoint.secret, body);
+    try {
+      await validateWebhookUrl(endpoint.url);
+    } catch (err) {
+      this.opts.logger?.(`webhook_ssrf_blocked url=${endpoint.url} err=${err}`);
+      return { ok: false, status: 0, skippedReason: undefined };
+    }
     let statusCode = 0;
     let responseBody = '';
     try {
@@ -144,7 +157,7 @@ export class WebhookDeliveryService {
     if (!s) {
       s = {
         breaker: new CircuitBreaker({ now: this.opts.now }),
-        limiter: new SlidingWindowRateLimiter({ now: this.opts.now }),
+        limiter: new SlidingWindowRateLimiter({ now: this.opts.now, ...this.opts.limiterOptions }),
       };
       this.endpoints.set(endpointId, s);
     }

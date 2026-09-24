@@ -1,11 +1,13 @@
 // @ts-nocheck
 import {
+  Address,
   Contract,
   SorobanRpc,
   TransactionBuilder,
   BASE_FEE,
   nativeToScVal,
   scValToNative,
+  xdr,
   Account,
   Transaction,
 } from "@stellar/stellar-sdk";
@@ -98,6 +100,21 @@ export class GovernanceContractError extends Error {
   static ExecutionFailed = class ExecutionFailed extends GovernanceContractError {
     constructor(msg = "Proposal's cross-contract execution call failed; it remains Passed and can be retried") { super(msg, 20); }
   };
+  static MaxDelegationDepthExceeded = class MaxDelegationDepthExceeded extends GovernanceContractError {
+    constructor(msg = "Delegation chain exceeds the maximum depth cap") { super(msg, 21); }
+  };
+  static VetoMultisigNotConfigured = class VetoMultisigNotConfigured extends GovernanceContractError {
+    constructor(msg = "Veto multisig has not been configured yet") { super(msg, 22); }
+  };
+  static NotVetoSigner = class NotVetoSigner extends GovernanceContractError {
+    constructor(msg = "Caller is not a configured veto signer") { super(msg, 23); }
+  };
+  static VetoAlreadyApproved = class VetoAlreadyApproved extends GovernanceContractError {
+    constructor(msg = "This signer already approved the veto for this proposal") { super(msg, 24); }
+  };
+  static InvalidVetoMultisigConfig = class InvalidVetoMultisigConfig extends GovernanceContractError {
+    constructor(msg = "Veto signer list/threshold combination is invalid") { super(msg, 25); }
+  };
 
   static fromError(error: unknown): Error {
     const match = String(error).match(/Error\(Contract, (\d+)\)/);
@@ -123,6 +140,11 @@ export class GovernanceContractError extends Error {
       case 18: return new GovernanceContractError.VetoPowerDisabled();
       case 19: return new GovernanceContractError.InsufficientProposerBalance();
       case 20: return new GovernanceContractError.ExecutionFailed();
+      case 21: return new GovernanceContractError.MaxDelegationDepthExceeded();
+      case 22: return new GovernanceContractError.VetoMultisigNotConfigured();
+      case 23: return new GovernanceContractError.NotVetoSigner();
+      case 24: return new GovernanceContractError.VetoAlreadyApproved();
+      case 25: return new GovernanceContractError.InvalidVetoMultisigConfig();
       default: return new GovernanceContractError(`iln_governance error: ${String(error)}`);
     }
   }
@@ -518,18 +540,63 @@ export async function undelegateVotes(
 }
 
 // ---------------------------------------------------------------------------
-// Admin veto (#472)
+// Multisig-gated veto (#472, migrated to multisig by #642)
 // ---------------------------------------------------------------------------
 
 /**
- * Admin-only: block a proposal from proceeding.
+ * Configure (or reconfigure) the veto multisig signer set and approval
+ * threshold.
  *
- * Wraps `veto_proposal(proposal_id, reason_hash)`. Requires the configured
- * admin's signature — `sourceAccount` must be the stored admin account (see
- * {@link setExecutionDelay}, which sets the admin on first call). Only
- * proposals in `Active` or `Passed` status can be vetoed.
+ * Wraps `configure_veto_multisig(signers, threshold)`. On the first call
+ * (no veto multisig configured yet) the stored admin account must sign; on
+ * subsequent calls the configured ILN contract must authorize instead (the
+ * same governance-vote-gated pattern as {@link setMinQuorumBps}).
+ *
+ * @throws {GovernanceContractError.InvalidVetoMultisigConfig} If `signers` is empty, contains a duplicate, or `threshold` is outside `1..=signers.length`
+ */
+export async function configureVetoMultisig(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  signers: string[],
+  threshold: number,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string
+): Promise<{ txHash: string }> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "configure_veto_multisig",
+    xdr.ScVal.scvVec(signers.map((s) => new Address(s).toScVal())),
+    nativeToScVal(threshold, { type: "u32" })
+  );
+
+  const { txHash } = await sendGovernanceCall(
+    server,
+    sourceAccount,
+    networkPassphrase,
+    op,
+    signTransaction,
+    GovernanceContractError.fromError
+  );
+  return { txHash };
+}
+
+/**
+ * Approve vetoing a proposal, blocking it from proceeding once enough
+ * signers agree.
+ *
+ * Wraps `veto_proposal(signer, proposal_id, reason_hash)`. Requires the
+ * signature of `signerAddress`, which must be one of the configured
+ * `VetoSigners` (see {@link configureVetoMultisig}) — a single admin key can
+ * no longer veto unilaterally (Issue #642). Once `threshold` distinct
+ * signers have called this for the same `proposalId`, the proposal
+ * transitions to `Vetoed`; until then the call simply records an approval.
+ * Only proposals in `Active` or `Passed` status can be vetoed.
  *
  * @param reasonHash Hex-encoded 32-byte hash of the off-chain veto rationale
+ * @throws {GovernanceContractError.VetoMultisigNotConfigured} If configureVetoMultisig() has not been called yet
+ * @throws {GovernanceContractError.NotVetoSigner} If `signerAddress` is not a configured veto signer
+ * @throws {GovernanceContractError.VetoAlreadyApproved} If `signerAddress` already approved this proposal's veto
  * @throws {GovernanceContractError.VetoPowerDisabled} If disableVetoPower() was already called
  * @throws {GovernanceContractError.NotVetoable} If the proposal isn't Active or Passed
  * @throws {GovernanceContractError.ProposalNotFound} If the proposal id is unknown
@@ -537,6 +604,7 @@ export async function undelegateVotes(
 export async function vetoProposal(
   server: SorobanRpc.Server,
   contractAddress: string,
+  signerAddress: string,
   proposalId: bigint,
   reasonHash: string,
   sourceAccount: Account,
@@ -546,6 +614,7 @@ export async function vetoProposal(
   const contract = new Contract(contractAddress);
   const op = contract.call(
     "veto_proposal",
+    new Address(signerAddress).toScVal(),
     nativeToScVal(proposalId, { type: "u64" }),
     nativeToScVal(Buffer.from(reasonHash, "hex"), { type: "bytes" })
   );

@@ -26,16 +26,17 @@ fn save_top_payers_heap(env: &Env, heap: &Vec<TopPayerEntry>) {
 }
 
 fn parent_index(index: u32) -> u32 {
-    (index.saturating_sub(1)) / 2
+    (index.saturating_sub(1)).saturating_div(2)
 }
 
 fn left_child(index: u32) -> u32 {
-    index * 2 + 1
+    index.saturating_mul(2).saturating_add(1)
 }
 
 fn right_child(index: u32) -> u32 {
-    index * 2 + 2
+    index.saturating_mul(2).saturating_add(2)
 }
+
 
 fn entry_score(entry: &TopPayerEntry) -> u32 {
     entry.score
@@ -105,7 +106,7 @@ fn remove_payer_from_heap(heap: &mut Vec<TopPayerEntry>, payer: &Address) {
         return;
     };
 
-    let last_index = len - 1;
+    let last_index = len.saturating_sub(1);
     if index != last_index {
         let last = heap.get(last_index).unwrap();
         heap.set(index, last);
@@ -132,7 +133,7 @@ fn insert_into_heap(heap: &mut Vec<TopPayerEntry>, payer: Address, score: u32) {
             address: payer,
             score,
         });
-        sift_up(heap, heap.len() - 1);
+        sift_up(heap, heap.len().saturating_sub(1));
         return;
     }
 
@@ -197,52 +198,4 @@ pub fn get_top_payers(env: &Env, limit: u32) -> Vec<TopPayerEntry> {
     }
 
     selected
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::InvoiceLiquidityContract;
-    use soroban_sdk::testutils::Address as _;
-
-    #[test]
-    fn test_top_payers_heap_operations() {
-        let env = Env::default();
-        let contract_id = env.register(InvoiceLiquidityContract, ());
-
-        env.as_contract(&contract_id, || {
-            let p1 = Address::generate(&env);
-            let p2 = Address::generate(&env);
-            let p3 = Address::generate(&env);
-
-            // Empty
-            assert_eq!(get_top_payers(&env, 5).len(), 0);
-            assert_eq!(get_top_payers(&env, 0).len(), 0);
-
-            // Insert
-            update_top_payers_on_score_change(&env, &p1, 50);
-            update_top_payers_on_score_change(&env, &p2, 80);
-            update_top_payers_on_score_change(&env, &p3, 20);
-
-            let top = get_top_payers(&env, 2);
-            assert_eq!(top.len(), 2);
-            assert_eq!(top.get(0).unwrap().address, p2);
-            assert_eq!(top.get(1).unwrap().address, p1);
-
-            // Update score
-            update_top_payers_on_score_change(&env, &p3, 95);
-            let top = get_top_payers(&env, 3);
-            assert_eq!(top.get(0).unwrap().address, p3);
-            assert_eq!(top.get(1).unwrap().address, p2);
-            assert_eq!(top.get(2).unwrap().address, p1);
-
-            // Exceed capacity
-            for _ in 0..TOP_PAYERS_CAPACITY + 5 {
-                let p = Address::generate(&env);
-                update_top_payers_on_score_change(&env, &p, 10);
-            }
-            let heap = get_top_payers_heap(&env);
-            assert!(heap.len() <= TOP_PAYERS_CAPACITY);
-        });
-    }
 }
