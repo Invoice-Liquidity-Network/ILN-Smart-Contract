@@ -65,6 +65,27 @@ Per [§2, finding 6](#2-findings-by-governance-hardening-area) and [ADR-012](adr
 
 ---
 
+## 5. Adversarial Test Coverage (Issue #813)
+
+A dedicated test suite combines all governance attack vectors to verify the system rejects or economically deters combined attacks, not just isolated ones:
+
+### Test Cases Implemented
+
+| Test | Attack Vector | Outcome | Issue |
+|---|---|---|---|
+| `test_adversarial_flash_loan_attack()` | Flash-loan borrow, vote in same transaction, repay | ✅ Rejected: vote weight pinned at proposal creation (before borrow) | #813 |
+| `test_sybil_proposal_spam()` | Create many Sybil addresses, spam proposals | ✅ Rejected: MinProposalBalance gate prevents spam | #813 |
+| `test_delegation_cycle_prevention()` | Create delegation cycles (A→B→C→A) to confuse vote tallies | ✅ Rejected: cycle detection guard in `delegate_votes` | #813 |
+| `test_delegation_depth_bound()` | Create deep delegation chain (>10 hops) to increase vote resolution cost | ✅ Rejected: MaxDelegationDepth = 10 enforced | #813 |
+| `test_combined_adversarial_attack()` | Flash-loan + Sybil + delegation + voting in sequence | ✅ Rejected: honest voters outvote combined attack due to snapshot + quorum mechanics | #813 |
+| `test_quorum_manipulation_accepted_risk()` | Undersupply `total_supply` argument to lower quorum threshold | ⚠️ Accepted risk: admin veto is interim backstop until on-chain supply read | #813 |
+
+**Test location:** [`contracts/tests/tests_adversarial_governance.rs`](../contracts/tests/tests_adversarial_governance.rs)
+
+**Coverage:** Each test demonstrates both the attack mechanism and the mitigation that prevents it, with comments explaining why the attack fails.
+
+---
+
 ## 4. Cross-references
 
 - [`docs/governance.md`](governance.md) — full mechanics: proposal lifecycle, voting window, quorum/majority rules, veto functions, past decisions.
@@ -72,7 +93,8 @@ Per [§2, finding 6](#2-findings-by-governance-hardening-area) and [ADR-012](adr
 - [`docs/adr/ADR-009-quadratic-voting.md`](adr/ADR-009-quadratic-voting.md) — quadratic weight calculation, `isqrt`, the `AppliedVoteWeight` receipt, and the launch recommendation.
 - [`docs/adr/ADR-012-governance-multisig-handoff.md`](adr/ADR-012-governance-multisig-handoff.md) — the four-phase authority handoff plan and its exit criteria.
 - [`docs/adr/adr-008-multisig-admin.md`](adr/adr-008-multisig-admin.md) — the contract-level M-of-N multisig design (`multisig.rs`), not yet wired.
-- [`docs/threat-model.md`](threat-model.md) — §E (governance): flash-loan analysis (E3), reentrancy notes, parameter-validation findings.
+- [`docs/threat-model.md`](threat-model.md) — §E (governance): flash-loan analysis (E3), reentrancy notes, parameter-validation findings. Includes reviewer sign-off (Issue #811).
+- [`docs/formal-verification.md`](formal-verification.md) — §14–15 governance snapshot & delegation invariants (Issue #810) and test coverage matrix.
 - [`docs/disaster-recovery-multisig-signers.md`](disaster-recovery-multisig-signers.md) — recovery path for lost/compromised admin signer majority.
 - [`docs/oracle-attack-economics.md`](oracle-attack-economics.md) — the economic-security counterpart this document mirrors in structure.
 - [`docs/incident-response-runbook.md`](incident-response-runbook.md) — the operational procedure for acting on a governance takeover attempt in real time (invoking `veto_proposal` / `pause()`).
