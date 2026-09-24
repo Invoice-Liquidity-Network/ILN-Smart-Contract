@@ -372,6 +372,81 @@ impl InsurancePool {
         Ok(())
     }
 
+    /// Propose a new risk multiplier. Requires current admin auth. Overwrites
+    /// any previously pending risk multiplier proposal.
+    pub fn propose_risk_multiplier(
+        env: Env,
+        numerator: i128,
+        denominator: i128,
+    ) -> Result<u64, InsuranceError> {
+        Self::require_admin(&env);
+        if numerator < 0 || denominator <= 0 {
+            return Err(InsuranceError::InvalidAmount);
+        }
+
+        let eta = env
+            .ledger()
+            .timestamp()
+            .saturating_add(TIMELOCK_DELAY_SECONDS);
+
+        let storage = env.storage().instance();
+        storage.set(&DataKey::PendingRiskMultiplierNumerator, &numerator);
+        storage.set(&DataKey::PendingRiskMultiplierDenominator, &denominator);
+        storage.set(&DataKey::RiskMultiplierEta, &eta);
+
+        env.events()
+            .publish((symbol_short!("rm_prop"),), (numerator, denominator, eta));
+        Ok(eta)
+    }
+
+    /// Execute a previously proposed risk multiplier change once its timelock
+    /// has expired. Callable by anyone once the delay has elapsed.
+    pub fn execute_risk_multiplier(env: Env) -> Result<(), InsuranceError> {
+        let storage = env.storage().instance();
+        let numerator: i128 = storage
+            .get(&DataKey::PendingRiskMultiplierNumerator)
+            .ok_or(InsuranceError::NoPendingProposal)?;
+        let denominator: i128 = storage
+            .get(&DataKey::PendingRiskMultiplierDenominator)
+            .ok_or(InsuranceError::NoPendingProposal)?;
+        let eta: u64 = storage
+            .get(&DataKey::RiskMultiplierEta)
+            .ok_or(InsuranceError::NoPendingProposal)?;
+
+        if env.ledger().timestamp() < eta {
+            return Err(InsuranceError::TimelockNotExpired);
+        }
+
+        let old_num = Self::get_risk_multiplier_numerator(env.clone());
+        let old_den = Self::get_risk_multiplier_denominator(env.clone());
+
+        storage.set(&DataKey::RiskMultiplierNumerator, &numerator);
+        storage.set(&DataKey::RiskMultiplierDenominator, &denominator);
+        storage.remove(&DataKey::PendingRiskMultiplierNumerator);
+        storage.remove(&DataKey::PendingRiskMultiplierDenominator);
+        storage.remove(&DataKey::RiskMultiplierEta);
+
+        env.events().publish(
+            (symbol_short!("rm_exec"),),
+            (old_num, old_den, numerator, denominator),
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending risk multiplier change proposal. Requires current admin auth.
+    pub fn cancel_risk_multiplier(env: Env) -> Result<(), InsuranceError> {
+        Self::require_admin(&env);
+        let storage = env.storage().instance();
+        if !storage.has(&DataKey::PendingRiskMultiplierNumerator) {
+            return Err(InsuranceError::NoPendingProposal);
+        }
+        storage.remove(&DataKey::PendingRiskMultiplierNumerator);
+        storage.remove(&DataKey::PendingRiskMultiplierDenominator);
+        storage.remove(&DataKey::RiskMultiplierEta);
+        env.events().publish((symbol_short!("rm_cncl"),), ());
+        Ok(())
+    }
+
     /// Get the LP's historical default count.
     pub fn get_default_count(env: Env, lp: Address) -> u32 {
         env.storage()
@@ -653,7 +728,10 @@ impl InsurancePool {
 
     /// Set premium rate directly via governance.
     /// Requires governance contract authorization.
-    pub fn set_premium_rate_via_governance(env: Env, _rate: u32) -> Result<(), InsuranceError> {
+    pub fn set_premium_rate_via_governance(
+        env: Env,
+        rate_bps: u32,
+    ) -> Result<(), InsuranceError> {
         let admin: Address = env
             .storage()
             .instance()
@@ -661,7 +739,17 @@ impl InsurancePool {
             .ok_or(InsuranceError::NotInitialized)?;
         admin.require_auth();
 
-        env.events().publish((symbol_short!("prem_gov"),), _rate);
+        if rate_bps == 0 || rate_bps > 10_000 {
+            return Err(InsuranceError::InvalidAmount);
+        }
+
+        let old_rate: u32 = Self::get_base_premium_rate_bps(env.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::BasePremiumRateBps, &rate_bps);
+
+        env.events()
+            .publish((symbol_short!("prem_gov"),), (old_rate as i128, rate_bps as i128));
         Ok(())
     }
 

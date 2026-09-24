@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token::StellarAssetClient, Address, Env,
-    Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::StellarAssetClient,
+    Address, Env, Symbol,
 };
 
 const HALF_TOKEN: i128 = 5_000_000;
@@ -17,6 +17,14 @@ const DEFAULT_PAYER_REWARD_RATE: i128 = HALF_TOKEN;
 /// at 7-decimal stroops). Prevents a compromised/misconfigured ILN from
 /// accruing absurd volumes in one invocation.
 pub const MAX_LP_ACCRUAL_PER_CALL: i128 = 10_000_000_000_000; // 1e13
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum DistributionError {
+    /// Contract has already been initialized.
+    AlreadyInitialized = 1,
+}
 
 #[contracttype]
 pub enum StorageKey {
@@ -82,9 +90,13 @@ pub struct IlnDistribution;
 
 #[contractimpl]
 impl IlnDistribution {
-    pub fn initialize(env: Env, iln_contract: Address, gov_token: Address) {
+    pub fn initialize(
+        env: Env,
+        iln_contract: Address,
+        gov_token: Address,
+    ) -> Result<(), DistributionError> {
         if env.storage().instance().has(&StorageKey::Initialized) {
-            panic!("already initialized");
+            return Err(DistributionError::AlreadyInitialized);
         }
 
         env.storage()
@@ -114,6 +126,8 @@ impl IlnDistribution {
                 gov_token,
             },
         );
+
+        Ok(())
     }
 
     pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
