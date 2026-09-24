@@ -125,6 +125,11 @@ fn test_full_protocol_lifecycle_across_all_five_contracts() {
         &GOV_TOTAL_SUPPLY,
     );
 
+    // Issue #805: checkpoint the voter and age it past the holding period
+    // so the governance vote below exercises the eligible path.
+    governance.checkpoint_balance(&voter);
+    advance_ledger(&env, 11, 55);
+
     // reputation_bonus's admin is governance's own address, matching the
     // authorization pattern execute_proposal relies on (Issue #704).
     rep.init(&governance_id);

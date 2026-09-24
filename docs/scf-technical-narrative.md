@@ -32,6 +32,20 @@ any approved token (EURC, USDC, XLM, and others).
 - **The protocol** is governed on-chain with transparent rules for dispute
   resolution, defaults, and parameter updates
 
+### Reputation and NFT lifecycle
+
+Every participant starts at a neutral 50/50 reputation that accrues
+asymmetrically (+1 per on-time settlement, −5 per default, floor 0, appeal
+restores the pre-default score) and decays lazily toward 0 with inactivity —
+no keeper required. Each funded invoice is simultaneously a transferable NFT
+claim (minted on funding, held by the funder, burned on settlement), so *who
+holds the claim* and *how the payer behaved* update atomically. Protocol
+decisions read only `invoice_liquidity` scores; the standalone
+`reputation_bonus` module keeps separate counters for discount bonuses. The
+full cross-referenced walkthrough (initialization, accrual, decay, NFT
+interaction, source-of-truth resolution) lives in the
+[Reputation Model lifecycle guide](reputation-model.md#full-lifecycle-guide-issues-854--single-cross-referenced-narrative).
+
 ---
 
 ## Architecture Summary
@@ -101,7 +115,8 @@ This section summarises the production-hardening work completed across the
 ### Governance Security
 
 - Admin veto with governance-controlled disable mechanism
-- Quorum requirement for proposal passing
+- Quorum over an ILN-gated stored supply (no caller-supplied denominator)
+- Checkpoint-aged voting snapshots closing the flash-loan first-vote window
 - Timelocked admin actions with configurable delay
 - Delegate votes support for participation without direct token holding
 - Pause/unpause capability with timestamp validation

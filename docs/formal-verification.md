@@ -289,9 +289,9 @@ Unlike the invoice lifecycle (one enum field on a mutable record), a `Governance
 ## 9. Vote & Weight Invariants
 
 ### Invariant V1: Vote weight is fixed at cast time
-**Property:** `cast_vote` uses `own_balance` (snapshotted at `create_proposal` time, or on first read if unset) plus the caller's current `DelegatedToMe` tally; once recorded, `AppliedVoteWeight(proposal_id, voter)` never changes for that voter/proposal pair.
+**Property:** `cast_vote` uses `own_balance` (snapshotted at `create_proposal` time for the proposer, or checkpoint-proven on first vote for others: requires a `BalanceCheckpoint` predating the proposal's creation ledger by `MIN_VOTE_HOLD_LEDGERS`, carrying `min(checkpoint, current)` — Issue #805) plus the caller's current `DelegatedToMe` tally; once recorded, `AppliedVoteWeight(proposal_id, voter)` never changes for that voter/proposal pair.
 
-**Enforcement:** `src/lib.rs:830-859` (snapshot read) and `src/lib.rs:879-885` (vote receipt write to temporary storage).
+**Enforcement:** `cast_vote`'s snapshot branch (proposer fast path) and `proven_own_balance` gate (first-vote path) in `contracts/iln_governance/src/lib.rs`, plus the vote receipt write to temporary storage.
 
 ### Invariant V2: One vote per address per proposal
 **Property:** A given `(proposal_id, voter)` pair can only increment `votes_for`/`votes_against` once.
@@ -422,8 +422,8 @@ This section extends the governance formal verification to explicitly specify sn
 **Invariant SN1: Snapshot monotonicity for a given proposal**
 **Property:** For a given `proposal_id`, once a `voter` address has cast a vote (checked via `HasVoted(proposal_id, voter)`), that voter's recorded vote weight (`AppliedVoteWeight(proposal_id, voter)`) never changes for the duration of that proposal's lifetime (through terminal status).
 
-**Enforcement:** 
-- Snapshot read at first vote: `src/lib.rs:830-859` loads `own_balance` at proposal creation (proposer) or first vote (other voters)
+**Enforcement:**
+- Snapshot read at first vote: `cast_vote` loads `own_balance` at proposal creation (proposer) or via the Issue #805 checkpoint gate for other voters — a `BalanceCheckpoint` predating the proposal's creation ledger by `MIN_VOTE_HOLD_LEDGERS`, carrying `min(checkpoint, current)`; otherwise `InsufficientHoldingPeriod`
 - Write-once guarantee: `AppliedVoteWeight` is written only on the first `cast_vote` call for a (proposal, voter) pair
 - Immutability: Subsequent balance changes to the `voter` do not affect the recorded weight
 

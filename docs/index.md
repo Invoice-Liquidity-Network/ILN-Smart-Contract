@@ -19,6 +19,8 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Contract ABI](contract-abi.md) | Public contract functions and error codes. |
 | [Events](events.md) | Contract event topics and payloads. |
 | [Governance](governance.md) | Proposal lifecycle, voting, quorum, and timelocks. |
+| [Reputation Model](reputation-model.md) | Reputation and NFT lifecycle guide: initialization, accrual, lazy decay, NFT interaction, source of truth. |
+| [Reputation System](reputation.md) | Reputation mechanics, parameters, events, and FAQ. |
 | [Multi-Token Support](multi-token.md) | SAC, USDC, XLM, and supported token configuration. |
 | [Storage Layout](storage-layout.md) | Contract storage keys and data structures. |
 
