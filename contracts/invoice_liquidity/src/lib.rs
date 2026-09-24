@@ -3733,3 +3733,11 @@ mod tests_economic_security;
 // Issue #34 reputation-weighted queue was previously ORPHANED (file present
 // but never declared), so its queue-integrity/griefing guards never ran.
 mod tests_lp_priority_queue;
+// Issue #848: ADR-011 reputation cross-contract consistency audit
+mod tests_reputation_state_isolation;
+// Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
+mod tests_reputation_decay_long_idle;
+// Issue #850: ADR-007 NFT event emission verification
+mod tests_nft_event_emission;
+// Issue #851: NFT transfer reputation and insurance consistency
+mod tests_nft_transfer_consistency;
