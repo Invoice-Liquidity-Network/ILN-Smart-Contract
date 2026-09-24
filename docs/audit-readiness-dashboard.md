@@ -99,7 +99,7 @@ These items **must reach ✅ Complete** before mainnet deployment but are not bl
 | SECURITY.md up to date (reporting channels, response SLAs, safe-harbor) | ⚠️ In Progress | [SECURITY.md](../SECURITY.md) | Security lead | Align with detailed policy |
 | CHANGELOG reviewed for launch release | ❌ Not started | [CHANGELOG.md](../CHANGELOG.md) | Release lead | Run `make changelog` and review |
 | Maintainer ownership confirmed (CODEOWNERS, approvers, emergency contacts) | ✅ Complete | [MAINTAINERS.md](../MAINTAINERS.md) | Community lead | Team owners + emergency channels documented |
-| Public support channels ready (bug reporting, integration questions, incidents) | ❌ Not started | [ISSUE_TEMPLATE/](../.github/ISSUE_TEMPLATE) | Community lead | Discord, email, GitHub discussions? |
+| Public support channels ready (bug reporting, integration questions, incidents) | ✅ Complete | [support-channels.md](support-channels.md) | Community lead | Issues + security live; Discussions/Discord deferred pre-launch |
 
 ---
 

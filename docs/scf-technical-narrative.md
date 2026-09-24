@@ -107,10 +107,20 @@ work. Prefer the linked artifacts over restating status here.
 
 ### Economic Security
 
-- Multi-token support, discount bounds, payer oracle interface, insurance pool,
-  reputation with lazy decay, vote-total caching
+Protocol economics, LP risk assumptions, insurance parameters, and oracle-attack
+costing live in the unified
+[Protocol Economics & Risk](index.md#protocol-economics--risk) section of the
+docs index (LP risk guide → governance playbook → token economics → oracle
+attack economics → insurance design/parameters, plus the review cadence). This
+narrative keeps only a short capability summary:
+
+- Multi-token support with token management functions and associated events
+- Discount rate validation and bounds checking
+- Payer verification oracle interface with mock oracle for testing
+- Insurance pool for default protection with test coverage
+- Reputation tracking with lazy decay for inactive addresses
+- Incremental vote total caching for gas-efficient governance execution
 - **This batch:** economics/risk documentation set and review cadence — see
-  [Protocol Economics & Risk](index.md#protocol-economics--risk) and
   [`governance-policy-docs` issues](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues?q=label%3Agovernance-policy-docs)
 
 ### Governance Security
@@ -193,6 +203,7 @@ safety net for first mainnet capital.
 ## Links
 
 - [Architecture](Architecture.md) — full system design
+- [Protocol Economics & Risk](index.md#protocol-economics--risk) — LP risk, token economics, insurance, oracle attack model, review cadence
 - [Audit Readiness Dashboard](audit-readiness-dashboard.md) — audit tracking
 - [SCF Grant Milestone Tracker](scf-grant-milestone-tracker.md) — issue→deliverable map
 - [Protocol Economics & Risk](index.md#protocol-economics--risk) — LP/governance/token economics
