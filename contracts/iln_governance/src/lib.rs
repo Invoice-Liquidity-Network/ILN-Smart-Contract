@@ -96,11 +96,13 @@ pub enum GovernanceError {
     /// Issue #814: deposit for this proposal was already settled (refunded
     /// or forfeited) — prevents double-refund / double-forfeit.
     DepositAlreadySettled = 27,
+    /// #844: contract called before `initialize()`.
+    NotInitialized = 28,
     /// Issue #805: the voter has no balance checkpoint predating this
     /// proposal by at least `MIN_VOTE_HOLD_LEDGERS`. Call
     /// `checkpoint_balance` and wait out the holding period (or vote on a
     /// later proposal) before voting.
-    InsufficientHoldingPeriod = 28,
+    InsufficientHoldingPeriod = 29,
 }
 
 // ================================================================
@@ -469,6 +471,39 @@ pub struct GovContract;
 
 #[contractimpl]
 impl GovContract {
+    // ── #844: helper to read the ILN contract address or return NotInitialized ──
+    fn get_iln_contract(env: &Env) -> Result<Address, GovernanceError> {
+        env.storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .ok_or(GovernanceError::NotInitialized)
+    }
+
+    /// Same helper for the gov-token address — returns `NotInitialized` when
+    /// the contract has not been initialized yet.
+    fn get_gov_token(env: &Env) -> Result<Address, GovernanceError> {
+        env.storage()
+            .instance()
+            .get(&StorageKey::GovToken)
+            .ok_or(GovernanceError::NotInitialized)
+    }
+
+    /// Helper for the distribution contract address.
+    fn get_distribution_contract(env: &Env) -> Result<Address, GovernanceError> {
+        env.storage()
+            .instance()
+            .get(&StorageKey::DistributionContract)
+            .ok_or(GovernanceError::NotInitialized)
+    }
+
+    /// Helper for the reputation bonus contract address.
+    fn get_reputation_bonus_contract(env: &Env) -> Result<Address, GovernanceError> {
+        env.storage()
+            .instance()
+            .get(&StorageKey::ReputationBonusContract)
+            .ok_or(GovernanceError::NotInitialized)
+    }
+
     // ── Initialise ────────────────────────────────────────────────
 
     pub fn initialize(
@@ -545,7 +580,7 @@ impl GovContract {
     }
 
     pub fn set_max_delegation_depth(env: Env, max_depth: u32) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env.storage().instance().get(&StorageKey::IlnContract).unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
         let old_value: u32 = Self::get_max_delegation_depth(env.clone());
         env.storage().instance().set(&StorageKey::MaxDelegationDepth, &max_depth);
@@ -573,11 +608,7 @@ impl GovContract {
     /// execute_proposal, only by the same authority that already controls
     /// the quorum bps and proposal-balance thresholds.
     pub fn set_gov_token_total_supply(env: Env, total_supply: i128) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         let old_value: i128 = env
@@ -609,11 +640,7 @@ impl GovContract {
             return Err(GovernanceError::InvalidQuorumBps);
         }
 
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         let old_value: u32 = env
@@ -649,7 +676,7 @@ impl GovContract {
         proposer.require_auth();
 
         // ── Balance check ─────────────────────────────────────────
-        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        let token_addr = Self::get_gov_token(&env)?;
         let token = TokenClient::new(&env, &token_addr);
         let proposer_balance = token.balance(&proposer);
 
@@ -787,11 +814,7 @@ impl GovContract {
         if amount < 0 {
             return Err(GovernanceError::InvalidProposalDeposit);
         }
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         let old_value: i128 = env
@@ -833,11 +856,7 @@ impl GovContract {
         env: Env,
         sink: Option<Address>,
     ) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
         env.storage()
             .instance()
@@ -879,7 +898,8 @@ impl GovContract {
     /// `get_voter_checkpoint`.
     pub fn checkpoint_balance(env: Env, voter: Address) -> Result<(), GovernanceError> {
         voter.require_auth();
-        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        // #844: fallible helper — no panic when called before `initialize()`.
+        let token_addr = Self::get_gov_token(&env)?;
         let token = TokenClient::new(&env, &token_addr);
         let balance = token.balance(&voter);
         env.storage().persistent().set(
@@ -940,7 +960,7 @@ impl GovContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        let token_addr = Self::get_gov_token(env)?;
         let token = TokenClient::new(env, &token_addr);
         let this = env.current_contract_address();
         token.transfer(&this, proposer, &amount);
@@ -985,8 +1005,7 @@ impl GovContract {
             .remove(&StorageKey::ProposalDeposit(proposal_id));
         let sink: Option<Address> = env.storage().instance().get(&StorageKey::ProposalDepositSink);
         if let Some(dest) = sink.clone() {
-            let token_addr: Address =
-                env.storage().instance().get(&StorageKey::GovToken).unwrap();
+            let token_addr = Self::get_gov_token(env)?;
             let token = TokenClient::new(env, &token_addr);
             let this = env.current_contract_address();
             token.transfer(&this, &dest, &amount);
@@ -1020,11 +1039,7 @@ impl GovContract {
     /// Authorization: the configured ILN contract address must authorize
     /// (same governance-controlled-toggle pattern as `set_min_quorum_bps`).
     pub fn set_quadratic_voting_enabled(env: Env, enabled: bool) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         let old_value: bool = env
@@ -1092,11 +1107,7 @@ impl GovContract {
     ///
     /// Authorization: the configured ILN contract address must authorize.
     pub fn set_min_proposal_balance(env: Env, min_balance: i128) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         let old_value: i128 = env
@@ -1148,7 +1159,7 @@ impl GovContract {
         // only balances checkpointed at least `MIN_VOTE_HOLD_LEDGERS` ago
         // count (capped at the live balance via `min`).
         let now_ledger = env.ledger().sequence();
-        let live_balance = Self::get_own_balance_for_delegation(&env, &delegator);
+        let live_balance = Self::get_own_balance_for_delegation(&env, &delegator)?;
         let proven_balance = Self::proven_own_balance(&env, &delegator, live_balance, now_ledger)?;
 
         // ── Cycle detection ───────────────────────────────────────
@@ -1215,7 +1226,7 @@ impl GovContract {
 
         if let Some(old_delegate) = Self::get_delegate_raw(&env, &delegator) {
             let old_terminal = Self::resolve_terminal(&env, &old_delegate);
-            let delegator_balance = Self::get_own_balance_for_delegation(&env, &delegator);
+            let delegator_balance = Self::get_own_balance_for_delegation(&env, &delegator)?;
             Self::adjust_delegated_to_me(&env, &old_terminal, -delegator_balance);
 
             env.storage()
@@ -1275,7 +1286,7 @@ impl GovContract {
             return Err(GovernanceError::AlreadyVoted);
         }
 
-        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        let token_addr = Self::get_gov_token(&env)?;
         let token = TokenClient::new(&env, &token_addr);
 
         // Own snapshotted (or checkpoint-proven) balance.
@@ -1501,11 +1512,7 @@ impl GovContract {
                 return Err(GovernanceError::TimelockNotExpired);
             }
 
-            let iln_contract: Address = env
-                .storage()
-                .instance()
-                .get(&StorageKey::IlnContract)
-                .unwrap();
+            let iln_contract = Self::get_iln_contract(&env)?;
 
             // Issue #531: capture the outcome of the cross-contract call instead
             // of firing-and-forgetting it. A failed call (callee panics / returns
@@ -1539,11 +1546,7 @@ impl GovContract {
                     hundred_usdc_stroops,
                     lp_multiplier,
                 ) => {
-                    let dist_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::DistributionContract)
-                        .unwrap();
+                    let dist_contract = Self::get_distribution_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![
                         &env,
                         half_token.into_val(&env),
@@ -1561,38 +1564,22 @@ impl GovContract {
                     Self::invoke_and_check(&env, &iln_contract, "upgrade", args)
                 }
                 ProposalAction::UpdateLpRewardRate(rate) => {
-                    let dist_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::DistributionContract)
-                        .unwrap();
+                    let dist_contract = Self::get_distribution_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![&env, rate.into_val(&env)];
                     Self::invoke_and_check(&env, &dist_contract, "set_lp_reward_rate", args)
                 }
                 ProposalAction::UpdateFreelancerRewardRate(rate) => {
-                    let dist_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::DistributionContract)
-                        .unwrap();
+                    let dist_contract = Self::get_distribution_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![&env, rate.into_val(&env)];
                     Self::invoke_and_check(&env, &dist_contract, "set_freelancer_reward_rate", args)
                 }
                 ProposalAction::UpdatePayerRewardRate(rate) => {
-                    let dist_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::DistributionContract)
-                        .unwrap();
+                    let dist_contract = Self::get_distribution_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![&env, rate.into_val(&env)];
                     Self::invoke_and_check(&env, &dist_contract, "set_payer_reward_rate", args)
                 }
                 ProposalAction::UpdateInsuranceCoverageCap(cap) => {
-                    let insurance_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::IlnContract)
-                        .unwrap();
+                    let insurance_contract = Self::get_iln_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![&env, cap.into_val(&env)];
                     Self::invoke_and_check(
                         &env,
@@ -1602,11 +1589,7 @@ impl GovContract {
                     )
                 }
                 ProposalAction::UpdateInsurancePremiumRate(rate) => {
-                    let insurance_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::IlnContract)
-                        .unwrap();
+                    let insurance_contract = Self::get_iln_contract(&env)?;
                     let args: Vec<soroban_sdk::Val> = vec![&env, rate.into_val(&env)];
                     Self::invoke_and_check(
                         &env,
@@ -1620,11 +1603,7 @@ impl GovContract {
                     bonus_bps,
                     min_discount_rate_bps,
                 ) => {
-                    let rep_contract: Address = env
-                        .storage()
-                        .instance()
-                        .get(&StorageKey::ReputationBonusContract)
-                        .unwrap();
+                    let rep_contract = Self::get_reputation_bonus_contract(&env)?;
                     // update_config's `caller` param is checked against the
                     // reputation_bonus contract's stored admin — that admin
                     // must be set to this governance contract's own address
@@ -1744,14 +1723,14 @@ impl GovContract {
         }
 
         if env.storage().instance().has(&StorageKey::VetoSigners) {
-            let iln_contract: Address = env
-                .storage()
-                .instance()
-                .get(&StorageKey::IlnContract)
-                .unwrap();
+            let iln_contract = Self::get_iln_contract(&env)?;
             iln_contract.require_auth();
         } else {
-            let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&StorageKey::Admin)
+                .ok_or(GovernanceError::NotInitialized)?;
             admin.require_auth();
         }
 
@@ -1935,11 +1914,7 @@ impl GovContract {
     /// Once disabled this cannot be re-enabled; it is a one-way switch
     /// intended to be called before mainnet launch.
     pub fn disable_veto_power(env: Env) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env
-            .storage()
-            .instance()
-            .get(&StorageKey::IlnContract)
-            .unwrap();
+        let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
 
         env.storage()
@@ -2075,10 +2050,10 @@ impl GovContract {
     }
 
     /// Return the token balance of `addr` to use as the delegation weight.
-    fn get_own_balance_for_delegation(env: &Env, addr: &Address) -> i128 {
-        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+    fn get_own_balance_for_delegation(env: &Env, addr: &Address) -> Result<i128, GovernanceError> {
+        let token_addr = Self::get_gov_token(env)?;
         let token = TokenClient::new(env, &token_addr);
-        token.balance(addr)
+        Ok(token.balance(addr))
     }
 
     /// Issue #805: the checkpoint-proven own balance usable at reference

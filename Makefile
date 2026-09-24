@@ -187,7 +187,7 @@ fuzz: ## Run the property/fuzz test suite
 test-fuzz: ## Run fuzz tests for the iln_fuzz crate
 	cargo test -p iln_fuzz
 
-lint: fmt-check clippy ## Lint everything (rustfmt check + clippy)
+lint: fmt-check clippy check-no-unwrap ## Lint everything (rustfmt check + clippy + panic-path gate)
 
 fmt: ## Format all Rust code in place
 	cargo fmt --all
@@ -197,6 +197,9 @@ fmt-check: ## Verify Rust formatting without modifying files
 
 clippy: ## Run clippy with warnings denied
 	cargo clippy --all-targets -- -D warnings
+
+check-no-unwrap: ## Gate: fail if unwrap()/expect() appears in non-test contract source (#845)
+	bash scripts/check-no-unwrap-in-contract-source.sh
 
 deploy-testnet: ## Deploy all contracts to Stellar testnet
 	bash scripts/deploy-testnet.sh

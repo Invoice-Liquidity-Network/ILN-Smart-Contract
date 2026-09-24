@@ -304,11 +304,11 @@ impl InsurancePool {
     }
 
     /// The configured token address for real transfers (Issue #527).
-    pub fn get_token_address(env: Env) -> Address {
+    pub fn get_token_address(env: Env) -> Result<Address, InsuranceError> {
         env.storage()
             .instance()
             .get(&DataKey::TokenAddress)
-            .unwrap()
+            .ok_or(InsuranceError::NotInitialized)
     }
 
     // ── Issue #528: risk-priced insurance premiums ───────────────────────
@@ -949,7 +949,7 @@ impl InsurancePool {
             .instance()
             .set(&DataKey::BackstopBalance, &new_backstop);
 
-        let token = Self::get_token_client(&env);
+        let token = Self::get_token_client(&env)?;
         token.transfer(
             &from,                             // from (caller)
             &env.current_contract_address(),   // to (this contract)
@@ -1155,13 +1155,13 @@ impl InsurancePool {
         }
     }
 
-    fn get_token_client(env: &Env) -> token::Client {
+    fn get_token_client(env: &Env) -> Result<token::Client, InsuranceError> {
         let token_addr: Address = env
             .storage()
             .instance()
             .get(&DataKey::TokenAddress)
-            .unwrap();
-        token::Client::new(env, &token_addr)
+            .ok_or(InsuranceError::NotInitialized)?;
+        Ok(token::Client::new(env, &token_addr))
     }
 }
 
@@ -1253,7 +1253,7 @@ impl InsurancePoolInterface for InsurancePool {
 
         // Transfer tokens from LP to pool (checks-effects-interactions pattern).
         // State changes above must complete before this external call.
-        let token = Self::get_token_client(&env);
+        let token = Self::get_token_client(&env)?;
         token.transfer(
             &lp,                             // from (caller)
             &env.current_contract_address(), // to (this contract)
@@ -1314,7 +1314,7 @@ impl InsurancePoolInterface for InsurancePool {
                 .set(&DataKey::Claimed(invoice_id), &true);
 
             // Transfer tokens from pool to LP (Issue #527).
-            let token = Self::get_token_client(&env);
+            let token = Self::get_token_client(&env)?;
             token.transfer(
                 &env.current_contract_address(), // from (this contract)
                 &lp,                             // to

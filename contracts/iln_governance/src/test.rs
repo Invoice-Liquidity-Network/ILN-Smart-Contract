@@ -2640,3 +2640,34 @@ fn test_quadratic_sybil_split_needs_aged_checkpoint_per_address() {
     let p = t.contract.get_proposal(&id);
     assert_eq!(p.votes_for, 70); // only the aged Sybil counted
 }
+
+// ── #844: pre-init call tests ─────────────────────────────────────
+
+#[test]
+fn test_pre_init_calls_return_not_initialized() {
+    let env = Env::default();
+    let contract_addr = env.register_contract(None, GovContract);
+    let contract = GovContractClient::new(&env, &contract_addr);
+
+    // All admin-gated functions must return NotInitialized before initialize().
+    assert_eq!(
+        contract.try_set_min_quorum_bps(&100),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_min_proposal_balance(&100),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_gov_token_total_supply(&1000),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_set_quadratic_voting_enabled(&true),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_disable_veto_power(),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+}
