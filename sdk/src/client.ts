@@ -246,6 +246,9 @@ export class ILNClient {
   /**
    * Create a client pre-configured for Stellar Mainnet (Pubnet).
    *
+   * Fails loudly if mainnet contract addresses are not yet populated.
+   * Pass `options.contractId` to override the default registry lookup.
+   *
    * @param signer   - Optional signer for authenticated methods
    * @param options  - Override defaults (rpcUrl, contractId)
    *

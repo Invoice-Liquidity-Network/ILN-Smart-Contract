@@ -137,7 +137,7 @@ async function defaultFetcher(opts: {
 }
 
 export function makeExportCommand(
-  fetchInvoices: InvoiceFetcher = defaultFetcher
+  fetchInvoices: InvoiceFetcher = sdkFetcher
 ): Command {
   const cmd = new Command("export").description(
     "Export invoice data to CSV or JSON"
