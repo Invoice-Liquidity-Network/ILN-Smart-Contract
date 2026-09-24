@@ -545,6 +545,25 @@ fn get_price_from_oracle(env: &Env, token: &Address) -> Option<i128> {
   ```
 - **Monitoring:** Enhance `check_oracle_health()` to track price volatility and manipulation detection
 
+**Update (Issues #815 / #816 / #817 — implemented, opt-in):**
+- TWAP accumulator ported from `contracts/examples/twap_oracle` into
+  `contracts/invoice_liquidity/src/twap.rs` (trapezoidal windowed average,
+  example tests ported and extended). Wired as an opt-in library — default
+  oracle behavior is unchanged (spot).
+- Per-feed opt-in: `TwapEnabled(feed_type)` + `set_twap_enabled` (admin /
+  governance-gated). `get_verified_price` branches to the windowed average
+  when enabled and in-window samples exist, else falls back to spot so a
+  freshly-enabled feed stays live. `Identity` payer-verification stays
+  boolean spot verification.
+- Bounded window: `TwapWindowLedgers` + `set_twap_window_ledgers`, range
+  `[360, 17_280]` ledgers (≈30 min–24 h at 5 s/ledger, default `720` ≈ 1 h),
+  rejected outside with `ContractError::InvalidTwapWindow`. Bounds rationale
+  follows [`oracle-attack-economics.md`](oracle-attack-economics.md) §4–§5:
+  the minimum spans many ledgers to dilute single-ledger sandwich
+  manipulation; the maximum stays within the `max_oracle_age_ledgers`
+  staleness bound so the average never bakes in data the freshness check
+  itself rejects.
+
 ---
 
 ### E. GOVERNANCE ATTACKS

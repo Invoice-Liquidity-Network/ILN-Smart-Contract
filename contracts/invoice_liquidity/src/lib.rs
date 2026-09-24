@@ -27,6 +27,7 @@ use constants::{
 };
 pub mod oracle_interface;
 pub mod oracle_registry;
+pub mod twap;
 use insurance_pool::InsurancePoolInterfaceClient;
 use oracle_registry::OracleFeedType;
 use twap_accumulator::{record_observation, get_twap, TWAPError};
@@ -619,6 +620,11 @@ impl InvoiceLiquidityContract {
     /// source deviating from the cross-source median beyond
     /// `get_max_price_deviation_bps()` and returns the median of the
     /// survivors.
+    ///
+    /// Issue #816: when TWAP is enabled for `feed_type` (see
+    /// `set_twap_enabled`) and enough in-window samples exist, returns the
+    /// windowed TWAP average instead of the spot median. Disabled by
+    /// default, preserving existing behavior.
     /// Access: Anyone
     pub fn get_verified_price(
         env: Env,
@@ -626,6 +632,63 @@ impl InvoiceLiquidityContract {
         token: Address,
     ) -> Result<i128, ContractError> {
         oracle_registry::get_verified_price(env, feed_type, token)
+    }
+
+    // ── Issues #815/#816/#817: TWAP accumulator + per-feed opt-in ──
+
+    /// Whether `feed_type` routes `Price` reads through the TWAP windowed
+    /// average (`true`) or raw spot (`false`, default).
+    /// Access: Anyone
+    pub fn is_twap_enabled(env: Env, feed_type: OracleFeedType) -> bool {
+        oracle_registry::is_twap_enabled(&env, feed_type)
+    }
+
+    /// Enable or disable the TWAP path for `feed_type`. Disabled by default
+    /// so existing feeds behave exactly as before until explicitly opted in.
+    /// Access: Admin only.
+    pub fn set_twap_enabled(
+        env: Env,
+        feed_type: OracleFeedType,
+        enabled: bool,
+    ) -> Result<(), ContractError> {
+        oracle_registry::set_twap_enabled(&env, feed_type, enabled)
+    }
+
+    /// The currently configured TWAP window in ledgers (default 720 ≈ 1h).
+    /// Access: Anyone
+    pub fn get_twap_window(env: Env) -> u64 {
+        oracle_registry::get_twap_window_ledgers(&env)
+    }
+
+    /// Update the TWAP window, rejecting values outside
+    /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` with
+    /// `ContractError::InvalidTwapWindow` (Issue #817).
+    /// Access: Admin only.
+    pub fn set_twap_window(env: Env, window_ledgers: u64) -> Result<(), ContractError> {
+        oracle_registry::set_twap_window_ledgers(&env, window_ledgers)
+    }
+
+    /// Record a price observation for `feed_type` + `token` at the current
+    /// ledger timestamp.
+    /// Access: Admin only.
+    pub fn record_twap_sample(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+        price: i128,
+    ) -> Result<(), ContractError> {
+        oracle_registry::record_twap_sample(&env, feed_type, token, price)
+    }
+
+    /// Windowed TWAP average for `feed_type` + `token`, or `None` when
+    /// fewer than two in-window samples exist.
+    /// Access: Anyone
+    pub fn get_twap_price(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Option<i128> {
+        oracle_registry::get_twap_price(&env, feed_type, &token)
     }
 
     // ── Issue #529: insurance pool integration ────────────────────

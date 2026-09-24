@@ -27,6 +27,9 @@ const DEFAULT_MIN_QUORUM_BPS: u32 = 1_000;
 const VOTING_PERIOD_SECS: u64 = 259_200;
 /// Default minimum token balance required to submit a proposal (1 000 stroops).
 const DEFAULT_MIN_PROPOSAL_BALANCE: i128 = 1_000;
+/// Issue #814: default forfeitable proposal deposit (0 = disabled, backwards
+/// compatible). Governance can raise via `set_min_proposal_deposit`.
+const DEFAULT_PROPOSAL_DEPOSIT: i128 = 0;
 
 /// Default maximum transitive delegation chain depth.
 const DEFAULT_MAX_DELEGATION_DEPTH: u32 = 10;
@@ -78,6 +81,11 @@ pub enum GovernanceError {
     /// Issue #642: signer list/threshold combination is invalid (empty
     /// signer set, duplicate signer, or threshold outside `1..=signers.len()`).
     InvalidVetoMultisigConfig = 25,
+    /// Issue #814: configured deposit amount is invalid (negative).
+    InvalidProposalDeposit = 26,
+    /// Issue #814: deposit for this proposal was already settled (refunded
+    /// or forfeited) — prevents double-refund / double-forfeit.
+    DepositAlreadySettled = 27,
 }
 
 // ================================================================
@@ -301,6 +309,37 @@ pub struct VetoMultisigConfigured {
     pub threshold: u32,
 }
 
+/// Issue #814: emitted when a proposal deposit is escrowed at creation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalDepositEscrowed {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub amount: i128,
+}
+
+/// Issue #814: emitted when a proposal deposit is refunded (Passed/Executed).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalDepositRefunded {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub amount: i128,
+}
+
+/// Issue #814: emitted when a proposal deposit is forfeited (Rejected/
+/// expired-without-quorum / Vetoed). `sink` is the forfeiture destination
+/// when one is configured, otherwise `None` (funds remain locked in the
+/// governance contract, still unrecoverable by the proposer).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalDepositForfeited {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub amount: i128,
+    pub sink: Option<Address>,
+}
+
 /// Issue #642: emitted each time a configured veto signer approves a
 /// pending veto that has not yet reached threshold.
 #[contracttype]
@@ -365,6 +404,18 @@ pub enum StorageKey {
     /// Issue #642: signers who have already approved the pending veto of a
     /// given proposal (cleared once the veto executes).
     VetoApprovals(u64),
+    /// Issue #814: governance-configurable forfeitable deposit escrowed at
+    /// `create_proposal` (0 = disabled, default for backwards compatibility).
+    MinProposalDeposit,
+    /// Issue #814: optional forfeiture destination (treasury sink). When set,
+    /// forfeited deposits are transferred there; when unset, forfeited funds
+    /// stay locked in this contract (still unrecoverable by the proposer).
+    ProposalDepositSink,
+    /// Issue #814: escrowed deposit amount per proposal (removed on settle).
+    ProposalDeposit(u64),
+    /// Issue #814: `true` once a proposal's deposit has been settled
+    /// (refunded or forfeited) — guards against double-refund.
+    ProposalDepositSettled(u64),
 }
 
 // ================================================================
@@ -570,6 +621,22 @@ impl GovContract {
             return Err(GovernanceError::InsufficientProposerBalance);
         }
 
+        // Issue #814: forfeitable anti-spam deposit, distinct from the static
+        // `min_balance` holding gate above (which a wallet can satisfy once
+        // and then spam many proposals). Escrowed from the proposer now,
+        // refunded on Passed/Executed, forfeited on Rejected/expiry/Vetoed.
+        let deposit: i128 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MinProposalDeposit)
+            .unwrap_or(DEFAULT_PROPOSAL_DEPOSIT);
+        if deposit < 0 {
+            return Err(GovernanceError::InvalidProposalDeposit);
+        }
+        if deposit > 0 && proposer_balance < deposit {
+            return Err(GovernanceError::InsufficientProposerBalance);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
@@ -607,6 +674,24 @@ impl GovContract {
             .instance()
             .set(&StorageKey::ProposalCount, &id);
 
+        // Issue #814: escrow the deposit after persisting the proposal so a
+        // failed transfer rolls the whole creation back atomically.
+        if deposit > 0 {
+            let this = env.current_contract_address();
+            token.transfer(&proposer, &this, &deposit);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ProposalDeposit(id), &deposit);
+            env.events().publish(
+                (Symbol::new(&env, "proposal_deposit_escrowed"), id),
+                ProposalDepositEscrowed {
+                    proposal_id: id,
+                    proposer: proposer.clone(),
+                    amount: deposit,
+                },
+            );
+        }
+
         env.events().publish(
             (Symbol::new(&env, "proposal_created"), id, proposer.clone()),
             ProposalCreated {
@@ -619,6 +704,200 @@ impl GovContract {
         );
 
         Ok(id)
+    }
+
+    // ── Issue #814: forfeitable proposal deposit ───────────────────
+
+    /// Returns the governance-configurable forfeitable deposit escrowed at
+    /// `create_proposal`. `0` (default) disables the escrow for backwards
+    /// compatibility — only the static `MinProposalBalance` gate applies.
+    pub fn get_min_proposal_deposit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::MinProposalDeposit)
+            .unwrap_or(DEFAULT_PROPOSAL_DEPOSIT)
+    }
+
+    /// Updates the forfeitable proposal deposit amount.
+    ///
+    /// Authorization: the configured ILN contract address must authorize
+    /// (same pattern as `set_min_quorum_bps` / `set_min_proposal_balance`).
+    pub fn set_min_proposal_deposit(env: Env, amount: i128) -> Result<(), GovernanceError> {
+        if amount < 0 {
+            return Err(GovernanceError::InvalidProposalDeposit);
+        }
+        let iln_contract: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
+        iln_contract.require_auth();
+
+        let old_value: i128 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MinProposalDeposit)
+            .unwrap_or(DEFAULT_PROPOSAL_DEPOSIT);
+        env.storage()
+            .instance()
+            .set(&StorageKey::MinProposalDeposit, &amount);
+
+        let pn = Symbol::new(&env, "min_proposal_deposit");
+        env.events().publish(
+            (Symbol::new(&env, "parameter_updated"), pn.clone()),
+            GovernanceParameterUpdated {
+                param_name: pn,
+                old_value,
+                new_value: amount,
+            },
+        );
+        Ok(())
+    }
+
+    /// Returns the configured forfeiture sink (treasury address), if any.
+    /// When unset, forfeited deposits stay locked in this contract.
+    pub fn get_proposal_deposit_sink(env: Env) -> Option<Address> {
+        env.storage().instance().get(&StorageKey::ProposalDepositSink)
+    }
+
+    /// Sets (or, when `sink` is `None`, clears) the forfeiture destination.
+    ///
+    /// Authorization: the configured ILN contract address must authorize.
+    /// Decision (Issue #814): forfeited deposits go to this treasury sink
+    /// rather than the insurance pool — the insurance pool prices coverage
+    /// risk, while spam penalties are treasury revenue; mixing them would
+    /// distort pool accounting. Documented in
+    /// `docs/governance-security-summary.md`.
+    pub fn set_proposal_deposit_sink(
+        env: Env,
+        sink: Option<Address>,
+    ) -> Result<(), GovernanceError> {
+        let iln_contract: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
+        iln_contract.require_auth();
+        env.storage()
+            .instance()
+            .set(&StorageKey::ProposalDepositSink, &sink);
+        Ok(())
+    }
+
+    /// Returns the escrowed (not yet settled) deposit for `proposal_id`,
+    /// or `0` when none was escrowed or it was already settled.
+    pub fn get_proposal_deposit(env: Env, proposal_id: u64) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ProposalDeposit(proposal_id))
+            .unwrap_or(0)
+    }
+
+    /// Returns `true` once a proposal's deposit has been settled (refunded
+    /// or forfeited). Never-set deposits report `false` until a settlement
+    /// is recorded — callers should check `get_proposal_deposit` together
+    /// with this flag.
+    pub fn is_proposal_deposit_settled(env: Env, proposal_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ProposalDepositSettled(proposal_id))
+            .unwrap_or(false)
+    }
+
+    /// Refund the escrowed deposit to the proposer. Idempotent: a second
+    /// call after settlement is a no-op returning `false` (no second
+    /// transfer), which is what prevents double-refunds on the
+    /// `Passed -> Executed` second `execute_proposal` call.
+    fn refund_proposal_deposit(env: &Env, proposal_id: u64, proposer: &Address) -> bool {
+        if env
+            .storage()
+            .persistent()
+            .get::<StorageKey, bool>(&StorageKey::ProposalDepositSettled(proposal_id))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ProposalDeposit(proposal_id))
+            .unwrap_or(0);
+        // Mark settled before transferring so a re-entrant retry cannot
+        // double-pay even if the token call traps midway (the whole frame
+        // would roll back, but the flag makes the intent explicit).
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ProposalDepositSettled(proposal_id), &true);
+        if amount <= 0 {
+            env.storage()
+                .persistent()
+                .remove(&StorageKey::ProposalDeposit(proposal_id));
+            return false;
+        }
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ProposalDeposit(proposal_id));
+        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        let token = TokenClient::new(env, &token_addr);
+        let this = env.current_contract_address();
+        token.transfer(&this, proposer, &amount);
+        env.events().publish(
+            (Symbol::new(env, "proposal_deposit_refunded"), proposal_id),
+            ProposalDepositRefunded {
+                proposal_id,
+                proposer: proposer.clone(),
+                amount,
+            },
+        );
+        true
+    }
+
+    /// Forfeit the escrowed deposit to the configured sink (or lock it in
+    /// this contract when no sink is set). Idempotent like the refund path.
+    fn forfeit_proposal_deposit(env: &Env, proposal_id: u64, proposer: &Address) -> bool {
+        if env
+            .storage()
+            .persistent()
+            .get::<StorageKey, bool>(&StorageKey::ProposalDepositSettled(proposal_id))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ProposalDeposit(proposal_id))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ProposalDepositSettled(proposal_id), &true);
+        if amount <= 0 {
+            env.storage()
+                .persistent()
+                .remove(&StorageKey::ProposalDeposit(proposal_id));
+            return false;
+        }
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ProposalDeposit(proposal_id));
+        let sink: Option<Address> = env.storage().instance().get(&StorageKey::ProposalDepositSink);
+        if let Some(dest) = sink.clone() {
+            let token_addr: Address =
+                env.storage().instance().get(&StorageKey::GovToken).unwrap();
+            let token = TokenClient::new(env, &token_addr);
+            let this = env.current_contract_address();
+            token.transfer(&this, &dest, &amount);
+        }
+        env.events().publish(
+            (Symbol::new(env, "proposal_deposit_forfeited"), proposal_id),
+            ProposalDepositForfeited {
+                proposal_id,
+                proposer: proposer.clone(),
+                amount,
+                sink,
+            },
+        );
+        true
     }
 
     // ── Issue #530: quadratic voting toggle ───────────────────────
@@ -1044,6 +1323,8 @@ impl GovContract {
                 env.storage()
                     .persistent()
                     .set(&StorageKey::Proposal(proposal_id), &proposal);
+                // Issue #814: expired without quorum — forfeit the deposit.
+                Self::forfeit_proposal_deposit(&env, proposal_id, &proposal.proposer);
                 return Err(GovernanceError::QuorumNotReached);
             }
 
@@ -1052,6 +1333,8 @@ impl GovContract {
                 env.storage()
                     .persistent()
                     .set(&StorageKey::Proposal(proposal_id), &proposal);
+                // Issue #814: rejected — forfeit the deposit.
+                Self::forfeit_proposal_deposit(&env, proposal_id, &proposal.proposer);
                 return Err(GovernanceError::ProposalRejected);
             }
 
@@ -1067,6 +1350,9 @@ impl GovContract {
             env.storage()
                 .persistent()
                 .set(&StorageKey::Proposal(proposal_id), &proposal);
+            // Issue #814: passed — refund the deposit (idempotent, so the
+            // later Passed -> Executed call does not double-pay).
+            Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer);
             return Ok(());
         }
 
@@ -1260,6 +1546,10 @@ impl GovContract {
             env.storage()
                 .persistent()
                 .set(&StorageKey::Proposal(proposal_id), &proposal);
+
+            // Issue #814: executed — ensure refund (no-op if already
+            // refunded at Passed time; covers zero-deposit proposals).
+            Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer);
 
             env.events().publish(
                 (Symbol::new(&env, "proposal_executed"), proposal_id),
@@ -1474,6 +1764,10 @@ impl GovContract {
         env.storage()
             .persistent()
             .set(&StorageKey::Proposal(proposal_id), &proposal);
+
+        // Issue #814: vetoed spam is forfeited like a rejection (documented
+        // in governance-security-summary.md).
+        Self::forfeit_proposal_deposit(&env, proposal_id, &proposal.proposer);
 
         env.events().publish(
             (
