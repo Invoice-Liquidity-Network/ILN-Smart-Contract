@@ -19,6 +19,8 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Contract ABI](contract-abi.md) | Public contract functions and error codes. |
 | [Events](events.md) | Contract event topics and payloads. |
 | [Governance](governance.md) | Proposal lifecycle, voting, quorum, and timelocks. |
+| [Reputation Model](reputation-model.md) | Reputation and NFT lifecycle guide: initialization, accrual, lazy decay, NFT interaction, source of truth. |
+| [Reputation System](reputation.md) | Reputation mechanics, parameters, events, and FAQ. |
 | [Multi-Token Support](multi-token.md) | SAC, USDC, XLM, and supported token configuration. |
 | [Storage Layout](storage-layout.md) | Contract storage keys and data structures. |
 
@@ -37,6 +39,25 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Mainnet Launch Notes](mainnet-launch-notes.md) | User-facing testnet-to-mainnet changes, known limitations, and migration notes. |
 | [Mainnet Deployment Runbook](mainnet-deployment-runbook.md) | Dry-run-verified procedure for deploying, verifying, and publishing mainnet contracts. |
 | [Pre-Audit Checklist](pre-audit-checklist.md) | Audit preparation tasks. |
+| [Formal Verification (lifecycle)](formal-verification.md) | Invoice/governance invariants. |
+| [Formal Verification (cross-contract)](formal-verification-cross-contract.md) | ILN × distribution × insurance system invariants. |
+
+
+## Protocol Economics & Risk
+
+Read in this order when onboarding to protocol economics, LP risk, and governance operations. Deeper attack/insurance models follow the guides.
+
+| Order | Document | Description |
+|-------|----------|-------------|
+| 1 | [LP Risk Management Guide](lp-risk-management-guide.md) | Default, yield, lock-up, oracle, and governance risks for LPs; working assumptions and checklist. |
+| 2 | [Governance Operations Playbook](governance-operations-playbook.md) | Steady-state proposal flow, emergency pause/oracle/insurance paths, parameter-change checklist. |
+| 3 | [Token Economics Paper](token-economics.md) | Value loop, baseline projections, kill-criteria, and testnet validation findings. |
+| 4 | [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model for payer-oracle manipulation at current parameters. |
+| 5 | [Insurance Pool Design](insurance-pool-design.md) | Default-protection pool interface, claims, and integration. |
+| 6 | [Insurance Pool Launch Parameters](insurance-pool-launch-parameters.md) | Recommended premium, coverage tiers, caps, and circuit-breaker values. |
+| — | [Economics & Risk Review Cadence](review-cadence.md) | Who reviews these assumptions, how often, and what each cycle re-validates. |
+
+The [SCF technical narrative](scf-technical-narrative.md) points here instead of duplicating economics content.
 
 ## Integrations
 
@@ -48,6 +69,17 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Oracle Integration](oracle-integration.md) | Deploying and registering compatible oracles. |
 | [Oracle Provider Vetting](oracle-provider-vetting.md) | Governance vetting criteria and proposal template for approving oracle providers. |
 | [Oracle Attack Economics](oracle-attack-economics.md) | Cost/benefit model of oracle manipulation at current parameters, with recommendations. |
+
+
+## Community, SCF, And Partners
+
+| Document | Description |
+|----------|-------------|
+| [Integration Partner Onboarding](integration-partner-onboarding.md) | Stable surfaces, upgrade expectations, support path, and mainnet go-live checklist for external integrators. |
+| [Public Audit Findings Summary](audit-findings-summary.md) | Template for publishing audit finding ID, severity, public excerpt, status, and remediation links. |
+| [SCF Grant Milestone Tracker](scf-grant-milestone-tracker.md) | Maps this batch’s issues to SCF-style deliverables via labels (no duplicated status). |
+| [Support Channels](support-channels.md) | Where to report bugs, ask questions, and disclose vulnerabilities. |
+| [SCF Technical Narrative](scf-technical-narrative.md) | Protocol overview and hardening summary for Community Fund reviewers. |
 
 ## Project Process
 

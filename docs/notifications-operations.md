@@ -148,90 +148,89 @@ A burst load test was executed simulating a sudden spike of **1,000 concurrent i
 
 ---
 
-## 6. Notifications Services Layer
+## 6. Digest Service
 
-The notifications system includes a services layer for digest aggregation, delivery failure analytics, and subscription health monitoring.
+The `DigestService` batches notification events for a subscriber over a configurable time window before dispatching a single combined payload to the delivery layer. This reduces downstream load for high-volume subscribers and lowers per-event overhead.
 
-### 6.1 Digest/Aggregation Service
-
-Batches notifications into periodic summaries to reduce noise for high-volume subscribers.
-
-#### Configuration
+### Configuration
 
 | Parameter | Default | Description |
 | :--- | :--- | :--- |
-| `DIGEST_INTERVAL_MS` | `3600000` (1 hour) | How often digests are compiled and sent |
-| `DIGEST_MAX_BATCH_SIZE` | `100` | Maximum notifications per digest |
-| `DIGEST_RETRY_ATTEMPTS` | `3` | Retry count for failed digest deliveries |
+| `windowMs` | 30,000 ms | Time to accumulate events before flushing |
+| `maxBatchSize` | 50 | Maximum events per batch before forced flush |
 
-#### Digest Policy
+### Behavior
 
-- Notifications are held in a staging queue until the next digest interval
-- At each interval, the service groups pending notifications by subscriber
-- Each subscriber receives one consolidated digest containing all pending notifications
-- Critical notifications (e.g., `invoice.disputed`) bypass the digest and are delivered immediately
+- Events are buffered per subscriber ID.
+- A flush is triggered when either the window expires or the batch reaches `maxBatchSize`.
+- Calling `shutdown()` flushes all remaining buffers and cancels pending timers.
+- The flush handler receives a `DigestBatch` containing all accumulated events for a subscriber.
 
-#### Override Procedure
+### Operational Notes
 
-To force immediate delivery for a subscriber (bypassing digest):
-```sql
-UPDATE notification_subscriptions
-SET digest_enabled = FALSE
-WHERE subscriber_id = '<subscriber_id>';
-```
-
-### 6.2 Delivery Failure Analytics Service
-
-Correlates rate-limit and circuit-breaker events to identify patterns in delivery failures.
-
-#### Metrics Tracked
-
-| Metric | Description | Alert Threshold |
-| :--- | :--- | :--- |
-| `failure_rate_5m` | Percentage of failed deliveries in last 5 minutes | > 5% |
-| `circuit_breaker_trips` | Number of circuit breaker activations per endpoint | > 3 per hour |
-| `rate_limit_hits` | HTTP 429 responses per endpoint | > 10 per minute |
-| `consecutive_failures` | Unbroken failure streak per endpoint | > 10 |
-
-#### Interpretation Guide
-
-1. **High failure rate + circuit breaker trips**: Endpoint is down or misconfigured
-2. **High rate limit hits**: Subscriber's processing capacity is overwhelmed
-3. **Intermittent failures without circuit trips**: Network transient issues
-
-#### Auto-Suspension Policy
-
-Endpoints that exceed the following thresholds are auto-suspended:
-- > 50 consecutive failures
-- Circuit breaker open for > 1 hour
-- Failure rate > 50% for > 30 minutes
-
-Suspended endpoints receive a notification email and are re-enabled after 24 hours or manual override.
-
-### 6.3 Subscription Health Service
-
-Monitors endpoint health and flags persistently-failing endpoints for auto-suspension.
-
-#### Health Check Cadence
-
-| Endpoint Status | Check Frequency |
-| :--- | :--- |
-| Healthy (0 failures) | Every 5 minutes |
-| Degraded (1-4 failures) | Every 1 minute |
-| Unhealthy (5+ failures) | Every 30 seconds |
-
-#### Manual Override
-
-To manually re-enable a suspended endpoint:
-```sql
-UPDATE notification_subscriptions
-SET suspended = FALSE, suspended_at = NULL
-WHERE subscriber_id = '<subscriber_id>';
-```
+- For subscribers that produce fewer than ~50 events/day, the digest window has negligible effect (they get one batch per event cycle).
+- For burst subscribers (e.g. market makers), the `maxBatchSize` cap ensures memory usage stays bounded.
+- The digest layer sits between event ingestion and delivery — it does not replace the `RetryQueue` or circuit breaker.
 
 ---
 
-## 7. Cross-References
+## 7. Delivery Failure Analytics
 
-- [Webhook Verification Guide](./webhook-verification.md) — HMAC signature verification for incoming webhooks
-- [Notifications Architecture](./notifications-architecture.md) — System design and data flow diagrams
+The `DeliveryAnalyticsService` tracks per-subscriber delivery success/failure rates and computes rolling failure metrics over a configurable time window.
+
+### Configuration
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `recentWindowMs` | 3,600,000 ms (1 hour) | Window for computing recent failure rates |
+
+### Key Metrics
+
+- **`totalAttempts`** — total delivery attempts for the subscriber.
+- **`failures`** — total failed deliveries.
+- **`successRate`** — overall success ratio (0–1).
+- **`recentFailureRate`** — failure ratio within the recent window only.
+- **`lastFailureAt` / `lastSuccessAt`** — timestamps of most recent outcomes.
+
+### Interpreting Metrics
+
+- A `recentFailureRate` above 0.5 (50%) typically indicates a systemic issue (endpoint down, network blocked, misconfigured secret).
+- A low `recentFailureRate` with a high `totalAttempts` and recent `lastFailureAt` suggests transient issues — check the retry queue.
+- A high overall `failures` count with a low `recentFailureRate` means the subscriber recovered — no action needed.
+
+### Integration with Subscription Health
+
+`DeliveryAnalyticsService` feeds directly into `SubscriptionHealthService` (see §8). Health checks read the analytics snapshot and auto-suspend subscribers whose `recentFailureRate` exceeds the configured threshold.
+
+---
+
+## 8. Subscription Health & Auto-Suspension
+
+The `SubscriptionHealthService` monitors subscriber delivery health and auto-suspends subscriptions whose failure rates exceed a configurable threshold.
+
+### Configuration
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `failureThreshold` | 0.5 (50%) | `recentFailureRate` above which suspension triggers |
+| `minAttempts` | 10 | Minimum delivery attempts before threshold applies |
+| `checkIntervalMs` | 60,000 ms | How often to re-evaluate all subscribers |
+
+### Suspension Lifecycle
+
+1. **Detection**: Periodic health checks compare each subscriber's `recentFailureRate` against `failureThreshold`.
+2. **Suspension**: Subscribers exceeding the threshold (with at least `minAttempts` deliveries) are auto-suspended. The suspension event is logged and the `onSuspend` handler is invoked.
+3. **Manual Override**: Operators can manually suspend or reinstate a subscriber via `suspend(id, reason)` / `reinstate(id)`.
+4. **Reinstatement**: Once the subscriber's endpoint is fixed, operators call `reinstate()` to resume delivery.
+
+### Override Procedure
+
+1. Identify the subscriber ID from alerting or the `getSuspended()` list.
+2. Fix the downstream endpoint (check URL, secret rotation, IP allowlist).
+3. Call `health.reinstate(subscriberId)` to clear the suspension.
+4. Verify delivery resumes by monitoring `DeliveryAnalyticsService` success rate.
+
+### Cross-Reference
+
+- HMAC signature verification (used by all webhook deliveries) is documented in [webhook-verification.md](./webhook-verification.md).
+- Circuit breaker behavior for individual endpoints is documented in §3 of this runbook.

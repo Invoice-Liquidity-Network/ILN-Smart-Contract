@@ -12,6 +12,7 @@
 import fs from "fs";
 import { Command } from "commander";
 import { formatError, isJsonMode } from "../format.js";
+import { loadConfig } from "../config.js";
 
 export interface InvoiceRow {
   id: string;
@@ -69,45 +70,68 @@ export function filterByDate(
 
 /**
  * Fetch invoices from the network. In real usage this calls the SDK;
- * tests can inject a mock via the parameter.
+ * here we expose a hook so tests can inject mock data.
  */
 export type InvoiceFetcher = (opts: {
   submitter?: string;
   lp?: string;
 }) => Promise<InvoiceRow[]>;
 
-/** Default fetcher using the SDK's getLpInvoices method. */
-async function sdkFetcher(opts: {
+/**
+ * Default fetcher — queries the on-chain contract via the SDK for
+ * invoices matching the given submitter or LP address (#877).
+ */
+async function defaultFetcher(opts: {
   submitter?: string;
   lp?: string;
 }): Promise<InvoiceRow[]> {
-  // Dynamic import to avoid bundling the SDK when not needed
-  const { iln } = await import("@iln/sdk");
+  // Lazy-import the SDK so the CLI doesn't fail if the SDK package
+  // isn't installed (e.g. in isolated unit tests of the CLI itself).
+  const { ILNClient, TESTNET_RPC_URL } = await import("@iln/sdk");
+  const { SorobanRpc } = await import("@stellar/stellar-sdk");
 
-  // SDK currently exposes getLpInvoices; if a submitter filter is requested
-  // without an LP, we fetch all LP invoices and filter client-side.
-  const lpAddress = opts.lp;
-  if (!lpAddress) {
-    // No LP filter — fetch a broad page and let date/submitter filters apply
-    // For now, return empty if no LP specified (submitter-only queries need
-    // a dedicated SDK method which is tracked separately).
-    console.warn(
-      "Warning: --submitter filter requires a future SDK method. " +
-      "Use --lp to filter by liquidity provider."
+  const config = loadConfig();
+  const networkPassphrase =
+    config.network === "mainnet"
+      ? "Public Global Stellar Network ; September 2015"
+      : "Test SDF Network ; September 2015";
+
+  const client = ILNClient.custom({
+    rpcUrl: config.rpcUrl || TESTNET_RPC_URL,
+    networkPassphrase,
+    contractId: "", // resolved from registry or config in production
+  });
+
+  // Use a dummy source account for read-only simulations
+  const sourceAccount = new SorobanRpc.Api.Account(
+    "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    "0"
+  );
+
+  let invoices: Awaited<ReturnType<typeof import("@iln/sdk").listInvoicesBySubmitter>> = [];
+
+  if (opts.submitter) {
+    const { listInvoicesBySubmitter } = await import("@iln/sdk");
+    invoices = await listInvoicesBySubmitter(
+      client.rpc,
+      client.contractId,
+      opts.submitter,
+      sourceAccount,
+      client.networkPassphrase
     );
-    return [];
+  } else if (opts.lp) {
+    invoices = await client.getLpInvoices(opts.lp);
   }
 
-  const invoices = await iln.getLpInvoices(lpAddress, 0, 50);
-  return invoices.map((inv: any) => ({
-    id: inv.id ?? "",
-    state: inv.state ?? "",
-    submitter: inv.submitter ?? "",
-    payer: inv.payer ?? "",
-    lp: inv.lp ?? lpAddress,
-    amount: inv.amount ?? "",
-    token: inv.token ?? "",
-    yieldPct: inv.yieldPct ?? "",
+  return invoices.map((inv) => ({
+    id: String(inv.id),
+    state: inv.status,
+    submitter: inv.submitter,
+    payer: inv.payer,
+    lp: inv.lp,
+    amount: String(inv.amount),
+    token: inv.token,
+    yieldPct: String(inv.yieldPct ?? "0"),
     settlementDate: inv.settlementDate ?? "",
   }));
 }

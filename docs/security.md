@@ -339,3 +339,13 @@ Purging runs opportunistically on every record write and read, and `purgeExpired
 ### Why this framing
 
 ILN is a public-good protocol, but "public" does not mean "retains everything". The policy above is deliberately conservative: keep the minimum needed for debugging, purge bodies first, and make the windows explicit and configurable rather than claiming a fixed retention guarantee the software does not enforce.
+
+## Public Audit Findings
+
+After an external audit, publishable findings are summarized for the community in
+[`audit-findings-summary.md`](audit-findings-summary.md) (finding ID, severity,
+public excerpt, status, remediation PR). That page shares underlying data with
+the maintainer-facing [audit-readiness-dashboard.md](audit-readiness-dashboard.md)
+but is structured for public disclosure. Until the audit report exists, the
+summary ships with a placeholder row that validates the format.
+

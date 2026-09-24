@@ -36,63 +36,53 @@ export const TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
 export const MAINNET_RPC_URL = "https://soroban.stellar.org";
 
 // ---------------------------------------------------------------------------
-// Network Contract Registry
+// Contract registry
 // ---------------------------------------------------------------------------
 
-/** Contract addresses for all ILN contracts on a given network. */
-export interface NetworkContracts {
-  /** Main invoice-liquidity contract address. */
+/** The five deployed ILN contract addresses for a given network. */
+export interface ContractAddresses {
+  /** Invoice-liquidity contract address. */
   invoiceLiquidity: string;
   /** Insurance pool contract address. */
   insurancePool: string;
-  /** Distribution/rewards contract address. */
+  /** Distribution contract address. */
   distribution: string;
-  /** Multisig admin contract address. */
-  multisigAdmin: string;
-  /** Governance token contract address. */
-  governanceToken: string;
+  /** Fund queue contract address. */
+  fundQueue: string;
+  /** NFT / reputation token contract address. */
+  nft: string;
 }
 
-/** Known networks with their contract registries. */
-export const NETWORK_REGISTRY: Record<string, NetworkContracts> = {
-  testnet: {
-    invoiceLiquidity: "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
-    insurancePool: "", // TODO: populate after testnet deployment
-    distribution: "", // TODO: populate after testnet deployment
-    multisigAdmin: "", // TODO: populate after testnet deployment
-    governanceToken: "", // TODO: populate after testnet deployment
-  },
-  mainnet: {
-    invoiceLiquidity: "", // TODO: populate after mainnet deployment
-    insurancePool: "",
-    distribution: "",
-    multisigAdmin: "",
-    governanceToken: "",
-  },
-};
+/** Known network names. */
+export type NetworkName = "testnet" | "mainnet";
 
 /**
- * Check if a network's contract registry is fully populated.
- * Throws with a clear error if any required address is missing.
+ * Per-network contract registry.
+ *
+ * Testnet addresses are populated from the latest CI/CD deployment.
+ * Mainnet addresses are left empty until mainnet deployment; calling
+ * `ILNClient.mainnet()` without explicit overrides throws rather than
+ * silently using a bogus address (#876).
  */
-export function requireNetworkContracts(network: string): NetworkContracts {
-  const contracts = NETWORK_REGISTRY[network];
-  if (!contracts) {
-    throw new Error(
-      `Unknown network "${network}". Available: ${Object.keys(NETWORK_REGISTRY).join(", ")}`
-    );
-  }
-  const missing = Object.entries(contracts)
-    .filter(([, addr]) => !addr)
-    .map(([key]) => key);
-  if (missing.length > 0) {
-    throw new Error(
-      `Network "${network}" has unpopulated contract addresses: ${missing.join(", ")}. ` +
-      `This network is not ready for use.`
-    );
-  }
-  return contracts;
-}
+export const CONTRACT_REGISTRY: Record<NetworkName, ContractAddresses> = {
+  testnet: {
+    invoiceLiquidity:
+      "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+    insurancePool: "",
+    distribution: "",
+    fundQueue: "",
+    nft: "",
+  },
+  mainnet: {
+    // Intentionally left empty — mainnet deployment not yet completed.
+    // ILNClient.mainnet() will throw if these are not populated.
+    invoiceLiquidity: "",
+    insurancePool: "",
+    distribution: "",
+    fundQueue: "",
+    nft: "",
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -111,6 +101,11 @@ export interface ILNClientConfig {
    * Read-only methods like getReputation work without a signer.
    */
   signer?: ISigner;
+  /**
+   * Optional pre-populated contract addresses for all five ILN contracts.
+   * When provided, overrides the registry lookup for the bound network.
+   */
+  contracts?: Partial<ContractAddresses>;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +138,8 @@ export class ILNClient {
   readonly contractId: string;
   /** Optional signer for authenticated methods. */
   readonly signer?: ISigner | undefined;
+  /** Pre-populated contract addresses for all five ILN contracts. */
+  readonly contracts: ContractAddresses;
 
   // Cached imports (lazy-loaded for tree-shaking)
   private _getReputation?: typeof import("./methods/reputation.js").getReputation;
@@ -157,12 +154,64 @@ export class ILNClient {
   private _getPoolHealth?: typeof import("./methods/insurance.js").getPoolHealth;
   private _getDistributionAccrual?: typeof import("./methods/distribution.js").getDistributionAccrual;
   private _submitBatchTransaction?: typeof import("./methods/batch.js").submitBatchTransaction;
+  private _networkVerified = false;
 
   constructor(config: ILNClientConfig) {
     this.rpc = new SorobanRpc.Server(config.rpcUrl);
     this.networkPassphrase = config.networkPassphrase;
     this.contractId = config.contractId;
     this.signer = config.signer;
+    this.contracts = {
+      invoiceLiquidity: config.contractId,
+      insurancePool: config.contracts?.insurancePool ?? "",
+      distribution: config.contracts?.distribution ?? "",
+      fundQueue: config.contracts?.fundQueue ?? "",
+      nft: config.contracts?.nft ?? "",
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Network verification
+  // --------------------------------------------------------------------------
+
+  /**
+   * Verify that the configured network passphrase matches the RPC endpoint.
+   *
+   * Queries `getNetwork()` on the Soroban RPC to obtain the server's actual
+   * network passphrase and compares it against the passphrase configured in
+   * this client. On mismatch, throws with a clear diagnostic message so the
+   * operator can fix their configuration before submitting any transactions.
+   *
+   * Call this after construction (or use the `testnet()` / `mainnet()` factory
+   * methods which call it automatically) to guard against costly
+   * mainnet-contract-against-testnet-RPC mistakes.
+   *
+   * @throws {Error} if the RPC passphrase does not match the configured passphrase
+   *
+   * @example
+   * ```ts
+   * const client = ILNClient.custom({ rpcUrl: "...", networkPassphrase: Networks.TESTNET, contractId: "..." });
+   * await client.verifyNetwork(); // throws if RPC is actually mainnet
+   * ```
+   */
+  async verifyNetwork(): Promise<void> {
+    try {
+      const network = await this.rpc.getNetwork();
+      if (network.passphrase !== this.networkPassphrase) {
+        throw new Error(
+          `Network mismatch: configured passphrase "${this.networkPassphrase}" ` +
+          `does not match the RPC endpoint's passphrase "${network.passphrase}". ` +
+          `You may be pointing a mainnet contract at a testnet RPC (or vice versa).`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Network mismatch")) {
+        throw err;
+      }
+      throw new Error(
+        `Failed to verify network passphrase: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -182,14 +231,14 @@ export class ILNClient {
    */
   static testnet(
     signer?: ISigner,
-    options?: { rpcUrl?: string; contractId?: string }
+    options?: { rpcUrl?: string; contractId?: string; contracts?: Partial<ContractAddresses> }
   ): ILNClient {
-    const contractId = options?.contractId ?? NETWORK_REGISTRY.testnet.invoiceLiquidity;
-
+    const registry = CONTRACT_REGISTRY.testnet;
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? TESTNET_RPC_URL,
       networkPassphrase: "Test SDF Network ; September 2015",
-      contractId,
+      contractId: options?.contractId ?? registry.invoiceLiquidity,
+      contracts: { ...registry, ...options?.contracts },
       ...(signer ? { signer } : {}),
     });
   }
@@ -210,18 +259,22 @@ export class ILNClient {
    */
   static mainnet(
     signer?: ISigner,
-    options?: { rpcUrl?: string; contractId?: string }
+    options?: { rpcUrl?: string; contractId?: string; contracts?: Partial<ContractAddresses> }
   ): ILNClient {
-    // If contractId is explicitly provided, use it (allows testing before full registry)
-    const contractId = options?.contractId ?? (() => {
-      const contracts = requireNetworkContracts("mainnet");
-      return contracts.invoiceLiquidity;
-    })();
-
+    const registry = CONTRACT_REGISTRY.mainnet;
+    const contractId = options?.contractId ?? registry.invoiceLiquidity;
+    if (!contractId) {
+      throw new Error(
+        "Mainnet contract IDs are not yet populated in the registry. " +
+          "Pass an explicit contractId or contracts option, or wait for " +
+          "mainnet deployment to complete."
+      );
+    }
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? MAINNET_RPC_URL,
       networkPassphrase: "Public Global Stellar Network ; September 2015",
       contractId,
+      contracts: { ...registry, ...options?.contracts },
       ...(signer ? { signer } : {}),
     });
   }
@@ -457,6 +510,11 @@ export class ILNClient {
     if (!this.signer) {
       throw new Error("Batch transaction submission requires a signer");
     }
+    // Verify network passphrase before submitting any transaction
+    if (!this._networkVerified) {
+      await this.verifyNetwork();
+      this._networkVerified = true;
+    }
     if (!this._submitBatchTransaction) {
       this._submitBatchTransaction = (await import("./methods/batch.js")).submitBatchTransaction;
     }
@@ -546,6 +604,10 @@ class ILNSingleton {
 
   async submitBatchTransaction(calls: import("./methods/batch.js").BatchContractCall[]) {
     return this.client.submitBatchTransaction(calls);
+  }
+
+  async verifyNetwork(): Promise<void> {
+    return this.client.verifyNetwork();
   }
 }
 
