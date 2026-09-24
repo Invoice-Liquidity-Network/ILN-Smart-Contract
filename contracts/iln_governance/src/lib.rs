@@ -13,8 +13,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token::Client as TokenClient, vec,
-    Address, BytesN, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error,
+    token::Client as TokenClient, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 /// Vote receipts only need to outlive the active voting window.
@@ -1032,7 +1032,8 @@ pub fn get_proposal_created_ledger(env: Env, proposal_id: u64) -> Option<u32> {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let token_addr = Self::get_gov_token(env)?;
+        let token_addr = Self::get_gov_token(env)
+            .unwrap_or_else(|e| panic_with_error!(env, e));
         let token = TokenClient::new(env, &token_addr);
         let this = env.current_contract_address();
         token.transfer(&this, proposer, &amount);
@@ -1077,7 +1078,8 @@ pub fn get_proposal_created_ledger(env: Env, proposal_id: u64) -> Option<u32> {
             .remove(&StorageKey::ProposalDeposit(proposal_id));
         let sink: Option<Address> = env.storage().instance().get(&StorageKey::ProposalDepositSink);
         if let Some(dest) = sink.clone() {
-            let token_addr = Self::get_gov_token(env)?;
+            let token_addr = Self::get_gov_token(env)
+                .unwrap_or_else(|e| panic_with_error!(env, e));
             let token = TokenClient::new(env, &token_addr);
             let this = env.current_contract_address();
             token.transfer(&this, &dest, &amount);

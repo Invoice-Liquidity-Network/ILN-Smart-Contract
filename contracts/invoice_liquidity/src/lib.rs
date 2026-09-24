@@ -1071,10 +1071,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         multisig::propose(
             &env,
             &proposer,
-            multisig::AdminAction::UpdateMultisig {
-                new_signers,
-                new_threshold,
-            },
+            multisig::AdminAction::UpdateMultisig(new_signers, new_threshold),
         )
     }
 
@@ -1092,10 +1089,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         multisig::propose(
             &env,
             &proposer,
-            multisig::AdminAction::RotateSigner {
-                old_signer,
-                new_signer,
-            },
+            multisig::AdminAction::RotateSigner(old_signer, new_signer),
         )
     }
 
@@ -1220,10 +1214,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                     },
                 );
             }
-            multisig::AdminAction::UpdateMultisig {
-                new_signers,
-                new_threshold,
-            } => {
+            multisig::AdminAction::UpdateMultisig(new_signers, new_threshold) => {
                 if !multisig::is_valid_config(&new_signers, new_threshold) {
                     return Err(ContractError::InvalidMultisigConfig);
                 }
@@ -1233,10 +1224,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                 };
                 env.storage().instance().set(&DataKey::MultisigAdmin, &updated);
             }
-            multisig::AdminAction::RotateSigner {
-                old_signer,
-                new_signer,
-            } => {
+            multisig::AdminAction::RotateSigner(old_signer, new_signer) => {
                 let rotation =
                     multisig::schedule_rotation(&env, old_signer.clone(), new_signer.clone())?;
                 env.events().publish(
