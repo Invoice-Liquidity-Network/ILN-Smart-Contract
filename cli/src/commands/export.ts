@@ -68,16 +68,52 @@ export function filterByDate(
 }
 
 /**
- * Fetch invoices from the network. In real usage this would call the SDK;
- * here we expose a hook so tests can inject mock data.
+ * Fetch invoices from the network. In real usage this calls the SDK;
+ * tests can inject a mock via the parameter.
  */
 export type InvoiceFetcher = (opts: {
   submitter?: string;
   lp?: string;
 }) => Promise<InvoiceRow[]>;
 
+/** Default fetcher using the SDK's getLpInvoices method. */
+async function sdkFetcher(opts: {
+  submitter?: string;
+  lp?: string;
+}): Promise<InvoiceRow[]> {
+  // Dynamic import to avoid bundling the SDK when not needed
+  const { iln } = await import("@iln/sdk");
+
+  // SDK currently exposes getLpInvoices; if a submitter filter is requested
+  // without an LP, we fetch all LP invoices and filter client-side.
+  const lpAddress = opts.lp;
+  if (!lpAddress) {
+    // No LP filter — fetch a broad page and let date/submitter filters apply
+    // For now, return empty if no LP specified (submitter-only queries need
+    // a dedicated SDK method which is tracked separately).
+    console.warn(
+      "Warning: --submitter filter requires a future SDK method. " +
+      "Use --lp to filter by liquidity provider."
+    );
+    return [];
+  }
+
+  const invoices = await iln.getLpInvoices(lpAddress, 0, 50);
+  return invoices.map((inv: any) => ({
+    id: inv.id ?? "",
+    state: inv.state ?? "",
+    submitter: inv.submitter ?? "",
+    payer: inv.payer ?? "",
+    lp: inv.lp ?? lpAddress,
+    amount: inv.amount ?? "",
+    token: inv.token ?? "",
+    yieldPct: inv.yieldPct ?? "",
+    settlementDate: inv.settlementDate ?? "",
+  }));
+}
+
 export function makeExportCommand(
-  fetchInvoices: InvoiceFetcher = defaultFetcher
+  fetchInvoices: InvoiceFetcher = sdkFetcher
 ): Command {
   const cmd = new Command("export").description(
     "Export invoice data to CSV or JSON"
@@ -128,10 +164,4 @@ export function makeExportCommand(
     );
 
   return cmd;
-}
-
-/** Default fetcher — placeholder for SDK integration. */
-async function defaultFetcher(): Promise<InvoiceRow[]> {
-  // TODO: replace with real SDK call once the SDK exposes a listInvoices method
-  return [];
 }

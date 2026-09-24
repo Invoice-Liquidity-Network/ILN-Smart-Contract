@@ -145,3 +145,93 @@ A burst load test was executed simulating a sudden spike of **1,000 concurrent i
 3. **`Alert: RateLimitExceededSpike`**:
    - *Impact*: Subscriber webhook is exceeding configured sliding window threshold (HTTP 429).
    - *Action*: Verify subscriber tier allocation and offer upgrade to dedicated enterprise rate limit.
+
+---
+
+## 6. Notifications Services Layer
+
+The notifications system includes a services layer for digest aggregation, delivery failure analytics, and subscription health monitoring.
+
+### 6.1 Digest/Aggregation Service
+
+Batches notifications into periodic summaries to reduce noise for high-volume subscribers.
+
+#### Configuration
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `DIGEST_INTERVAL_MS` | `3600000` (1 hour) | How often digests are compiled and sent |
+| `DIGEST_MAX_BATCH_SIZE` | `100` | Maximum notifications per digest |
+| `DIGEST_RETRY_ATTEMPTS` | `3` | Retry count for failed digest deliveries |
+
+#### Digest Policy
+
+- Notifications are held in a staging queue until the next digest interval
+- At each interval, the service groups pending notifications by subscriber
+- Each subscriber receives one consolidated digest containing all pending notifications
+- Critical notifications (e.g., `invoice.disputed`) bypass the digest and are delivered immediately
+
+#### Override Procedure
+
+To force immediate delivery for a subscriber (bypassing digest):
+```sql
+UPDATE notification_subscriptions
+SET digest_enabled = FALSE
+WHERE subscriber_id = '<subscriber_id>';
+```
+
+### 6.2 Delivery Failure Analytics Service
+
+Correlates rate-limit and circuit-breaker events to identify patterns in delivery failures.
+
+#### Metrics Tracked
+
+| Metric | Description | Alert Threshold |
+| :--- | :--- | :--- |
+| `failure_rate_5m` | Percentage of failed deliveries in last 5 minutes | > 5% |
+| `circuit_breaker_trips` | Number of circuit breaker activations per endpoint | > 3 per hour |
+| `rate_limit_hits` | HTTP 429 responses per endpoint | > 10 per minute |
+| `consecutive_failures` | Unbroken failure streak per endpoint | > 10 |
+
+#### Interpretation Guide
+
+1. **High failure rate + circuit breaker trips**: Endpoint is down or misconfigured
+2. **High rate limit hits**: Subscriber's processing capacity is overwhelmed
+3. **Intermittent failures without circuit trips**: Network transient issues
+
+#### Auto-Suspension Policy
+
+Endpoints that exceed the following thresholds are auto-suspended:
+- > 50 consecutive failures
+- Circuit breaker open for > 1 hour
+- Failure rate > 50% for > 30 minutes
+
+Suspended endpoints receive a notification email and are re-enabled after 24 hours or manual override.
+
+### 6.3 Subscription Health Service
+
+Monitors endpoint health and flags persistently-failing endpoints for auto-suspension.
+
+#### Health Check Cadence
+
+| Endpoint Status | Check Frequency |
+| :--- | :--- |
+| Healthy (0 failures) | Every 5 minutes |
+| Degraded (1-4 failures) | Every 1 minute |
+| Unhealthy (5+ failures) | Every 30 seconds |
+
+#### Manual Override
+
+To manually re-enable a suspended endpoint:
+```sql
+UPDATE notification_subscriptions
+SET suspended = FALSE, suspended_at = NULL
+WHERE subscriber_id = '<subscriber_id>';
+```
+
+---
+
+## 7. Cross-References
+
+- [Webhook Verification Guide](./webhook-verification.md) — HMAC signature verification for incoming webhooks
+- [Notifications Architecture](./notifications-architecture.md) — System design and data flow diagrams

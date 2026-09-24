@@ -36,6 +36,65 @@ export const TESTNET_RPC_URL = "https://soroban-testnet.stellar.org";
 export const MAINNET_RPC_URL = "https://soroban.stellar.org";
 
 // ---------------------------------------------------------------------------
+// Network Contract Registry
+// ---------------------------------------------------------------------------
+
+/** Contract addresses for all ILN contracts on a given network. */
+export interface NetworkContracts {
+  /** Main invoice-liquidity contract address. */
+  invoiceLiquidity: string;
+  /** Insurance pool contract address. */
+  insurancePool: string;
+  /** Distribution/rewards contract address. */
+  distribution: string;
+  /** Multisig admin contract address. */
+  multisigAdmin: string;
+  /** Governance token contract address. */
+  governanceToken: string;
+}
+
+/** Known networks with their contract registries. */
+export const NETWORK_REGISTRY: Record<string, NetworkContracts> = {
+  testnet: {
+    invoiceLiquidity: "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+    insurancePool: "", // TODO: populate after testnet deployment
+    distribution: "", // TODO: populate after testnet deployment
+    multisigAdmin: "", // TODO: populate after testnet deployment
+    governanceToken: "", // TODO: populate after testnet deployment
+  },
+  mainnet: {
+    invoiceLiquidity: "", // TODO: populate after mainnet deployment
+    insurancePool: "",
+    distribution: "",
+    multisigAdmin: "",
+    governanceToken: "",
+  },
+};
+
+/**
+ * Check if a network's contract registry is fully populated.
+ * Throws with a clear error if any required address is missing.
+ */
+export function requireNetworkContracts(network: string): NetworkContracts {
+  const contracts = NETWORK_REGISTRY[network];
+  if (!contracts) {
+    throw new Error(
+      `Unknown network "${network}". Available: ${Object.keys(NETWORK_REGISTRY).join(", ")}`
+    );
+  }
+  const missing = Object.entries(contracts)
+    .filter(([, addr]) => !addr)
+    .map(([key]) => key);
+  if (missing.length > 0) {
+    throw new Error(
+      `Network "${network}" has unpopulated contract addresses: ${missing.join(", ")}. ` +
+      `This network is not ready for use.`
+    );
+  }
+  return contracts;
+}
+
+// ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
 
@@ -125,20 +184,21 @@ export class ILNClient {
     signer?: ISigner,
     options?: { rpcUrl?: string; contractId?: string }
   ): ILNClient {
+    const contractId = options?.contractId ?? NETWORK_REGISTRY.testnet.invoiceLiquidity;
+
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? TESTNET_RPC_URL,
       networkPassphrase: "Test SDF Network ; September 2015",
-      contractId:
-        options?.contractId ??
-        // Published testnet deployment: the canonical contract ID from
-        // the latest testnet CI/CD deployment. Update here when redeploying.
-        "CCVXGPKFAN374T62PLZAHWIS4UKUVTOYRD72HT36SGWWX7LRD5VFUUJD",
+      contractId,
       ...(signer ? { signer } : {}),
     });
   }
 
   /**
    * Create a client pre-configured for Stellar Mainnet (Pubnet).
+   *
+   * Fails loudly if mainnet contract addresses are not yet populated.
+   * Pass `options.contractId` to override the default registry lookup.
    *
    * @param signer   - Optional signer for authenticated methods
    * @param options  - Override defaults (rpcUrl, contractId)
@@ -152,15 +212,16 @@ export class ILNClient {
     signer?: ISigner,
     options?: { rpcUrl?: string; contractId?: string }
   ): ILNClient {
-    // Future-proof: we allow configuring mainnet ahead of deployment
-    // so integrators can test their integration code against the API shape.
+    // If contractId is explicitly provided, use it (allows testing before full registry)
+    const contractId = options?.contractId ?? (() => {
+      const contracts = requireNetworkContracts("mainnet");
+      return contracts.invoiceLiquidity;
+    })();
+
     return new ILNClient({
       rpcUrl: options?.rpcUrl ?? MAINNET_RPC_URL,
       networkPassphrase: "Public Global Stellar Network ; September 2015",
-      contractId:
-        options?.contractId ??
-        // TODO: replace with actual mainnet contract ID after mainnet deployment
-        "",
+      contractId,
       ...(signer ? { signer } : {}),
     });
   }
