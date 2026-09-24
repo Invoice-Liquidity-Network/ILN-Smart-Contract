@@ -1592,7 +1592,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             payer,
             token,
             amount,
-            due_date: due_date.try_into().unwrap(),
+            due_date: due_date
+                .try_into()
+                .map_err(|_| ContractError::InvalidDueDate)?,
             discount_rate,
             status: InvoiceStatus::Pending,
             funder: None,
@@ -1696,7 +1698,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         validate_invoice_terms_with_token(&env, amount, due_date, discount_rate, &invoice.token)?;
 
         invoice.amount = amount;
-        invoice.due_date = due_date.try_into().unwrap();
+        invoice.due_date = due_date
+            .try_into()
+            .map_err(|_| ContractError::InvalidDueDate)?;
         invoice.discount_rate = discount_rate;
 
         save_invoice(&env, &invoice);
@@ -1834,7 +1838,10 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 payer: params.payer,
                 token: params.token,
                 amount: params.amount,
-                due_date: params.due_date.try_into().unwrap(),
+                due_date: params
+                    .due_date
+                    .try_into()
+                    .map_err(|_| ContractError::InvalidDueDate)?,
                 discount_rate: params.discount_rate,
                 status: InvoiceStatus::Pending,
                 funder: None,
