@@ -21,6 +21,7 @@ vi.mock("@stellar/stellar-sdk", async () => {
     prepareTransaction: vi.fn(),
     sendTransaction: vi.fn(),
     getLatestLedger: vi.fn(),
+    getNetwork: vi.fn().mockResolvedValue({ passphrase: "Test SDF Network ; September 2015" }),
   }));
   return {
     ...actual,
@@ -184,5 +185,39 @@ describe("iln singleton", () => {
     await expect(iln.getInsurancePoolInfo(contractId, "GAA")).rejects.toThrow(
       "not configured"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyNetwork()
+// ---------------------------------------------------------------------------
+
+describe("ILNClient.verifyNetwork", () => {
+  it("passes when RPC passphrase matches configured passphrase", async () => {
+    const client = ILNClient.testnet();
+    await expect(client.verifyNetwork()).resolves.toBeUndefined();
+  });
+
+  it("throws when RPC passphrase does not match configured passphrase", async () => {
+    const client = ILNClient.mainnet();
+    // The mock returns testnet passphrase, but mainnet client expects public
+    await expect(client.verifyNetwork()).rejects.toThrow("Network mismatch");
+  });
+
+  it("throws with clear diagnostic message on mismatch", async () => {
+    const client = ILNClient.mainnet();
+    try {
+      await client.verifyNetwork();
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as Error).message).toContain("mainnet contract");
+      expect((err as Error).message).toContain("testnet RPC");
+    }
+  });
+
+  it("can be called explicitly after factory construction", async () => {
+    const client = ILNClient.testnet();
+    // Explicit verification should succeed
+    await client.verifyNetwork();
   });
 });
