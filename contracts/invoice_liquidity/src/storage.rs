@@ -162,6 +162,19 @@ pub fn get_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Admin)
 }
 
+/// Issue #843: read the admin address, returning a typed
+/// `ContractError::NotInitialized` when the storage slot is absent (which
+/// only happens on a fresh instance that has never had `initialize` called).
+/// Replaces bare `.unwrap()` and `.ok_or(Unauthorized)` reads on the same
+/// slot so a pre-init call surfaces as a typed error rather than a raw abort
+/// or a misleading auth error.
+pub fn read_admin(env: &Env) -> Result<Address, crate::errors::ContractError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(crate::errors::ContractError::NotInitialized)
+}
+
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
