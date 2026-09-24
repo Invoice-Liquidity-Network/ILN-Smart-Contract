@@ -100,6 +100,7 @@ Source of truth: [`contracts/iln_governance/src/lib.rs`](../contracts/iln_govern
 | 17 | `NotVetoable` | Proposal cannot be vetoed in its current status. | Admin attempted to veto a proposal that is not in `Active` status. | Veto only active proposals. |
 | 18 | `VetoPowerDisabled` | Admin veto power has been disabled by governance. | Admin veto was disabled via a governance proposal. | Re-enable veto via governance before using it. |
 | 19 | `InsufficientProposerBalance` | Proposer does not hold the minimum required token balance. | Proposer's token balance is below `MinProposalBalance`. | Acquire enough governance tokens to meet the proposal threshold. |
+| 28 | `InsufficientHoldingPeriod` | Voter has no balance checkpoint predating the proposal by `MIN_VOTE_HOLD_LEDGERS` (10 ledgers). | First vote (or delegation) from a newly funded address; possible flash-loan attempt. | Call `checkpoint_balance` and wait ~10 ledgers (or vote on a later proposal). |
 
 ---
 

@@ -30,6 +30,16 @@ const DEFAULT_MIN_PROPOSAL_BALANCE: i128 = 1_000;
 /// Issue #814: default forfeitable proposal deposit (0 = disabled, backwards
 /// compatible). Governance can raise via `set_min_proposal_deposit`.
 const DEFAULT_PROPOSAL_DEPOSIT: i128 = 0;
+/// Issue #805: minimum number of ledgers a voter's balance checkpoint must
+/// predate a proposal's creation ledger before it can back a vote on that
+/// proposal (~50 s at 5 s/ledger). An atomic flash loan lives and is repaid
+/// inside a single transaction, so it can never age a checkpoint past this
+/// bound — closing the same-transaction first-vote snapshot exploit without
+/// requiring on-chain enumeration of all token holders (infeasible in
+/// Soroban). Honest holders checkpoint once via `checkpoint_balance` (also
+/// recorded automatically at `create_proposal`) and are then eligible on all
+/// later proposals.
+const MIN_VOTE_HOLD_LEDGERS: u32 = 10;
 
 /// Default maximum transitive delegation chain depth.
 const DEFAULT_MAX_DELEGATION_DEPTH: u32 = 10;
@@ -86,6 +96,11 @@ pub enum GovernanceError {
     /// Issue #814: deposit for this proposal was already settled (refunded
     /// or forfeited) — prevents double-refund / double-forfeit.
     DepositAlreadySettled = 27,
+    /// Issue #805: the voter has no balance checkpoint predating this
+    /// proposal by at least `MIN_VOTE_HOLD_LEDGERS`. Call
+    /// `checkpoint_balance` and wait out the holding period (or vote on a
+    /// later proposal) before voting.
+    InsufficientHoldingPeriod = 28,
 }
 
 // ================================================================
@@ -204,6 +219,23 @@ pub struct GovernanceProposal {
     pub created_at: u64,
     pub voting_end: u64,
     pub eta_ledger: u32,
+}
+
+/// Issue #805: a voter's proven balance and the ledger it was observed on.
+///
+/// A checkpoint is recorded by `checkpoint_balance` (or automatically for
+/// the proposer at `create_proposal`). A vote on a proposal created at
+/// ledger `C` may only draw on a checkpoint with
+/// `ledger + MIN_VOTE_HOLD_LEDGERS <= C`, carrying
+/// `min(checkpoint.balance, current_balance)` — so neither a flash-inflated
+/// checkpoint (repaid before the vote, hence `min` with the real balance)
+/// nor a flash-inflated live balance (no aged checkpoint) can mint voting
+/// power.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BalanceCheckpoint {
+    pub balance: i128,
+    pub ledger: u32,
 }
 
 // ================================================================
@@ -416,6 +448,16 @@ pub enum StorageKey {
     /// Issue #814: `true` once a proposal's deposit has been settled
     /// (refunded or forfeited) — guards against double-refund.
     ProposalDepositSettled(u64),
+    /// Issue #805: last proven balance checkpoint per voter (see
+    /// `BalanceCheckpoint`). Written by `checkpoint_balance` and (when
+    /// absent) for the proposer at `create_proposal`.
+    BalanceCheckpoint(Address),
+    /// Issue #805: ledger sequence at which a proposal was created. The
+    /// reference point for the `MIN_VOTE_HOLD_LEDGERS` eligibility rule in
+    /// `cast_vote`. Stored beside `Proposal` (rather than inside it) so the
+    /// `GovernanceProposal` XDR schema — and every persisted proposal —
+    /// stays byte-compatible.
+    ProposalCreatedLedger(u64),
 }
 
 // ================================================================
@@ -667,6 +709,25 @@ impl GovContract {
             &proposer_balance,
         );
 
+        // Issue #805: record the creation ledger as the reference point for
+        // the checkpoint-eligibility rule, and seed the proposer's balance
+        // checkpoint (preserved when one already exists so an older,
+        // longer-aged checkpoint keeps backing the proposer's future votes).
+        let created_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ProposalCreatedLedger(id), &created_ledger);
+        let checkpoint_key = StorageKey::BalanceCheckpoint(proposer.clone());
+        if !env.storage().persistent().has(&checkpoint_key) {
+            env.storage().persistent().set(
+                &checkpoint_key,
+                &BalanceCheckpoint {
+                    balance: proposer_balance,
+                    ledger: created_ledger,
+                },
+            );
+        }
+
         env.storage()
             .persistent()
             .set(&StorageKey::Proposal(id), &proposal);
@@ -802,6 +863,48 @@ impl GovContract {
             .persistent()
             .get(&StorageKey::ProposalDepositSettled(proposal_id))
             .unwrap_or(false)
+    }
+
+    // ── Issue #805: balance checkpoints (flash-loan-resistant snapshots) ──
+
+    /// Record (or refresh) the caller's proven governance-token balance.
+    ///
+    /// A vote on a proposal created at ledger `C` may only draw on a
+    /// checkpoint with `ledger + MIN_VOTE_HOLD_LEDGERS <= C`. Because a
+    /// flash loan is repaid inside the same transaction that takes it, an
+    /// attacker can never produce a checkpoint that satisfies this rule for
+    /// a meaningful balance — while an honest holder checkpoints once
+    /// (e.g. right after acquiring tokens) and is then eligible on every
+    /// later proposal. Emits no event; queryable via
+    /// `get_voter_checkpoint`.
+    pub fn checkpoint_balance(env: Env, voter: Address) -> Result<(), GovernanceError> {
+        voter.require_auth();
+        let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
+        let token = TokenClient::new(&env, &token_addr);
+        let balance = token.balance(&voter);
+        env.storage().persistent().set(
+            &StorageKey::BalanceCheckpoint(voter),
+            &BalanceCheckpoint {
+                balance,
+                ledger: env.ledger().sequence(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Returns the voter's last recorded balance checkpoint, if any.
+    pub fn get_voter_checkpoint(env: Env, voter: Address) -> Option<BalanceCheckpoint> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::BalanceCheckpoint(voter))
+    }
+
+    /// Returns the ledger sequence at which `proposal_id` was created
+    /// (`None` for proposals created before this tracking existed).
+    pub fn get_proposal_created_ledger(env: Env, proposal_id: u64) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ProposalCreatedLedger(proposal_id))
     }
 
     /// Refund the escrowed deposit to the proposer. Idempotent: a second
@@ -1038,6 +1141,16 @@ impl GovContract {
             return Err(GovernanceError::CannotDelegateToSelf);
         }
 
+        // Issue #805: gate the contributed weight the same way `cast_vote`
+        // gates first votes — otherwise a flash-funded address could
+        // permanently inflate a terminal's `DelegatedToMe` tally and the
+        // terminal's later vote. The current ledger is the reference point:
+        // only balances checkpointed at least `MIN_VOTE_HOLD_LEDGERS` ago
+        // count (capped at the live balance via `min`).
+        let now_ledger = env.ledger().sequence();
+        let live_balance = Self::get_own_balance_for_delegation(&env, &delegator);
+        let proven_balance = Self::proven_own_balance(&env, &delegator, live_balance, now_ledger)?;
+
         // ── Cycle detection ───────────────────────────────────────
         // Walk the forward chain from `delegate`.
         // If we reach `delegator` at any point, the new edge would close a cycle.
@@ -1061,8 +1174,7 @@ impl GovContract {
         // ── Remove weight from old terminal if re-delegating ──────
         if let Some(old_delegate) = Self::get_delegate_raw(&env, &delegator) {
             let old_terminal = Self::resolve_terminal(&env, &old_delegate);
-            let delegator_balance = Self::get_own_balance_for_delegation(&env, &delegator);
-            Self::adjust_delegated_to_me(&env, &old_terminal, -delegator_balance);
+            Self::adjust_delegated_to_me(&env, &old_terminal, -proven_balance);
         }
 
         // ── Store forward pointer ─────────────────────────────────
@@ -1071,8 +1183,7 @@ impl GovContract {
             .set(&StorageKey::Delegation(delegator.clone()), &delegate);
 
         // ── Add weight to new terminal ────────────────────────────
-        let delegator_balance = Self::get_own_balance_for_delegation(&env, &delegator);
-        Self::adjust_delegated_to_me(&env, &terminal, delegator_balance);
+        Self::adjust_delegated_to_me(&env, &terminal, proven_balance);
 
         env.events().publish(
             (
@@ -1092,6 +1203,11 @@ impl GovContract {
     // ── Issue #64: undelegate_votes ───────────────────────────────
 
     /// Remove the caller's delegation.
+    ///
+    /// Issue #805: the exit path is intentionally *not* checkpoint-gated
+    /// (it uses the live balance like before) — removing weight must always
+    /// succeed, including for delegations recorded before checkpoints
+    /// existed, so no tally can get stuck.
     ///
     /// Emits `VotesUndelegated`.
     pub fn undelegate_votes(env: Env, delegator: Address) -> Result<(), GovernanceError> {
@@ -1127,6 +1243,11 @@ impl GovContract {
     /// Cast a vote on an active proposal.
     ///
     /// Issue #64: weight = own snapshot balance + DelegatedToMe tally.
+    /// Issue #805: a first-time voter's own balance is not snapshotted
+    /// blindly — it must be backed by a `BalanceCheckpoint` predating the
+    /// proposal's creation ledger by `MIN_VOTE_HOLD_LEDGERS`, carrying
+    /// `min(checkpoint, current)`. Same-transaction flash-loan voting is
+    /// rejected with `InsufficientHoldingPeriod`.
     pub fn cast_vote(
         env: Env,
         voter: Address,
@@ -1157,14 +1278,32 @@ impl GovContract {
         let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
         let token = TokenClient::new(&env, &token_addr);
 
-        // Own snapshotted (or current) balance.
+        // Own snapshotted (or checkpoint-proven) balance.
+        //
+        // Issue #805: the old code snapshotted `token.balance(&voter)` here,
+        // so a flash-borrow + first-vote + repay inside one transaction
+        // permanently locked in the inflated amount. Now the first vote
+        // requires an aged pre-proposal checkpoint and carries
+        // `min(checkpoint, current)` — a same-transaction loan satisfies
+        // neither. The proposer's creation-time snapshot (set in
+        // `create_proposal`, where real funds must clear the balance gate
+        // and escrow) is still honoured as-is.
         let snapshot_key = StorageKey::VoteWeightSnapshot(proposal_id, voter.clone());
         let own_balance: i128 = match env.storage().persistent().get(&snapshot_key) {
             Some(w) => w,
             None => {
                 let current = token.balance(&voter);
-                env.storage().persistent().set(&snapshot_key, &current);
-                current
+                // Proposals created before `ProposalCreatedLedger` tracking
+                // existed fall back to the current ledger (strictest
+                // reading: only already-aged checkpoints qualify).
+                let created_ledger: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&StorageKey::ProposalCreatedLedger(proposal_id))
+                    .unwrap_or(env.ledger().sequence());
+                let proven = Self::proven_own_balance(&env, &voter, current, created_ledger)?;
+                env.storage().persistent().set(&snapshot_key, &proven);
+                proven
             }
         };
 
@@ -1940,6 +2079,35 @@ impl GovContract {
         let token_addr: Address = env.storage().instance().get(&StorageKey::GovToken).unwrap();
         let token = TokenClient::new(env, &token_addr);
         token.balance(addr)
+    }
+
+    /// Issue #805: the checkpoint-proven own balance usable at reference
+    /// ledger `ref_ledger` (a proposal's creation ledger for votes, the
+    /// current ledger for delegations).
+    ///
+    /// Requires a `BalanceCheckpoint` with
+    /// `checkpoint.ledger + MIN_VOTE_HOLD_LEDGERS <= ref_ledger` and returns
+    /// `min(checkpoint.balance, current)`: the `min` pins the weight to
+    /// funds that demonstrably survived from the checkpoint to now, so a
+    /// checkpoint recorded with flash funds (repaid before the vote) and a
+    /// live balance inflated with flash funds (no aged checkpoint) are both
+    /// worthless. Anything else fails with `InsufficientHoldingPeriod`.
+    fn proven_own_balance(
+        env: &Env,
+        voter: &Address,
+        current: i128,
+        ref_ledger: u32,
+    ) -> Result<i128, GovernanceError> {
+        let cp: Option<BalanceCheckpoint> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::BalanceCheckpoint(voter.clone()));
+        match cp {
+            Some(c) if c.ledger.saturating_add(MIN_VOTE_HOLD_LEDGERS) <= ref_ledger => {
+                Ok(c.balance.min(current))
+            }
+            _ => Err(GovernanceError::InsufficientHoldingPeriod),
+        }
     }
 
     /// Add `delta` (may be negative) to the `DelegatedToMe` tally of `addr`.
