@@ -16,7 +16,7 @@ These items **must reach ✅ Complete** before the audit firm is given repositor
 
 | Item | Status | Blocking Issue(s) | Target Completion | Notes |
 |------|--------|------|---|---|
-| Verify `access-control.md` against current code across all five contracts | ⚠️ In Progress | #676 | Pre-audit | Line-by-line audit against invoice_liquidity, iln_governance, iln_distribution, insurance_pool, reputation_bonus; add CI check for undocumented functions |
+| Verify `access-control.md` against current code across all five contracts | ✅ Complete | #856, #857 | Pre-audit | Generated matrix + CI drift/doc gates |
 | Re-review `threat-model.md` against current five-contract architecture | ⚠️ In Progress | #677 | Pre-audit | Multisig (partially), oracle registry (done), MEV queue (done), NFT composability (not found), distribution contract threat analysis (new) |
 | Reconcile `cargo-deny` across all contract crates | ⚠️ In Progress | #675 | Pre-audit | Confirm insurance_pool, iln_distribution, reputation_bonus in scope; add CI gate |
 | Zero `unsafe` blocks across all contract crates | ✅ Pass | N/A | — | All crates are `#![no_std]`; `grep -r "unsafe" contracts/` returns nothing |
@@ -30,7 +30,7 @@ These items **must reach ✅ Complete** before the audit firm is given repositor
 | Update `docs/events.md` — resolve missing/discrepant events | ❌ Open | #681 | Missing: InvoiceExpired, InvoiceDisputed, ReputationUpdated; distribution contract emits **no events**; verify TokenAdded/TokenRemoved emission |
 | Update `docs/error-codes.md` for all new error variants | ❌ Open | #682 | Cover multisig errors (AlreadySigned, ProposalExpired, ThresholdNotReached, etc.), distribution errors, governance errors |
 | Update `docs/storage-layout.md` for multisig, LP stats, oracle registry keys | ❌ Open | #683 | Missing: MultisigAdmin, MultisigProposal, NextProposalId, distribution keys, oracle registry keys |
-| Publish comprehensive doc comments for all public functions | ⚠️ Partial | #684, #685 | invoice_liquidity mostly done; iln_distribution minimal; iln_governance missing; insurance_pool TBD; reputation_bonus TBD |
+| Publish comprehensive doc comments for all public functions | ✅ Gated in CI | #857 | Access:/Arguments/Returns/Errors required on mutating `#[contractimpl]` entry points |
 
 ### Test Coverage & Fuzz
 
@@ -98,7 +98,7 @@ These items **must reach ✅ Complete** before mainnet deployment but are not bl
 | CONTRIBUTING guide up to date (contribution, review, testing, local setup) | ⚠️ In Progress | [CONTRIBUTING.md](../CONTRIBUTING.md) | Community lead | Verify all commands still work |
 | SECURITY.md up to date (reporting channels, response SLAs, safe-harbor) | ⚠️ In Progress | [SECURITY.md](../SECURITY.md) | Security lead | Align with detailed policy |
 | CHANGELOG reviewed for launch release | ❌ Not started | [CHANGELOG.md](../CHANGELOG.md) | Release lead | Run `make changelog` and review |
-| Maintainer ownership confirmed (CODEOWNERS, approvers, emergency contacts) | ⚠️ In Progress | [CODEOWNERS](../.github/CODEOWNERS) | Community lead | Update with actual names |
+| Maintainer ownership confirmed (CODEOWNERS, approvers, emergency contacts) | ✅ Complete | [MAINTAINERS.md](../MAINTAINERS.md) | Community lead | Team owners + emergency channels documented |
 | Public support channels ready (bug reporting, integration questions, incidents) | ❌ Not started | [ISSUE_TEMPLATE/](../.github/ISSUE_TEMPLATE) | Community lead | Discord, email, GitHub discussions? |
 
 ---
