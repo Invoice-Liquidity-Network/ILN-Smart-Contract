@@ -1,8 +1,8 @@
 # Audit Readiness Dashboard
 
 **Status:** Pre-Audit Reconciliation  
-**Last Updated:** 2026-08-29  
-**Purpose:** Single authoritative source reconciling `pre-audit-checklist.md` and `mainnet-launch-checklist.md`
+**Last Updated:** 2026-09-24  
+**Purpose:** Single authoritative source reconciling `pre-audit-checklist.md` and `mainnet-launch-checklist.md` (both now marked as historical reference only)
 
 This dashboard unifies audit and mainnet readiness into one tracking document. Items are categorized by audit phase (Pre-Audit → Audit → Post-Audit → Mainnet Launch).
 

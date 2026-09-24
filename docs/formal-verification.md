@@ -410,3 +410,238 @@ There is no single `check_invariants()` helper analogous to the invoice contract
 | Quadratic voting weight transform (Issue #530) | `contracts/iln_governance/src/test.rs` |
 | Access control (admin / ILN-contract-gated setters) | `contracts/iln_governance/src/test.rs` |
 | Benchmarks / gas bounds | `contracts/iln_governance/src/tests_benchmarks.rs` |
+
+---
+
+## 14. Governance Snapshot & Delegation Invariants
+
+This section extends the governance formal verification to explicitly specify snapshot integrity and delegation safety properties, addressing Issue #810.
+
+### 14.1 Vote-Weight Snapshot Invariants
+
+**Invariant SN1: Snapshot monotonicity for a given proposal**
+**Property:** For a given `proposal_id`, once a `voter` address has cast a vote (checked via `HasVoted(proposal_id, voter)`), that voter's recorded vote weight (`AppliedVoteWeight(proposal_id, voter)`) never changes for the duration of that proposal's lifetime (through terminal status).
+
+**Enforcement:** 
+- Snapshot read at first vote: `src/lib.rs:830-859` loads `own_balance` at proposal creation (proposer) or first vote (other voters)
+- Write-once guarantee: `AppliedVoteWeight` is written only on the first `cast_vote` call for a (proposal, voter) pair
+- Immutability: Subsequent balance changes to the `voter` do not affect the recorded weight
+
+**Specification:**
+```rust
+let proposal = get_proposal(proposal_id);
+for voter in voters_who_cast_vote_on(proposal_id) {
+    let recorded_weight = get_applied_vote_weight(proposal_id, voter);
+    let current_balance = get_token_balance(voter);
+    // recorded_weight was fixed at voter's first vote, independent of current_balance
+    assert!(recorded_weight == apply_weight_fn(voter, proposal_id, balance_at_first_vote));
+    assert_invariant!(recorded_weight does not depend on current_balance);
+}
+```
+
+**Rationale:** Prevents post-vote balance inflation from changing voting outcomes.
+
+---
+
+### 14.2 Vote-Count Invariant: No Double-Voting
+
+**Invariant SN2: One vote per address per proposal**
+**Property:** For a given `(proposal_id, voter)` pair, the vote tallies (`votes_for` / `votes_against` on the proposal) can only be incremented once by that voter across the proposal's lifetime.
+
+**Enforcement:**
+- Guard check: `HasVoted(proposal_id, voter)` is checked before any tally mutation (`src/lib.rs:823-826`)
+- Idempotence: Once `HasVoted(proposal_id, voter)` is written, subsequent `cast_vote` calls by the same voter on the same proposal return `AlreadyVoted` without changing tallies
+
+**Specification:**
+```rust
+let proposal = get_proposal(proposal_id);
+for voter in all_addresses {
+    let has_voted = check_has_voted(proposal_id, voter);
+    let vote_count_for = count_votes_by_voter_for(proposal_id, voter, FOR);
+    let vote_count_against = count_votes_by_voter_against(proposal_id, voter, AGAINST);
+    
+    // If not voted, both counts are 0
+    if !has_voted {
+        assert_eq!(vote_count_for, 0);
+        assert_eq!(vote_count_against, 0);
+    }
+    // If voted, exactly one count is 1, the other is 0 (cannot vote twice or both for/against)
+    if has_voted {
+        assert!((vote_count_for == 1 && vote_count_against == 0) 
+                || (vote_count_for == 0 && vote_count_against == 1));
+    }
+}
+```
+
+**Rationale:** Prevents double-voting and ensures voting power is counted exactly once.
+
+---
+
+### 14.3 Delegation Graph Invariants
+
+**Invariant DEL1: Delegation graph is acyclic**
+**Property:** The directed graph formed by delegation edges (`address` → `delegated_to`) contains no cycles. If `A` delegates to `B`, then `B` cannot (directly or transitively) delegate to `A`.
+
+**Enforcement:**
+- Forward-walk cycle check: `src/lib.rs:712-727` in `delegate_votes` performs a depth-bounded traversal to detect cycles before storing the new edge
+- Storage: Each delegation is stored in `Delegation(address)` as a forward pointer (`delegated_to: Option<Address>`)
+
+**Specification:**
+```rust
+fn has_cycle(delegations: HashMap<Address, Address>) -> bool {
+    for address in delegations.keys() {
+        let mut visited = HashSet::new();
+        let mut current = address;
+        while let Some(next) = delegations.get(&current) {
+            if visited.contains(&next) {
+                return true; // Cycle detected
+            }
+            visited.insert(&next);
+            current = next;
+        }
+    }
+    false
+}
+
+assert!(!has_cycle(all_delegations()));
+```
+
+**Rationale:** Prevents infinite traversal loops during vote resolution.
+
+---
+
+### 14.4 Delegation Depth Bound
+
+**Invariant DEL2: Delegation chain depth ≤ MaxDelegationDepth**
+**Property:** For any address `A`, the chain of delegations from `A` (following `delegated_to` pointers until reaching a non-delegating address) contains at most `MaxDelegationDepth` edges (default: 10).
+
+**Enforcement:**
+- Depth check on store: `src/lib.rs:712-727` counts hops during the forward-walk cycle check and rejects if depth would exceed `MaxDelegationDepth`
+- Rejection code: `src/lib.rs:728-730` returns `MaxDelegationDepthExceeded`
+
+**Specification:**
+```rust
+fn delegation_depth(address: Address, delegations: HashMap<Address, Address>) -> u32 {
+    let mut depth = 0;
+    let mut current = address;
+    while let Some(next) = delegations.get(&current) {
+        depth += 1;
+        current = next;
+    }
+    depth
+}
+
+for address in all_addresses {
+    assert!(delegation_depth(address, all_delegations()) <= MaxDelegationDepth);
+}
+```
+
+**Rationale:** Bounds per-vote traversal cost and prevents denial-of-service via deep delegation chains.
+
+---
+
+### 14.5 Delegated-To-Me Tally Consistency
+
+**Invariant DEL3: DelegatedToMe tallies accurately reflect delegators**
+**Property:** For a given address `terminal`, the `DelegatedToMe(terminal)` tally equals the sum of `own_balance` of all addresses whose delegation chain terminates at `terminal`.
+
+**Enforcement:**
+- Tally updates: `adjust_delegated_to_me()` (`src/lib.rs:1444-1453`) is called symmetrically when a delegator changes their `Delegation(delegator)` pointer
+  - Old terminal's `DelegatedToMe` is decremented by `delegator.own_balance`
+  - New terminal's `DelegatedToMe` is incremented by `delegator.own_balance`
+- Invariant: sum is preserved across delegations changes (zero-sum property)
+
+**Specification:**
+```rust
+fn compute_delegated_to_me_tally(terminal: Address, delegations: HashMap<Address, Address>, balances: HashMap<Address, i128>) -> i128 {
+    delegations.iter()
+        .filter(|(address, delegated_to)| resolve_terminal(address, delegations) == terminal)
+        .map(|(address, _)| balances[address])
+        .sum()
+}
+
+for terminal in all_addresses {
+    let stored_tally = get_delegated_to_me(terminal);
+    let computed_tally = compute_delegated_to_me_tally(terminal, all_delegations(), all_balances());
+    assert_eq!(stored_tally, computed_tally);
+}
+```
+
+**Rationale:** Ensures vote-weight tallies remain accurate as delegation edges change.
+
+---
+
+### 14.6 Vote Weight Computation with Delegation
+
+**Invariant VW1: Vote weight includes both own balance and delegated balance**
+**Property:** When a voter casts a vote, the recorded `AppliedVoteWeight(proposal_id, voter)` equals the result of the weight function (linear or quadratic, depending on `QuadraticVotingEnabled`) applied to:
+```
+vote_weight_input = own_balance + DelegatedToMe(voter)
+```
+
+**Enforcement:**
+- Weight calculation: `src/lib.rs:879-885` reads both `own_balance` (from snapshot) and `DelegatedToMe(voter)` (current) and applies the weight function
+- Recorded as: `AppliedVoteWeight(proposal_id, voter) = weight_fn(vote_weight_input)`
+
+**Specification (Linear Mode):**
+```rust
+if !quadratic_voting_enabled {
+    let own = get_own_balance(voter, proposal_id);
+    let delegated = get_delegated_to_me(voter);
+    let recorded_weight = get_applied_vote_weight(proposal_id, voter);
+    assert_eq!(recorded_weight, own + delegated);
+}
+```
+
+**Specification (Quadratic Mode):**
+```rust
+if quadratic_voting_enabled {
+    let own = get_own_balance(voter, proposal_id);
+    let delegated = get_delegated_to_me(voter);
+    let input = own + delegated;
+    let recorded_weight = get_applied_vote_weight(proposal_id, voter);
+    assert_eq!(recorded_weight, isqrt(input));
+}
+```
+
+**Rationale:** Ensures delegated votes contribute to the voter's weight and quadratic dampening is correctly applied to the total.
+
+---
+
+### 14.7 Sum of Vote Weights ≤ Total Supply
+
+**Invariant VW2: Total vote weight on a proposal never exceeds the governance token total supply**
+**Property:** For a given `proposal_id`, the sum of all `AppliedVoteWeight(proposal_id, voter)` across all voters who cast votes is ≤ `GovTokenTotalSupply`.
+
+**Enforcement:**
+- Invariant enforcement: implicit in the vote model — each voter's weight is derived from their token balance (own + delegated), and the sum of all balances ≤ total supply
+- Formal check: not explicitly guarded in code, but verified by property-based testing
+
+**Specification:**
+```rust
+let proposal = get_proposal(proposal_id);
+let total_supply = get_gov_token_total_supply();
+let total_weight: i128 = voters_on_proposal(proposal_id)
+    .map(|voter| get_applied_vote_weight(proposal_id, voter))
+    .sum();
+    
+assert!(total_weight <= total_supply);
+```
+
+**Rationale:** Prevents artificial vote inflation if the implementation allowed a voter to record more weight than tokens they own.
+
+---
+
+## 15. Test Coverage for Snapshot & Delegation
+
+| Property | Verified By | Issue |
+|---|---|---|
+| Snapshot monotonicity — balance change post-vote does not affect weight | `contracts/iln_governance/src/test.rs`, `governance_main_integration_test.rs` | #810 |
+| Double-vote rejection | `contracts/iln_governance/src/test.rs` | #810 |
+| Delegation cycle detection and rejection | `contracts/iln_governance/src/test.rs` | #64, #810 |
+| Delegation depth bound enforcement | `contracts/iln_governance/src/test.rs` | #64, #810 |
+| DelegatedToMe tally consistency under re-delegation | `contracts/iln_governance/src/test.rs` | #810 |
+| Vote weight = own_balance + DelegatedToMe (linear) | `contracts/iln_governance/src/test.rs` | #810 |
+| Vote weight = isqrt(own_balance + DelegatedToMe) (quadratic) | `contracts/iln_governance/src/test.rs` | #810 |
+| Sum of vote weights ≤ total supply | `contracts/iln_governance/src/test.rs` | #810 |
+| Combined adversarial attack suite (flash-loan + Sybil + delegation + voting) | `contracts/tests/tests_adversarial_governance.rs` | #813 |

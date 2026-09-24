@@ -1,6 +1,10 @@
 # Mainnet Launch Checklist
 
-This checklist tracks the minimum readiness requirements before ILN mainnet deployment. Status values are maintained manually during planning and automatically refreshed for rows that link to GitHub issues when those issues are closed or reopened.
+**Status:** Historical Reference — Superseded by audit-readiness-dashboard.md
+
+This checklist has been reconciled with `pre-audit-checklist.md` and merged into [`audit-readiness-dashboard.md`](audit-readiness-dashboard.md), which is now the single authoritative tracking source. This document is retained for historical reference only.
+
+Status values are maintained manually during planning and automatically refreshed for rows that link to GitHub issues when those issues are closed or reopened.
 
 Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 

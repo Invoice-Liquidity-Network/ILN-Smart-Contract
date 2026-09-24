@@ -1,11 +1,13 @@
 # Pre-Audit Security Checklist
 
 **Document Version:** 1.0  
-**Status:** Active  
+**Status:** Historical Reference — Superseded by audit-readiness-dashboard.md  
 **Audit Target:** ILN Smart Contract — `invoice_liquidity`, `iln_governance`, `iln_distribution`, `reputation_bonus`  
 **Testnet Contract:** `CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC`
 
-This checklist must be completed and signed off by a maintainer before the formal security audit begins. Each item links to the relevant issue, document, or code location. Items marked ❌ are open work tracked as separate issues; this PR does not close them.
+**NOTE:** This checklist has been reconciled with `mainnet-launch-checklist.md` and merged into [`audit-readiness-dashboard.md`](audit-readiness-dashboard.md), which is now the single authoritative tracking source. This document is retained for historical reference only.
+
+Each item below links to the relevant issue, document, or code location. Items marked ❌ are open work tracked as separate issues; this PR does not close them.
 
 ---
 
