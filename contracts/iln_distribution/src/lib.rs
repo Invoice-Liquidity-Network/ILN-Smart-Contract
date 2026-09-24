@@ -90,7 +90,10 @@ pub struct IlnDistribution;
 
 #[contractimpl]
 impl IlnDistribution {
-    pub fn initialize(
+    /// `initialize` contract entry point.
+///
+/// Access: Anyone
+pub fn initialize(
         env: Env,
         iln_contract: Address,
         gov_token: Address,
@@ -130,7 +133,10 @@ impl IlnDistribution {
         Ok(())
     }
 
-    pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
+    /// `accrue_lp` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         Self::require_iln_invoker(&env);
 
         // Defense-in-depth: ignore non-positive and absurdly large settlements
@@ -155,7 +161,10 @@ impl IlnDistribution {
         );
     }
 
-    pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
+    /// `accrue_settlement` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
         Self::require_iln_invoker(&env);
 
         let freelancer_key = StorageKey::FreelancerSettled(freelancer.clone());
@@ -186,7 +195,20 @@ impl IlnDistribution {
         );
     }
 
-    pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
+    /// `claim_tokens` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `claimer` — see signature
+///
+/// # Returns
+/// * Value of type `i128`
+///
+/// # Errors
+/// * Authorization / validation errors as defined by this contract
+///
+/// Access: Caller (require_auth)
+pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
         claimer.require_auth();
 
         let total_earned = Self::total_earned(&env, &claimer);
@@ -216,7 +238,10 @@ impl IlnDistribution {
         claimable
     }
 
-    pub fn get_accrual(env: Env, participant: Address) -> i128 {
+    /// `get_accrual` contract entry point.
+///
+/// Access: Anyone
+pub fn get_accrual(env: Env, participant: Address) -> i128 {
         Self::total_earned(&env, &participant)
     }
 
@@ -262,8 +287,10 @@ impl IlnDistribution {
             .saturating_add(payer_reward)
     }
 
-    /// Set LP reward rate (requires governance contract authorization).
-    pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
+/// Set LP reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -283,8 +310,10 @@ impl IlnDistribution {
         );
     }
 
-    /// Set freelancer reward rate (requires governance contract authorization).
-    pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
+/// Set freelancer reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -304,8 +333,10 @@ impl IlnDistribution {
         );
     }
 
-    /// Set payer reward rate (requires governance contract authorization).
-    pub fn set_payer_reward_rate(env: Env, new_rate: i128) {
+/// Set payer reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_payer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -325,24 +356,30 @@ impl IlnDistribution {
         );
     }
 
-    /// Get current LP reward rate.
-    pub fn get_lp_reward_rate(env: Env) -> i128 {
+/// Get current LP reward rate.
+///
+/// Access: Anyone
+pub fn get_lp_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::LpRewardRate)
             .unwrap_or(DEFAULT_LP_REWARD_RATE)
     }
 
-    /// Get current freelancer reward rate.
-    pub fn get_freelancer_reward_rate(env: Env) -> i128 {
+/// Get current freelancer reward rate.
+///
+/// Access: Anyone
+pub fn get_freelancer_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::FreelancerRewardRate)
             .unwrap_or(DEFAULT_FREELANCER_REWARD_RATE)
     }
 
-    /// Get current payer reward rate.
-    pub fn get_payer_reward_rate(env: Env) -> i128 {
+/// Get current payer reward rate.
+///
+/// Access: Anyone
+pub fn get_payer_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::PayerRewardRate)
@@ -381,11 +418,17 @@ mod test {
 
     #[contractimpl]
     impl MockIln {
-        pub fn accrue_lp(env: Env, dist: Address, lp: Address, amount: i128) {
+        /// `accrue_lp` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_lp(env: Env, dist: Address, lp: Address, amount: i128) {
             IlnDistributionClient::new(&env, &dist).accrue_lp(&lp, &amount);
         }
 
-        pub fn accrue_settlement(
+        /// `accrue_settlement` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_settlement(
             env: Env,
             dist: Address,
             freelancer: Address,

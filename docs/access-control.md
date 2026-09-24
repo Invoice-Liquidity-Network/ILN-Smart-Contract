@@ -2,6 +2,15 @@
 
 ## 1. Overview
 
+> **Machine-checked matrix:** the authoritative Instruction → gate table for all
+> five contracts is generated from `#[contractimpl]` source by
+> [`scripts/generate-access-control-matrix.py`](../scripts/generate-access-control-matrix.py)
+> into [`access-control-matrix.generated.md`](access-control-matrix.generated.md).
+> CI fails on drift. The tables below remain as narrative/role documentation;
+> if they disagree with the generated file on a function's gate, update the
+> narrative.
+
+
 The ILN-Smart-Contract implements a centralized access-control architecture to guarantee that all protocol operations are properly authorized. By centralizing permissions into shared guards, we achieve:
 - **Consistency**: All similar checks behave exactly the same way across different endpoints.
 - **Audibility**: Clear, easily reviewable access annotations on every public instruction.
