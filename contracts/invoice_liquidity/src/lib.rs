@@ -243,7 +243,7 @@ pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "set_admin");
-        let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        let old_admin: Address = crate::storage::read_admin(&env)?;
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
             (Symbol::new(&env, "admin_changed"),),
@@ -822,11 +822,7 @@ pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), Contract
         let token_client = token_client(&env, &token);
         let contract_address = env.current_contract_address();
         let test_amount: i128 = 1_000_000;
-        let admin_address: Address = env
-            .storage()
-            .instance()
-            .get(&crate::storage::DataKey::Admin)
-            .unwrap();
+        let admin_address: Address = crate::storage::read_admin(&env)?;
         let before_balance = token_client.balance(&contract_address);
 
         token_client.transfer(&admin_address, &contract_address, &test_amount);
@@ -2732,11 +2728,7 @@ pub fn transfer_lp_position(
         let protocol_fee = invoice.amount.checked_mul(fee_rate as i128).unwrap_or(0) / 10_000;
 
         if protocol_fee > 0 {
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&crate::storage::DataKey::Admin)
-                .unwrap();
+            let admin: Address = crate::storage::read_admin(&env)?;
             token.transfer(&contract_address, &admin, &protocol_fee);
         }
 
