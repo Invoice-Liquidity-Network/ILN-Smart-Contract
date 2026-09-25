@@ -671,6 +671,75 @@ pub fn accrue_settlement(
         );
     }
 
+    /// #838 — Verify double-initialize panics (most critical error path).
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn initialize_rejects_double_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        // Second init must panic
+        dist.initialize(&iln_id, &gov_token_id.address());
+    }
+
+    /// #839 — Regression: accrue_lp rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_lp_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let lp = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_lp(&lp, &1000);
+        });
+    }
+
+    /// #839 — Regression: accrue_settlement rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_settlement_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let freelancer = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_settlement(
+                &freelancer,
+                &payer,
+                &true,
+            );
+        });
+    }
+
     /// Issue #660 / #661 — property-based tests for the reward-conservation
     /// invariant documented in `docs/formal-verification-distribution.md`.
     /// Randomized sequences of accrual, reward-rate updates, and claims
