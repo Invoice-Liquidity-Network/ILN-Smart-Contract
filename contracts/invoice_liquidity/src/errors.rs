@@ -88,4 +88,43 @@ pub enum ContractError {
     /// Issue #817: requested TWAP window is outside the governance-bounded
     /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` range.
     InvalidTwapWindow = 46,
+    // ── Multisig admin (Issues #124, #640, #641) ─────────────────────
+    /// Multisig admin has already been bootstrapped and cannot be
+    /// re-initialised. Reconfiguration must go through the multisig proposal flow.
+    MultisigAlreadyConfigured = 47,
+    /// Provided multisig signer set + threshold combination is invalid
+    /// (empty signers, duplicate entries, or threshold outside 1..=signers.len()).
+    InvalidMultisigConfig = 48,
+    /// A multisig proposal or signer-set query was made before
+    /// `initialize_multisig_admin` had been called.
+    MultisigNotConfigured = 49,
+    /// Caller is not a member of the configured multisig signer set.
+    NotAuthorizedSigner = 50,
+    /// A pending, non-expired proposal already exists for the same
+    /// AdminAction. Prevents concurrent duplicate proposals racing each other.
+    DuplicateProposal = 51,
+    /// The requested multisig proposal id does not exist.
+    ProposalNotFound = 52,
+    /// Multisig proposal was already executed and cannot be signed or executed again.
+    ProposalAlreadyExecuted = 53,
+    /// Multisig proposal's approval window has elapsed.
+    ProposalExpired = 54,
+    /// Signer has already approved this specific multisig proposal.
+    AlreadySigned = 55,
+    /// Attempt to execute a multisig proposal before the approval threshold has been met.
+    ThresholdNotReached = 56,
+    /// A signer rotation is already pending; only one rotation may be in flight at a time.
+    RotationAlreadyPending = 57,
+    /// No signer rotation is currently scheduled.
+    RotationNotFound = 58,
+    /// finalize_signer_rotation was called before the rotation's timelock elapsed.
+    RotationTimelockNotExpired = 59,
+    /// Issue #840: internal invariant broken, a loop index into the funders
+    /// vector was out of range. Returned instead of panicking so operators
+    /// see a typed error rather than a raw abort.
+    FunderIndexOutOfBounds = 60,
+    /// Issue #840: internal invariant broken, a loop index into the fund
+    /// queue vector was out of range. Returned instead of panicking so
+    /// operators see a typed error rather than a raw abort.
+    QueueIndexOutOfBounds = 61,
 }

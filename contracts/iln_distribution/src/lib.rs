@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token::StellarAssetClient, Address, Env,
-    Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::StellarAssetClient,
+    Address, Env, Symbol,
 };
 
 const HALF_TOKEN: i128 = 5_000_000;
@@ -17,6 +17,14 @@ const DEFAULT_PAYER_REWARD_RATE: i128 = HALF_TOKEN;
 /// at 7-decimal stroops). Prevents a compromised/misconfigured ILN from
 /// accruing absurd volumes in one invocation.
 pub const MAX_LP_ACCRUAL_PER_CALL: i128 = 10_000_000_000_000; // 1e13
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum DistributionError {
+    /// Contract has already been initialized.
+    AlreadyInitialized = 1,
+}
 
 #[contracttype]
 pub enum StorageKey {
@@ -82,21 +90,16 @@ pub struct IlnDistribution;
 
 #[contractimpl]
 impl IlnDistribution {
-    /// Initialize the distribution contract with the ILN core contract and governance token.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `iln_contract` - Address of the ILN core contract (sole authorized caller for accruals).
-    /// * `gov_token` - Address of the governance token to mint rewards in.
-    ///
-    /// # Access
-    /// * Callable once during deployment.
-    ///
-    /// # Panics
-    /// * Panics with `"already initialized"` if called more than once.
-    pub fn initialize(env: Env, iln_contract: Address, gov_token: Address) {
+    /// `initialize` contract entry point.
+///
+/// Access: Anyone
+pub fn initialize(
+        env: Env,
+        iln_contract: Address,
+        gov_token: Address,
+    ) -> Result<(), DistributionError> {
         if env.storage().instance().has(&StorageKey::Initialized) {
-            panic!("already initialized");
+            return Err(DistributionError::AlreadyInitialized);
         }
 
         env.storage()
@@ -126,24 +129,14 @@ impl IlnDistribution {
                 gov_token,
             },
         );
+
+        Ok(())
     }
 
-    /// Record LP-funded volume for reward accrual.
-    ///
-    /// Called by the ILN core contract when an LP funds an invoice.
-    /// Accumulates volume that determines the LP's governance token reward.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `lp` - Address of the liquidity provider.
-    /// * `amount_usdc_equivalent` - Volume in USDC stroops (7 decimals).
-    ///
-    /// # Access
-    /// * Restricted to the ILN core contract via `require_auth`.
-    ///
-    /// # Behavior
-    /// * Non-positive and amounts exceeding `MAX_LP_ACCRUAL_PER_CALL` are silently ignored.
-    pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
+    /// `accrue_lp` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         Self::require_iln_invoker(&env);
 
         // Defense-in-depth: ignore non-positive and absurdly large settlements
@@ -168,21 +161,10 @@ impl IlnDistribution {
         );
     }
 
-    /// Record a settlement for freelancer and payer reward accrual.
-    ///
-    /// Called by the ILN core contract when an invoice is settled.
-    /// Increments the freelancer's settlement count and (if on-time) the payer's
-    /// on-time settlement count.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `freelancer` - Address of the freelancer receiving payment.
-    /// * `payer` - Address of the payer making payment.
-    /// * `settled_on_time` - Whether the settlement met the deadline.
-    ///
-    /// # Access
-    /// * Restricted to the ILN core contract via `require_auth`.
-    pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
+    /// `accrue_settlement` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
         Self::require_iln_invoker(&env);
 
         let freelancer_key = StorageKey::FreelancerSettled(freelancer.clone());
@@ -213,21 +195,20 @@ impl IlnDistribution {
         );
     }
 
-    /// Claim accrued governance tokens for the caller.
-    ///
-    /// Mints the difference between total earned and already claimed.
-    /// Uses saturating subtraction so repeated calls return 0 without error.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `claimer` - Address claiming tokens (must authorize).
-    ///
-    /// # Access
-    /// * Restricted to the claimer via `require_auth`.
-    ///
-    /// # Returns
-    /// * The amount of tokens minted (0 if nothing claimable).
-    pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
+    /// `claim_tokens` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `claimer` — see signature
+///
+/// # Returns
+/// * Value of type `i128`
+///
+/// # Errors
+/// * Authorization / validation errors as defined by this contract
+///
+/// Access: Caller (require_auth)
+pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
         claimer.require_auth();
 
         let total_earned = Self::total_earned(&env, &claimer);
@@ -257,19 +238,10 @@ impl IlnDistribution {
         claimable
     }
 
-    /// Get the total governance tokens earned by a participant.
-    ///
-    /// Computes rewards from LP volume, freelancer settlements, and on-time payer
-    /// settlements using current reward rates. May differ from previously claimed
-    /// amounts if rates have changed since claiming.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `participant` - Address to query.
-    ///
-    /// # Returns
-    /// * Total earned in governance token stroops.
-    pub fn get_accrual(env: Env, participant: Address) -> i128 {
+    /// `get_accrual` contract entry point.
+///
+/// Access: Anyone
+pub fn get_accrual(env: Env, participant: Address) -> i128 {
         Self::total_earned(&env, &participant)
     }
 
@@ -315,8 +287,10 @@ impl IlnDistribution {
             .saturating_add(payer_reward)
     }
 
-    /// Set LP reward rate (requires governance contract authorization).
-    pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
+/// Set LP reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -336,8 +310,10 @@ impl IlnDistribution {
         );
     }
 
-    /// Set freelancer reward rate (requires governance contract authorization).
-    pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
+/// Set freelancer reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -357,8 +333,10 @@ impl IlnDistribution {
         );
     }
 
-    /// Set payer reward rate (requires governance contract authorization).
-    pub fn set_payer_reward_rate(env: Env, new_rate: i128) {
+/// Set payer reward rate (requires governance contract authorization).
+///
+/// Access: Anyone
+pub fn set_payer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
             .storage()
@@ -378,24 +356,30 @@ impl IlnDistribution {
         );
     }
 
-    /// Get current LP reward rate.
-    pub fn get_lp_reward_rate(env: Env) -> i128 {
+/// Get current LP reward rate.
+///
+/// Access: Anyone
+pub fn get_lp_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::LpRewardRate)
             .unwrap_or(DEFAULT_LP_REWARD_RATE)
     }
 
-    /// Get current freelancer reward rate.
-    pub fn get_freelancer_reward_rate(env: Env) -> i128 {
+/// Get current freelancer reward rate.
+///
+/// Access: Anyone
+pub fn get_freelancer_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::FreelancerRewardRate)
             .unwrap_or(DEFAULT_FREELANCER_REWARD_RATE)
     }
 
-    /// Get current payer reward rate.
-    pub fn get_payer_reward_rate(env: Env) -> i128 {
+/// Get current payer reward rate.
+///
+/// Access: Anyone
+pub fn get_payer_reward_rate(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&StorageKey::PayerRewardRate)
@@ -434,11 +418,17 @@ mod test {
 
     #[contractimpl]
     impl MockIln {
-        pub fn accrue_lp(env: Env, dist: Address, lp: Address, amount: i128) {
+        /// `accrue_lp` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_lp(env: Env, dist: Address, lp: Address, amount: i128) {
             IlnDistributionClient::new(&env, &dist).accrue_lp(&lp, &amount);
         }
 
-        pub fn accrue_settlement(
+        /// `accrue_settlement` contract entry point.
+///
+/// Access: Anyone
+pub fn accrue_settlement(
             env: Env,
             dist: Address,
             freelancer: Address,

@@ -32,21 +32,19 @@ pub enum AdminAction {
     SetFeeRate(u32),
     /// Set maximum discount rate
     SetMaxDiscount(u32),
-    /// Update multisig configuration itself (change signers or threshold)
-    UpdateMultisig {
-        new_signers: Vec<Address>,
-        new_threshold: u32,
-    },
+    /// Update multisig configuration itself. Tuple fields: (new_signers, new_threshold).
+    /// Uses positional fields because `#[contracttype]` does not support named
+    /// enum-variant fields.
+    UpdateMultisig(Vec<Address>, u32),
     /// Issue #640: replace `old_signer` with `new_signer` in the signer
-    /// set. Executing this proposal does not swap the signer immediately —
-    /// it schedules the swap behind a timelock (see `schedule_rotation`),
+    /// set. Executing this proposal does not swap the signer immediately, it
+    /// schedules the swap behind a timelock (see `schedule_rotation`),
     /// so a compromised or departing signer's key can be rotated without a
     /// contract upgrade while still giving the team a window to detect and
-    /// cancel a malicious or mistaken rotation.
-    RotateSigner {
-        old_signer: Address,
-        new_signer: Address,
-    },
+    /// cancel a malicious or mistaken rotation. Tuple fields:
+    /// (old_signer, new_signer). Uses positional fields because
+    /// `#[contracttype]` does not support named enum-variant fields.
+    RotateSigner(Address, Address),
 }
 
 /// Multi-signature admin configuration
@@ -126,7 +124,7 @@ pub fn threshold_reached(proposal: &MultisigProposal, threshold: u32) -> bool {
 
 /// Check if proposal has expired
 pub fn is_expired(env: &Env, proposal: &MultisigProposal) -> bool {
-    env.ledger().sequence() >= proposal.expires_at
+    u64::from(env.ledger().sequence()) >= proposal.expires_at
 }
 
 // ================================================================

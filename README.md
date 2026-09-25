@@ -217,7 +217,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, changesets, PR si
 code style, and the review process.
 
 For bug reports, integration questions, and feature requests, see
-[Support Channels](docs/support-channels.md).
+[Support Channels](docs/support-channels.md) (GitHub Issues and private security
+reporting are live; Discussions/Discord are deferred pre-launch).
 
 ---
 
