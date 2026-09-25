@@ -1434,7 +1434,7 @@ pub fn cast_vote(
         };
 
         // Issue #64: add delegated weight.
-        let delegated: i128 = env
+        let delegated: i128 = env.storage().persistent().get(&StorageKey::DelegatedToMeSnapshot(proposal_id, voter.clone())).unwrap_or_else(|| env
             .storage()
             .persistent()
             .get(&StorageKey::DelegatedToMe(voter.clone()))
