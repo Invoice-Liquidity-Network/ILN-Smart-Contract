@@ -119,4 +119,12 @@ pub enum ContractError {
     RotationNotFound = 58,
     /// finalize_signer_rotation was called before the rotation's timelock elapsed.
     RotationTimelockNotExpired = 59,
+    /// Issue #840: internal invariant broken, a loop index into the funders
+    /// vector was out of range. Returned instead of panicking so operators
+    /// see a typed error rather than a raw abort.
+    FunderIndexOutOfBounds = 60,
+    /// Issue #840: internal invariant broken, a loop index into the fund
+    /// queue vector was out of range. Returned instead of panicking so
+    /// operators see a typed error rather than a raw abort.
+    QueueIndexOutOfBounds = 61,
 }

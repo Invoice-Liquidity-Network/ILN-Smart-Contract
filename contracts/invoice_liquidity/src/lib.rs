@@ -2045,20 +2045,31 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         // (queue[0..tied_count]), since the queue is sorted by score alone.
         // When there's more than one, pick uniformly among them using
         // Soroban's network-seeded PRNG instead of always taking index 0.
-        let best_score = queue.get(0).unwrap().score;
+        let best_score = queue
+            .get(0)
+            .ok_or(ContractError::QueueIndexOutOfBounds)?
+            .score;
         let mut tied_count: u32 = 1;
-        while tied_count < queue.len() && queue.get(tied_count).unwrap().score == best_score {
+        while tied_count < queue.len()
+            && queue
+                .get(tied_count)
+                .ok_or(ContractError::QueueIndexOutOfBounds)?
+                .score
+                == best_score
+        {
             tied_count += 1;
         }
         let winner_index: u32 = if tied_count > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
-            // version — generate as u64, then narrow (safe: tied_count is a
+            // version, generate as u64 then narrow (safe: tied_count is a
             // small queue length, well within u32 range).
             env.prng().gen_range::<u64>(0..u64::from(tied_count)) as u32
         } else {
             0
         };
-        let best_entry = queue.get(winner_index).unwrap();
+        let best_entry = queue
+            .get(winner_index)
+            .ok_or(ContractError::QueueIndexOutOfBounds)?;
         let best_lp = best_entry.lp.clone();
 
         save_queue_resolution(&env, invoice_id, &best_lp);
@@ -2278,7 +2289,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         let mut funders = get_invoice_funders(&env, invoice_id);
         let mut found = false;
         for i in 0..funders.len() {
-            let (addr, amt) = funders.get(i).unwrap();
+            let (addr, amt) = funders
+                .get(i)
+                .ok_or(ContractError::FunderIndexOutOfBounds)?;
             if addr == funder {
                 funders.set(i, (addr, amt.saturating_add(fund_amount)));
                 found = true;
