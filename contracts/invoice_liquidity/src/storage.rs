@@ -125,6 +125,7 @@ pub enum DataKey {
     /// by `MIN/MAX_TWAP_WINDOW_LEDGERS`. Distinct from the
     /// `max_oracle_age_ledgers` staleness bound.
     TwapWindowLedgers,
+    MinTwapObservations,
     /// Issue #815/#816: chronological TWAP price samples per feed + token,
     /// backing the opt-in windowed average.
     TwapSamples(crate::oracle_registry::OracleFeedType, Address),

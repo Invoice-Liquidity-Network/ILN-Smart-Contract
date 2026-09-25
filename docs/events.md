@@ -86,6 +86,9 @@ contracts and should be kept current going forward.
 | [InvoiceDisputed](#invoicedisputed) | `dispute_invoice` |
 | [DisputeResolved](#disputeresolved) | `resolve_dispute`, `auto_resolve_dispute` |
 | [ReputationUpdated](#reputationupdated) | reputation score/counter changes (`invoice.rs`) |
+| [TwapEnabledForFeed](#twapenabledforfeed) | `set_twap_enabled` |
+| [TwapWindowUpdated](#twapwindowupdated) | `set_twap_window_ledgers` |
+| [TwapInsufficientData](#twapinsufficientdata) | `get_twap_price` (when observation count < minimum) |
 | [InvoiceNftMinted / InvoiceNftTransferred / InvoiceNftBurned](#invoice-nft-lifecycle) | invoice submit / fund / pay (`nft.rs`) |
 
 ### Full function inventory
@@ -432,6 +435,35 @@ events:
 - **InvoiceNftMinted** — on `submit_invoice`: `invoice_id`, `owner`, `amount`, `due_date`, `timestamp`.
 - **InvoiceNftTransferred** — on `fund_invoice` (freelancer → LP): `invoice_id`, `from`, `to`, `timestamp`.
 - **InvoiceNftBurned** — on full `mark_paid`: `invoice_id`, `owner`, `timestamp`.
+
+### TwapEnabledForFeed
+
+Topics: `["twap_enabled", feed_type]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `feed_type` | `OracleFeedType` | Feed type for which TWAP was enabled/disabled |
+| `enabled` | `bool` | True if TWAP is enabled |
+
+### TwapWindowUpdated
+
+Topics: `["twap_window_updated"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `old_window` | `u64` | Previous window size in ledgers |
+| `new_window` | `u64` | New window size in ledgers |
+
+### TwapInsufficientData
+
+Topics: `["twap_insufficient_data", feed_type]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `feed_type` | `OracleFeedType` | Feed type queried |
+| `token` | `Address` | Token queried |
+| `observations` | `u32` | Number of observations found |
+| `min_required` | `u32` | Minimum number of observations required |
 
 ---
 
