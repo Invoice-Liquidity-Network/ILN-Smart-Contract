@@ -155,6 +155,14 @@ for the full reconciliation.
 - Multi-sig admin error cases need additional test coverage
 - Some `ContractError` variants lack dedicated test cases
 
+### Public Transparency
+
+A public, non-sensitive protocol-health page (overall solvency health and oracle
+uptime, refreshed every 30 minutes from indexed on-chain data) gives the community
+and reviewers a curated view without exposing internal dashboards, admin-action
+logs or per-address data. Design, exclusions and thresholds are in
+[`docs/public-status-page.md`](public-status-page.md).
+
 ### Honest Assessment
 
 The protocol is early-stage and has not yet been deployed to mainnet. The
@@ -168,6 +176,7 @@ and emergency pause capability is available.
 ## Links
 
 - [Architecture](Architecture.md) — full system design
+- [Public Status Page](public-status-page.md) — public health summary design
 - [Audit Readiness Dashboard](audit-readiness-dashboard.md) — audit tracking
 - [Threat Model](threat-model.md) — security assumptions
 - [Mainnet Launch Checklist](mainnet-launch-checklist.md) — launch readiness

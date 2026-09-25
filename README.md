@@ -207,6 +207,7 @@ start at the [Documentation Index](docs/index.md), or jump to:
 | End-to-end test suite | [`tests/e2e/README.md`](tests/e2e/README.md) |
 | Design decisions | [Architecture Decision Records](docs/adr/README.md) |
 | Terminology | [Glossary](docs/glossary.md) |
+| Public protocol status (solvency health, oracle uptime) | [Public Status Page](docs/public-status-page.md) |
 
 ---
 

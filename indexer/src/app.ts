@@ -11,6 +11,7 @@ import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { createEventsRouter } from './api/routes/events.js';
 import { createHealthRouter, type HealthCheckDeps } from './api/routes/health.js';
 import { createProtocolStatusRouter } from './api/routes/protocolStatus.js';
+import { createPublicHealthRouter } from './api/routes/publicHealth.js';
 import {
   createProtocolStatusService,
   type ProtocolStatusService,
@@ -95,6 +96,8 @@ export function createApp(
     options.protocolStatusService ??
     createProtocolStatusService({ reader: options.chainReader });
   app.use(createProtocolStatusRouter(protocolStatusService));
+  // Curated public summary feeding the static status page (Issue #892).
+  app.use(createPublicHealthRouter(db, protocolStatusService));
 
   app.use(createLeaderboardRouter(db));
   app.use(createReputationRouter(db));
