@@ -50,7 +50,6 @@ export function makePauseCommand(
 
   cmd
     .option("--yes", "Skip confirmation prompt")
-    .option("--dry-run", "Simulate the transaction without submitting")
     .action(async (opts: { yes?: boolean }) => {
       const rootOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
       const json = isJsonMode(rootOpts);
@@ -64,13 +63,6 @@ export function makePauseCommand(
         }
 
         // Check current state
-        if (opts.dryRun) {
-          formatOutput({ simulated: true, action: "pause" }, json, () => {
-            console.log("DRY RUN MODE ENABLED");
-            console.log("[Simulation Result] ParameterUpdated { param: pause, old: false, new: true }");
-          });
-          return;
-        }
         const isCurrentlyPaused = await stateChecker();
         if (isCurrentlyPaused) {
           formatOutput({ paused: true, message: "contract is already paused" }, json, () => {
@@ -116,7 +108,6 @@ export function makeUnpauseCommand(
 
   cmd
     .option("--yes", "Skip confirmation prompt")
-    .option("--dry-run", "Simulate the transaction without submitting")
     .action(async (opts: { yes?: boolean }) => {
       const rootOpts = cmd.parent?.opts() as Record<string, unknown> | undefined;
       const json = isJsonMode(rootOpts);
@@ -130,13 +121,6 @@ export function makeUnpauseCommand(
         }
 
         // Check current state
-        if (opts.dryRun) {
-          formatOutput({ simulated: true, action: "pause" }, json, () => {
-            console.log("DRY RUN MODE ENABLED");
-            console.log("[Simulation Result] ParameterUpdated { param: pause, old: false, new: true }");
-          });
-          return;
-        }
         const isCurrentlyPaused = await stateChecker();
         if (!isCurrentlyPaused) {
           formatOutput({ paused: false, message: "contract is already unpaused" }, json, () => {
@@ -157,13 +141,6 @@ export function makeUnpauseCommand(
           }
         }
 
-        if ((opts as any).dryRun) {
-          formatOutput({ simulated: true, action: "unpause" }, json, () => {
-            console.log("DRY RUN MODE ENABLED");
-            console.log("[Simulation Result] ParameterUpdated { param: pause, old: true, new: false }");
-          });
-          return;
-        }
         const result = await unpauseExecutor();
         // Update defaultState if using defaultStateChecker
         defaultState = false;

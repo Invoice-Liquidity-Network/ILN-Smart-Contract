@@ -839,3 +839,58 @@ export async function getPoolHealth(
     monthsOfCoverage: (health.months_of_coverage as number | null) ?? null,
   };
 }
+
+/**
+ * Submit claim evidence for an insurance pool claim.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param invoiceId           - The ID of the defaulted invoice
+ * @param evidenceHash        - Hash of the submitted evidence
+ * @param sourceAccount       - The LP's account
+ * @param signTransaction     - Function to sign the assembled transaction
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns The submitted transaction hash
+ */
+export async function submitInsuranceClaimEvidence(
+  server: SorobanRpc.Server,
+  contractId: string,
+  invoiceId: bigint,
+  evidenceHash: Buffer,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<{ txHash: string }> {
+  validateContractId(contractId);
+  const { txHash } = await submitCall(
+    server,
+    contractId,
+    "submit_claim_evidence",
+    [nativeToScVal(invoiceId, { type: "u64" }), nativeToScVal(evidenceHash, { type: "bytes" })],
+    sourceAccount,
+    signTransaction,
+    networkPassphrase
+  );
+  return { txHash };
+}
+
+/**
+ * Get the solvency circuit breaker status.
+ *
+ * @param server              - Soroban RPC server for the target network
+ * @param contractId          - Deployed insurance pool contract address
+ * @param networkPassphrase   - Stellar network passphrase (default: TESTNET)
+ * @returns boolean indicating if the circuit breaker is tripped
+ */
+export async function getCircuitBreakerStatus(
+  server: SorobanRpc.Server,
+  contractId: string,
+  networkPassphrase: string = Networks.TESTNET
+): Promise<boolean> {
+  validateContractId(contractId);
+  const retval = await simulateCall(server, contractId, "is_circuit_breaker_tripped", [], networkPassphrase);
+  if (!retval) {
+    return false;
+  }
+  return scValToNative(retval) as boolean;
+}
