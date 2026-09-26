@@ -117,4 +117,8 @@ pub enum ContractError {
     /// `finalize_signer_rotation` called before `ROTATION_TIMELOCK_LEDGERS`
     /// elapsed since the rotation was scheduled.
     RotationTimelockNotExpired = 59,
+    /// Issue #914: decay_rate_bps exceeds maximum bound (500 bps / 5%).
+    InvalidDecayRate = 60,
+    /// Issue #915: high_rep_threshold outside valid 0-100 range.
+    InvalidRepThreshold = 61,
 }

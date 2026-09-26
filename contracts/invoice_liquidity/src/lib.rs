@@ -3481,7 +3481,13 @@ pub fn update_config(
             usdc_sac_address,
             eurc_sac_address,
         )
-        .map_err(|_| ContractError::Unauthorized)
+        .map_err(|e| match e {
+            crate::config::ConfigError::Unauthorized => ContractError::Unauthorized,
+            crate::config::ConfigError::InvalidBonusBps => ContractError::InvalidAmount,
+            crate::config::ConfigError::InvalidMinDiscountRate => ContractError::InvalidDiscountRate,
+            crate::config::ConfigError::InvalidDecayRate => ContractError::InvalidDecayRate,
+            crate::config::ConfigError::InvalidRepThreshold => ContractError::InvalidRepThreshold,
+        })
     }
 
     /// `get_config` contract entry point.
@@ -3993,3 +3999,5 @@ mod tests_reputation_decay_long_idle;
 mod tests_nft_event_emission;
 // Issue #851: NFT transfer reputation and insurance consistency
 mod tests_nft_transfer_consistency;
+// Issues #914, #915, #916, #918: Configuration parameter bounds validation
+mod tests_config_parameter_bounds;
