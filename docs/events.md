@@ -50,6 +50,53 @@ the code by the time of this audit; the document had simply not been kept in
 sync with the contract. This rewrite corrects that drift for all five
 contracts and should be kept current going forward.
 
+## Automated Coverage Check (Issue #858)
+
+This document is now machine-checked. `scripts/check-event-coverage.ts`
+parses every `#[contractimpl]` entrypoint across the five contracts,
+classifies each as state-mutating or read-only, and verifies that every
+mutating entrypoint either publishes an event (directly or through an
+`emit_*`/publish helper) or carries a documented exemption:
+
+```bash
+npx tsx scripts/check-event-coverage.ts --check    # exit 1 on drift (also: make event-coverage)
+npx tsx scripts/check-event-coverage.ts --report   # full contract/function matrix
+npx tsx --test scripts/check-event-coverage.test.ts # classifier unit tests
+```
+
+CI runs the unit tests and the `--check` gate on every PR touching
+`contracts/**` (`.github/workflows/event-coverage.yml`), so this document
+cannot silently drift from the code again: when a new mutating entrypoint
+ships without an event, the build fails until the event, the exemption, or
+the docs are updated together.
+
+## Known Gaps — Accepted Non-Emitting Mutators
+
+These state-mutating entrypoints intentionally publish no event. Each row
+mirrors the `EXEMPTIONS` table in `scripts/check-event-coverage.ts`; the CI
+check fails if a row exists in one place but not the other.
+
+| Function | Reason |
+| -------- | ------ |
+| `invoice_liquidity::initialize_multisig_admin` | One-shot multisig bootstrap (signer set + threshold). Writes only multisig config storage; every subsequent state change made through the multisig (pause/unpause/token removal/fee changes/signer rotation) emits its own event from execute_proposal, so the bootstrap itself adds no new observable state transition worth an event. |
+| `invoice_liquidity::propose_pause` | Multisig proposal bookkeeping only (stores a pending proposal). The effect becomes observable when execute_proposal applies it and emits ContractPaused; proposal creation is signer-gated and reversible via the proposal expiry path. |
+| `invoice_liquidity::propose_unpause` | Multisig proposal bookkeeping only; observable effect is the ContractUnpaused event emitted by execute_proposal. |
+| `invoice_liquidity::propose_remove_token` | Multisig proposal bookkeeping only; observable effect is the TokenRemoved event emitted by execute_proposal. |
+| `invoice_liquidity::propose_set_fee_rate` | Multisig proposal bookkeeping only; observable effect is the ParameterUpdated event emitted by execute_proposal. |
+| `invoice_liquidity::propose_set_max_discount` | Multisig proposal bookkeeping only; observable effect is the ParameterUpdated event emitted by execute_proposal. |
+| `invoice_liquidity::propose_update_multisig` | Multisig proposal bookkeeping only; signer-set changes are applied silently by execute_proposal and are readable via get_multisig_admin (accepted gap — no dedicated event for signer-set changes). |
+| `invoice_liquidity::propose_rotate_signer` | Multisig proposal bookkeeping only; observable effect is the SignerRotationScheduled event emitted by execute_proposal. |
+| `invoice_liquidity::sign_proposal` | Records a signer's approval on a pending multisig proposal (per-proposal signature counter). Effect is signer-gated, reversible until threshold, and observable via the event emitted when the proposal executes. |
+| `invoice_liquidity::record_twap_sample` | High-frequency keeper operation (Issue #859 rate-limit exemption): a single sample is transient accumulator input, not a discrete state transition — the aggregate effect is observable through the price reads it feeds (and PriceOutlierRejected on outlier handling). |
+| `invoice_liquidity::set_insurance_pool` | Admin-gated, rate-limited pointer swap; the new address is immediately readable via get_insurance_pool, and every subsequent claim flow references the pool through its own events (InsuranceClaimAttempted) — accepted gap, no dedicated event. |
+| `invoice_liquidity::set_max_price_deviation_bps` | Admin-gated oracle tuning knob (rate-limited); the threshold only materializes on the next price read, whose PriceOutlierRejected events expose its effect. Readable via get_max_price_deviation_bps. |
+| `invoice_liquidity::set_twap_enabled` | Admin-gated per-feed TWAP opt-in flag (rate-limited); changes how subsequent Price reads are computed rather than marking a discrete transition. Readable via is_twap_enabled. |
+| `invoice_liquidity::set_twap_window` | Admin-gated TWAP window bound (rate-limited, range-validated); affects subsequent windowed reads only. Readable via get_twap_window_ledgers. |
+| `iln_governance::set_proposal_deposit_sink` | Admin-gated treasury pointer on the governance contract (separate admin gate, no shared rate-limit infra in that crate — Issue #859 matrix); readable via get_proposal_deposit_sink and only consulted during proposal lifecycle events that emit their own audit trail. |
+| `insurance_pool::increment_default_count` | Internal bookkeeping counter updated as a side effect of default processing; per-pair state is exposed by the pair views and surfaced again by claim/payout events — no independent transition to announce. |
+| `insurance_pool::set_base_premium_rate_bps` | Admin-gated premium tuning on the insurance pool (admin gate; Issue #859 matrix); applies to future enrollments only with no retroactive effect. Readable via get_base_premium_rate_bps. |
+| `insurance_pool::set_risk_multiplier` | Admin-gated pricing multiplier on the insurance pool (admin gate; Issue #859 matrix); applies to future enrollments only. Readable via get_risk_multiplier_numerator/denominator. |
+
 ---
 
 ## `invoice_liquidity`
