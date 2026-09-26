@@ -22,6 +22,10 @@ import type { ChainReader } from './chainReader.js';
 import type { LedgerHeaderSource } from '../ingestion/ledgerHeaders.js';
 import { findDivergence, latchHalt } from '../ingestion/reorgDetector.js';
 import type { ReorgDivergence } from '../ingestion/reorgDetector.js';
+import {
+  classifyReorgDepth,
+  classifyReorgSeverity,
+} from '../services/alertRouter.js';
 
 export interface ReconciliationConfig {
   /** Milliseconds between reconciliation runs. */
@@ -363,16 +367,23 @@ export function buildAlertPayload(report: ReconciliationReport) {
  */
 export function buildReorgAlertPayload(report: ReconciliationReport) {
   const divergence = report.reorgDivergence;
+  const severity = divergence ? classifyReorgSeverity(divergence.forkDepth) : 'critical';
+  const reorgSeverity = divergence ? classifyReorgDepth(divergence.forkDepth) : 'shallow';
   return {
     type: 'indexer_reorg_detected' as const,
-    severity: 'critical' as const,
+    severity,
     summary: divergence
       ? `Ledger reorg detected at ledger ${divergence.divergenceLedger} ` +
-        `(${divergence.reason}, common ancestor ${divergence.commonAncestorLedger}): ` +
+        `(${divergence.reason}, common ancestor ${divergence.commonAncestorLedger}, ` +
+        `forkDepth=${divergence.forkDepth}, classification=${reorgSeverity}): ` +
         `${report.reorgHeadersChecked} stored header(s) checked, ` +
         `${report.reorgCheckErrors} unreadable. Ingestion halted pending rollback-and-replay.`
       : 'Ledger reorg detected',
-    details: report,
+    details: {
+      ...report,
+      reorgSeverity,
+      reorgDepth: divergence?.forkDepth ?? null,
+    },
     firedAt: new Date().toISOString(),
   };
 }
