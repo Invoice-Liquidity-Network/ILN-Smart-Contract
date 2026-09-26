@@ -164,7 +164,10 @@ fn test_full_protocol_lifecycle_across_all_five_contracts() {
 
     // Funding triggers ILN's notify_distribution_funding -> dist.accrue_lp.
     iln.fund_invoice(&lp, &invoice_id, &INVOICE_AMOUNT, &false);
-    assert!(dist.get_accrual(&lp) > 0, "LP funding must accrue a distribution reward");
+    assert!(
+        dist.get_accrual(&lp) > 0,
+        "LP funding must accrue a distribution reward"
+    );
 
     // Settlement triggers notify_distribution_settlement -> accrue_settlement.
     iln.mark_paid(&invoice_id, &INVOICE_AMOUNT);
@@ -181,7 +184,11 @@ fn test_full_protocol_lifecycle_across_all_five_contracts() {
     // get_accrual reports lifetime total_earned (not an unclaimed balance),
     // so it doesn't reset to 0 after claiming — a second claim of the same
     // already-claimed amount must return 0 instead.
-    assert_eq!(dist.claim_tokens(&lp), 0, "re-claiming already-claimed tokens must be a no-op");
+    assert_eq!(
+        dist.claim_tokens(&lp),
+        0,
+        "re-claiming already-claimed tokens must be a no-op"
+    );
 
     // ── Governance touches reputation_bonus (Issue #704's wiring) ───────
     let hash = dummy_hash(&env);
@@ -213,7 +220,10 @@ fn test_full_protocol_lifecycle_across_all_five_contracts() {
     assert_eq!(final_rep_config.bonus_bps, 150);
     assert_eq!(final_rep_config.min_discount_rate_bps, 75);
 
-    assert!(pool.is_enrolled(&lp), "insurance enrollment must survive the whole journey");
+    assert!(
+        pool.is_enrolled(&lp),
+        "insurance enrollment must survive the whole journey"
+    );
     assert_eq!(pool.get_pool_balance(), 600);
 
     // ILN itself is still live and functional after everything above — no

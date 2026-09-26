@@ -120,3 +120,40 @@ and interleavings.
 | Claimed high-water mark is monotonic | `prop_claimed_high_water_mark_is_monotonic` |
 | Fixed-scenario rate-change regression | `updated_rates_affect_reward_calculation`, `update_reward_params_affects_lp_rewards` |
 | No double-claim without new accrual | `lp_earns_on_funding_and_cannot_double_claim` |
+| Double-init always rejected | `initialize_rejects_double_init` |
+| Non-ILN caller rejected for accrue_lp | `accrue_lp_rejects_non_iln_caller` |
+| Non-ILN caller rejected for accrue_settlement | `accrue_settlement_rejects_non_iln_caller` |
+
+---
+
+## 5. Error Path Coverage (Batch 3)
+
+### 5.1 Initialization Guard
+
+| Error Condition | Behavior | Test |
+|---|---|---|
+| `initialize` called twice | Panics with `"already initialized"` | `initialize_rejects_double_init` |
+
+**Invariant:** The `Initialized` storage key is set exactly once. Any subsequent call to `initialize` must fail before writing any state.
+
+### 5.2 Cross-Contract Authorization Boundary
+
+| Function | Authorized Caller | Unauthorized Caller Behavior | Test |
+|---|---|---|---|
+| `accrue_lp` | ILN core contract only | Panic (auth failure) | `accrue_lp_rejects_non_iln_caller` |
+| `accrue_settlement` | ILN core contract only | Panic (auth failure) | `accrue_settlement_rejects_non_iln_caller` |
+| `set_lp_reward_rate` | ILN core contract only | Panic (auth failure) | Existing governance tests |
+| `set_freelancer_reward_rate` | ILN core contract only | Panic (auth failure) | Existing governance tests |
+| `set_payer_reward_rate` | ILN core contract only | Panic (auth failure) | Existing governance tests |
+| `claim_tokens` | Claimer only | Panic (auth failure) | Existing claim tests |
+
+**Invariant:** Every state-mutating function either requires ILN core contract authorization (for accrual/config functions) or the participant's own authorization (for claims). No third-party caller can trigger state changes.
+
+### 5.3 Defensive Input Validation
+
+| Condition | Function | Behavior |
+|---|---|---|
+| `amount_usdc_equivalent <= 0` | `accrue_lp` | Silently ignored (no accrual) |
+| `amount_usdc_equivalent > MAX_LP_ACCRUAL_PER_CALL` | `accrue_lp` | Silently ignored (no accrual) |
+
+Tests: `accrue_lp_rejects_negative_and_zero_amounts`, `accrue_lp_rejects_amounts_above_sanity_ceiling`

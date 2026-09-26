@@ -144,10 +144,7 @@ fn test_governance_setters_and_access_control() {
 
     assert_eq!(events.events().len(), expected.len());
     for (idx, expected_event) in expected.iter().enumerate() {
-        let event = events
-            .events()
-            .get(idx)
-            .expect("expected event to exist");
+        let event = events.events().get(idx).expect("expected event to exist");
         assert!(format!("{event:?}").contains(&expected_event.param_name.to_string()));
     }
 
