@@ -20,8 +20,8 @@
 #[cfg(test)]
 extern crate std;
 
-mod insurance_interface;
 mod claim_prioritization;
+mod insurance_interface;
 #[cfg(test)]
 mod test;
 
@@ -476,7 +476,6 @@ impl InsurancePool {
         }
     }
 
-
     /// Returns `true` if a claim has already been processed for `invoice_id`.
     pub fn is_claimed(env: Env, invoice_id: u64) -> bool {
         env.storage()
@@ -783,9 +782,7 @@ impl InsurancePool {
             return 0;
         }
         let reserve = Self::get_total_reserve(env);
-        let ratio = reserve
-            .saturating_mul(10_000)
-            .saturating_div(coverage);
+        let ratio = reserve.saturating_mul(10_000).saturating_div(coverage);
         ratio.min(u32::MAX as i128) as u32
     }
 
@@ -828,10 +825,7 @@ impl InsurancePool {
             .remove(&DataKey::SolvencyCircuitOpenFlag);
         env.events().publish(
             (symbol_short!("solv_rst"),),
-            SolvencyCircuitReset {
-                ratio_bps,
-                reserve,
-            },
+            SolvencyCircuitReset { ratio_bps, reserve },
         );
         Ok(())
     }
@@ -883,10 +877,7 @@ impl InsurancePool {
             .set(&DataKey::SolvencyCircuitOpenFlag, &true);
         env.events().publish(
             (symbol_short!("solv_trip"),),
-            SolvencyCircuitTripped {
-                ratio_bps,
-                reserve,
-            },
+            SolvencyCircuitTripped { ratio_bps, reserve },
         );
     }
 
@@ -930,11 +921,7 @@ impl InsurancePool {
     /// pool; the credited amount is booked to the backstop, not the liquid
     /// claim balance. Admin authorizes the ordering; `from` authorizes the
     /// transfer. Emits `BackstopTopUp`.
-    pub fn top_up_backstop(
-        env: Env,
-        from: Address,
-        amount: i128,
-    ) -> Result<(), InsuranceError> {
+    pub fn top_up_backstop(env: Env, from: Address, amount: i128) -> Result<(), InsuranceError> {
         Self::require_admin(&env);
         if amount <= 0 {
             return Err(InsuranceError::InvalidBackstopAmount);
@@ -951,8 +938,8 @@ impl InsurancePool {
 
         let token = Self::get_token_client(&env)?;
         token.transfer(
-            &from,                             // from (caller)
-            &env.current_contract_address(),   // to (this contract)
+            &from,                           // from (caller)
+            &env.current_contract_address(), // to (this contract)
             &amount,
         );
 
@@ -999,7 +986,9 @@ impl InsurancePool {
     /// The evidence hash and submission timestamp recorded for an invoice,
     /// if any.
     pub fn get_claim_evidence(env: Env, invoice_id: u64) -> Option<ClaimEvidence> {
-        env.storage().persistent().get(&DataKey::ClaimEvidence(invoice_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::ClaimEvidence(invoice_id))
     }
 
     /// Set the review window (seconds) that gated claims must sit in after
@@ -1073,12 +1062,10 @@ impl InsurancePool {
             .get(&DataKey::PairDefaultCount(lp.clone(), payer.clone()))
             .unwrap_or(0);
         let new_pair_count = pair_count.saturating_add(1);
-        env.storage()
-            .persistent()
-            .set(
-                &DataKey::PairDefaultCount(lp.clone(), payer.clone()),
-                &new_pair_count,
-            );
+        env.storage().persistent().set(
+            &DataKey::PairDefaultCount(lp.clone(), payer.clone()),
+            &new_pair_count,
+        );
 
         env.events().publish(
             (symbol_short!("pair_def"), lp.clone(), payer.clone()),
@@ -1235,9 +1222,9 @@ impl InsurancePoolInterface for InsurancePool {
 
         if backstop_share > 0 {
             let backstop: i128 = Self::get_backstop_balance(env.clone());
-            let new_backstop = backstop.checked_add(backstop_share).unwrap_or_else(|| {
-                panic_with_error!(&env, InsuranceError::ArithmeticOverflow)
-            });
+            let new_backstop = backstop
+                .checked_add(backstop_share)
+                .unwrap_or_else(|| panic_with_error!(&env, InsuranceError::ArithmeticOverflow));
             env.storage()
                 .instance()
                 .set(&DataKey::BackstopBalance, &new_backstop);
@@ -1253,7 +1240,10 @@ impl InsurancePoolInterface for InsurancePool {
 
         // Transfer tokens from LP to pool (checks-effects-interactions pattern).
         // State changes above must complete before this external call.
-        let token = Self::get_token_client(&env)?;
+        let token = match Self::get_token_client(&env) {
+            Ok(client) => client,
+            Err(err) => panic_with_error!(&env, err),
+        };
         token.transfer(
             &lp,                             // from (caller)
             &env.current_contract_address(), // to (this contract)
@@ -1314,7 +1304,10 @@ impl InsurancePoolInterface for InsurancePool {
                 .set(&DataKey::Claimed(invoice_id), &true);
 
             // Transfer tokens from pool to LP (Issue #527).
-            let token = Self::get_token_client(&env)?;
+            let token = match Self::get_token_client(&env) {
+                Ok(client) => client,
+                Err(err) => panic_with_error!(&env, err),
+            };
             token.transfer(
                 &env.current_contract_address(), // from (this contract)
                 &lp,                             // to

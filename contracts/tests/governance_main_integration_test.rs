@@ -22,9 +22,9 @@ use iln_governance::{
     ProposalAction, ProposalStatus,
 };
 use invoice_liquidity::{
-    oracle_interface::ORACLE_INTERFACE_VERSION, oracle_registry::OracleFeedType as IlnOracleFeedType,
-    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus,
-    OracleVerificationResponse, ReferralCode,
+    oracle_interface::ORACLE_INTERFACE_VERSION,
+    oracle_registry::OracleFeedType as IlnOracleFeedType, ContractError, InvoiceLiquidityContract,
+    InvoiceLiquidityContractClient, InvoiceStatus, OracleVerificationResponse, ReferralCode,
 };
 use soroban_sdk::{
     contract, contractimpl,
@@ -385,7 +385,7 @@ fn test_veto_proposal_prevents_execution() {
 
     // Admin vetoes the proposal.
     t.governance
-        .veto_proposal(&proposal_id, &dummy_hash(&t.env));
+        .veto_proposal(&t.admin, &proposal_id, &dummy_hash(&t.env));
 
     let p = t.governance.get_proposal(&proposal_id);
     assert_eq!(p.status, ProposalStatus::Vetoed);
@@ -461,9 +461,9 @@ fn test_register_token_oracle_via_governance_takes_effect_in_fund_invoice() {
         &t.payment_token_addr,
         &ReferralCode::None,
     );
-    let fund_before =
-        t.iln
-            .try_fund_invoice(&t.lp, &invoice_before, &INVOICE_AMOUNT, &true);
+    let fund_before = t
+        .iln
+        .try_fund_invoice(&t.lp, &invoice_before, &INVOICE_AMOUNT, &true);
     assert!(
         fund_before.is_ok(),
         "with no oracle registered yet, oracle verification must be a no-op"
@@ -517,9 +517,9 @@ fn test_register_token_oracle_via_governance_takes_effect_in_fund_invoice() {
         &t.payment_token_addr,
         &ReferralCode::None,
     );
-    let rejected =
-        t.iln
-            .try_fund_invoice(&t.lp, &invoice_after, &INVOICE_AMOUNT, &true);
+    let rejected = t
+        .iln
+        .try_fund_invoice(&t.lp, &invoice_after, &INVOICE_AMOUNT, &true);
     assert_eq!(
         rejected,
         Err(Ok(ContractError::PayerUnverified)),

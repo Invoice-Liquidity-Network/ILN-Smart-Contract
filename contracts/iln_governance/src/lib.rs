@@ -496,7 +496,10 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::MinQuorumBps, &DEFAULT_MIN_QUORUM_BPS);
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &DEFAULT_MAX_DELEGATION_DEPTH);
+        env.storage().instance().set(
+            &StorageKey::MaxDelegationDepth,
+            &DEFAULT_MAX_DELEGATION_DEPTH,
+        );
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &0_u64);
@@ -534,15 +537,23 @@ impl GovContract {
     }
 
     pub fn get_max_delegation_depth(env: Env) -> u32 {
-        env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
     }
 
     pub fn set_max_delegation_depth(env: Env, max_depth: u32) -> Result<(), GovernanceError> {
         let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
         let old_value: u32 = Self::get_max_delegation_depth(env.clone());
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &max_depth);
-        env.events().publish((Symbol::new(&env, "max_delegation_depth_updated"),), (old_value, max_depth));
+        env.storage()
+            .instance()
+            .set(&StorageKey::MaxDelegationDepth, &max_depth);
+        env.events().publish(
+            (Symbol::new(&env, "max_delegation_depth_updated"),),
+            (old_value, max_depth),
+        );
         Ok(())
     }
 
@@ -780,7 +791,9 @@ impl GovContract {
     /// Returns the configured forfeiture sink (treasury address), if any.
     /// When unset, forfeited deposits stay locked in this contract.
     pub fn get_proposal_deposit_sink(env: Env) -> Option<Address> {
-        env.storage().instance().get(&StorageKey::ProposalDepositSink)
+        env.storage()
+            .instance()
+            .get(&StorageKey::ProposalDepositSink)
     }
 
     /// Sets (or, when `sink` is `None`, clears) the forfeiture destination.
@@ -828,6 +841,13 @@ impl GovContract {
     /// transfer), which is what prevents double-refunds on the
     /// `Passed -> Executed` second `execute_proposal` call.
     fn refund_proposal_deposit(env: &Env, proposal_id: u64, proposer: &Address) -> bool {
+        // Resolve the token before touching any storage: without it no
+        // refund transfer is possible, and returning early leaves the
+        // escrow intact for a later retry instead of burning it.
+        let token_addr = match Self::get_gov_token(env) {
+            Ok(addr) => addr,
+            Err(_) => return false,
+        };
         if env
             .storage()
             .persistent()
@@ -856,7 +876,6 @@ impl GovContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let token_addr = Self::get_gov_token(env)?;
         let token = TokenClient::new(env, &token_addr);
         let this = env.current_contract_address();
         token.transfer(&this, proposer, &amount);
@@ -874,6 +893,12 @@ impl GovContract {
     /// Forfeit the escrowed deposit to the configured sink (or lock it in
     /// this contract when no sink is set). Idempotent like the refund path.
     fn forfeit_proposal_deposit(env: &Env, proposal_id: u64, proposer: &Address) -> bool {
+        // Same ordering as the refund path: resolve the token first so an
+        // unconfigured gov token can't consume the escrow without paying it.
+        let token_addr = match Self::get_gov_token(env) {
+            Ok(addr) => addr,
+            Err(_) => return false,
+        };
         if env
             .storage()
             .persistent()
@@ -899,9 +924,11 @@ impl GovContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let sink: Option<Address> = env.storage().instance().get(&StorageKey::ProposalDepositSink);
+        let sink: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ProposalDepositSink);
         if let Some(dest) = sink.clone() {
-            let token_addr = Self::get_gov_token(env)?;
             let token = TokenClient::new(env, &token_addr);
             let this = env.current_contract_address();
             token.transfer(&this, &dest, &amount);
@@ -977,11 +1004,7 @@ impl GovContract {
         let mut lo: i128 = 0;
         let mut hi: i128 = n;
         while lo < hi {
-            let mid = lo.saturating_add(
-                hi.saturating_sub(lo)
-                    .saturating_add(1)
-                    .saturating_div(2)
-            );
+            let mid = lo.saturating_add(hi.saturating_sub(lo).saturating_add(1).saturating_div(2));
             match mid.checked_mul(mid) {
                 Some(sq) if sq <= n => lo = mid,
                 _ => hi = mid.saturating_sub(1),
@@ -989,7 +1012,6 @@ impl GovContract {
         }
         lo
     }
-
 
     /// Returns the configured minimum proposer balance.
     pub fn get_min_proposal_balance(env: Env) -> i128 {
@@ -1891,7 +1913,11 @@ impl GovContract {
 
     /// Walk forward pointers to find the terminal node (one with no further delegate).
     fn resolve_terminal(env: &Env, start: &Address) -> Address {
-        let max_depth = env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
+        let max_depth = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
         let mut current = start.clone();
         let mut depth = 0u32;
         loop {
