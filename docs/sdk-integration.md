@@ -638,3 +638,9 @@ The repository also ships runnable references you can copy from:
 - [`sdk/tests`](../sdk/tests) — unit and integration tests for every method.
 
 See the [SDK package README](../sdk/README.md) for the full method reference.
+
+## Examples
+See `sdk/examples/` for runnable integration scripts covering:
+- [Invoice Lifecycle](../sdk/examples/invoice_lifecycle.ts)
+- [Insurance Claims](../sdk/examples/insurance_claim.ts)
+- [Governance Lifecycle](../sdk/examples/governance_lifecycle.ts)
