@@ -10,6 +10,10 @@
 > if they disagree with the generated file on a function's gate, update the
 > narrative.
 
+> **Parameter safety:** For safe ranges of all adjustable parameters (fee rates,
+> discount rates, reputation thresholds, oracle windows, etc.), see
+> [Governance Operations Playbook § Adjustable Parameter Safe Ranges](governance-operations-playbook.md#adjustable-parameter-safe-ranges).
+
 
 The ILN-Smart-Contract implements a centralized access-control architecture to guarantee that all protocol operations are properly authorized. By centralizing permissions into shared guards, we achieve:
 - **Consistency**: All similar checks behave exactly the same way across different endpoints.
