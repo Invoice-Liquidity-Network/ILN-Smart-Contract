@@ -22,7 +22,8 @@
 
 use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 
-use crate::access::require_admin;
+use crate::access::{check_rate_limit, require_admin};
+use crate::constants::DEFAULT_RATE_LIMIT_LEDGERS;
 use crate::errors::ContractError;
 use crate::events::{
     OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded, OracleRegistered,
@@ -88,6 +89,7 @@ pub fn register_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "register_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
     let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .instance()
@@ -113,6 +115,7 @@ pub fn register_oracle(
 /// Access: Admin only.
 pub fn remove_oracle(env: &Env, feed_type: OracleFeedType) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "remove_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
     env.storage()
         .instance()
         .remove(&DataKey::OracleRegistry(feed_type));
@@ -140,6 +143,7 @@ pub fn register_token_oracle(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "register_token_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
     let version = verify_oracle_interface_version(env, &oracle)?;
     env.storage()
         .persistent()
@@ -169,6 +173,7 @@ pub fn remove_token_oracle(
     token: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "remove_token_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
     env.storage()
         .persistent()
         .remove(&DataKey::TokenOracle(feed_type, token.clone()));
@@ -330,6 +335,7 @@ pub fn reset_oracle_circuit(
     token: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "reset_oracle_circuit", DEFAULT_RATE_LIMIT_LEDGERS)?;
     env.storage()
         .persistent()
         .remove(&DataKey::OracleCircuitTripped(feed_type, token.clone()));
@@ -553,6 +559,7 @@ pub fn add_price_source(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "add_price_source", DEFAULT_RATE_LIMIT_LEDGERS)?;
     let key = DataKey::PriceSources(feed_type);
     let mut sources: soroban_sdk::Vec<Address> = env
         .storage()
@@ -583,6 +590,7 @@ pub fn remove_price_source(
     oracle: Address,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "remove_price_source", DEFAULT_RATE_LIMIT_LEDGERS)?;
     let key = DataKey::PriceSources(feed_type);
     let sources: soroban_sdk::Vec<Address> = env
         .storage()
@@ -623,6 +631,11 @@ pub fn get_price_sources(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Ve
 /// Access: Admin only.
 pub fn set_max_price_deviation_bps(env: &Env, bps: u32) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(
+        env,
+        "set_max_price_deviation_bps",
+        DEFAULT_RATE_LIMIT_LEDGERS,
+    )?;
     if bps == 0 || bps > 10_000 {
         return Err(ContractError::InvalidAmount);
     }
@@ -640,11 +653,41 @@ pub fn get_max_price_deviation_bps(env: Env) -> u32 {
         .unwrap_or(DEFAULT_MAX_PRICE_DEVIATION_BPS)
 }
 
+/// Issue #860: circuit/health gate every price read must pass before it
+/// trusts oracle data.
+///
+/// - Circuit tripped for `feed_type` + `token` → `Err(OracleCircuitOpen)`.
+/// - Last recorded health snapshot says the data was stale →
+///   `Err(OracleDataStale)`.
+///
+/// No recorded health (never queried) passes — same fail-open posture the
+/// rest of the registry takes for un-configured state. Callers that return
+/// `Option` (e.g. `get_twap_price`) map the error to `None`.
+pub(crate) fn require_healthy_price_feed(
+    env: &Env,
+    feed_type: OracleFeedType,
+    token: &Address,
+) -> Result<(), ContractError> {
+    if is_oracle_circuit_tripped(env, feed_type, token) {
+        return Err(ContractError::OracleCircuitOpen);
+    }
+    if let Some(health) = get_oracle_health(env.clone(), feed_type, token.clone()) {
+        if health.is_stale {
+            return Err(ContractError::OracleDataStale);
+        }
+    }
+    Ok(())
+}
+
 /// Query `oracle.get_price(token)`, returning `None` (rather than
 /// propagating a panic) if the call fails, traps, or returns a value that
 /// doesn't decode as `i128` — a single bad price source degrades to "no
 /// opinion" instead of taking down the whole aggregation.
-fn query_price(env: &Env, oracle: &Address, token: &Address) -> Option<i128> {
+///
+/// `pub(crate)` so `invoice::get_price_from_oracle` routes its stats
+/// normalization read through this non-panicking path (Issue #860) instead
+/// of a bare `invoke_contract`.
+pub(crate) fn query_price(env: &Env, oracle: &Address, token: &Address) -> Option<i128> {
     // Turbofish on T/E only (matching iln_governance::invoke_and_check's
     // established pattern) — T's own TryFromVal::Error (ConversionError for
     // i128) is inferred, not spelled out, and E is never actually
@@ -718,11 +761,18 @@ fn deviation_bps(price: i128, reference: i128) -> u32 {
 ///   *surviving* sources is returned. If every source is mutually
 ///   rejected (pathological — no cluster of agreement at all), returns
 ///   `Err(ContractError::AllPriceSourcesRejected)`.
+///
+/// Issue #860: before any of the above, the read consults the health-check /
+/// circuit-breaker state for `feed_type` + `token` — an open circuit
+/// (`Err(ContractError::OracleCircuitOpen)`) or a stale health snapshot
+/// (`Err(ContractError::OracleDataStale)`) rejects the price outright
+/// instead of trusting data the registry has already observed to be bad.
 pub fn get_verified_price(
     env: Env,
     feed_type: OracleFeedType,
     token: Address,
 ) -> Result<i128, ContractError> {
+    require_healthy_price_feed(&env, feed_type, &token)?;
     // Issue #816: per-feed opt-in — when TWAP is enabled and enough
     // in-window samples exist, read the windowed average instead of spot.
     // Falls through to the spot path below while samples backfill.
@@ -840,6 +890,7 @@ pub fn set_twap_enabled(
     enabled: bool,
 ) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "set_twap_enabled", DEFAULT_RATE_LIMIT_LEDGERS)?;
     env.storage()
         .instance()
         .set(&DataKey::TwapEnabled(feed_type), &enabled);
@@ -861,6 +912,7 @@ pub fn get_twap_window_ledgers(env: &Env) -> u64 {
 /// Access: Admin only.
 pub fn set_twap_window_ledgers(env: &Env, window_ledgers: u64) -> Result<(), ContractError> {
     require_admin(env)?;
+    check_rate_limit(env, "set_twap_window", DEFAULT_RATE_LIMIT_LEDGERS)?;
     if window_ledgers < MIN_TWAP_WINDOW_LEDGERS || window_ledgers > MAX_TWAP_WINDOW_LEDGERS {
         return Err(ContractError::InvalidTwapWindow);
     }
@@ -875,6 +927,14 @@ pub fn set_twap_window_ledgers(env: &Env, window_ledgers: u64) -> Result<(), Con
 ///
 /// Access: Admin only (keeper/governance pushes samples; the example
 /// crate's `update_price` was likewise admin-gated).
+///
+/// Deliberately **not rate-limited** (Issue #859 documented exemption):
+/// this is a high-frequency keeper operation — the TWAP accumulator only
+/// produces a meaningful windowed average if samples land regularly across
+/// the window, and clamping it to one call per `DEFAULT_RATE_LIMIT_LEDGERS`
+/// (120 ledgers ≈ 10min) would leave the window sparsely sampled and easily
+/// skewed by a single manipulated sample. The sampling cadence is the
+/// protection here; gating it would weaken, not strengthen, the TWAP path.
 pub fn record_twap_sample(
     env: &Env,
     feed_type: OracleFeedType,
@@ -905,7 +965,16 @@ pub fn record_twap_sample(
 
 /// Windowed TWAP average for `feed_type` + `token` over the configured
 /// window, or `None` when fewer than two in-window samples exist.
+///
+/// Issue #860: `None` is also returned when the feed's circuit breaker is
+/// open or its last recorded health snapshot is stale — a windowed average
+/// over data the registry has already observed to be bad is not a price
+/// this function should hand back (its `Option` signature predates the
+/// health gate, so the error collapses to "no opinion" here; callers that
+/// need to distinguish the reasons use `get_verified_price`, which maps
+/// them to `OracleCircuitOpen` / `OracleDataStale`).
 pub fn get_twap_price(env: &Env, feed_type: OracleFeedType, token: &Address) -> Option<i128> {
+    require_healthy_price_feed(env, feed_type, token).ok()?;
     let samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
         .storage()
         .persistent()
