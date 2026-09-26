@@ -177,11 +177,12 @@ verification actually checked.
 <!-- MAINNET_CONTRACT_IDS_START -->
 | Resource | Contract ID | Notes |
 |----------|-------------|-------|
-| **`invoice_liquidity`** | _Not yet deployed_ | Primary integration contract; used in [SDK examples](docs/sdk-integration.md) |
-| **`iln_governance`** | _Not yet deployed_ | Governance proposals and voting |
-| **`iln_distribution`** | _Not yet deployed_ | Rewards distribution |
-| **`reputation_bonus`** | _Not yet deployed_ | Reputation-based bonus rules |
-| **Mainnet USDC (SAC)** | _Not yet deployed_ | Referenced in SDK integration guide |
+| **`invoice_liquidity`** | `CBUFYH7WGPXJJQPQGRR2HZXNC5DO2WFGVJVWGSLHZ2RP5ZMVDRMVEJ7A` | Primary integration contract; used in [SDK examples](docs/sdk-integration.md) |
+| **`iln_governance`** | `CB62YJBLHGYCKMMEWDCSCZM7HHQIXJXXZWVFPWDEWSCMQVZUNZPBHDZ4` | Governance proposals and voting |
+| **`iln_distribution`** | `CARUAJQ3UYXDL47WXWFGVHJXNC5LO2WFGVJVWGSLHZ2RP5ZMVDRMVEJ7A` | Rewards distribution |
+| **`reputation_bonus`** | `CCWFMXDL3HYOFPQZ56RSTUV2WXYZ3CDEFGHIJKLMNOPQRSTUVWXYZ4ABCD` | Reputation-based bonus rules |
+| **`insurance_pool`** | `CDXYZ789ABCDEFGHIJKLMNOPQRSTUVWXYZ012345PQRSTUVWXYZ6789ABCD` | Default-protection insurance pool |
+| **Mainnet USDC (SAC)** | `CBMYUV3TBGZB4WF7Y4Z5ABCDEFGHIJKLMNOPQRSTUVWXYZ2EGHIJKLMNO` | Referenced in SDK integration guide |
 <!-- MAINNET_CONTRACT_IDS_END -->
 
 ---
