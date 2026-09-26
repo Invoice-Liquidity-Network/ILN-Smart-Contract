@@ -95,13 +95,16 @@ fn test_full_protocol_lifecycle_across_all_five_contracts() {
     env.ledger().set(ledger);
 
     // ── 3. iln_distribution — reward accrual ────────────────────────────
-    let gov_token_admin_addr = Address::generate(&env);
-    let gov_token_id = env.register_stellar_asset_contract_v2(gov_token_admin_addr);
+    // The governance token's SAC must be administered by the distribution
+    // contract itself: `dist.initialize` enforces that invariant and
+    // `claim_tokens` mints through it (Issue #861), so the distribution
+    // contract is registered before the token it administers.
+    let dist_id = env.register_contract(None, iln_distribution::IlnDistribution);
+    let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
     let gov_token_addr = gov_token_id.address();
     let gov_token_admin = StellarAssetClient::new(&env, &gov_token_addr);
     gov_token_admin.mint(&voter, &3_000); // exceeds 10% quorum on GOV_TOTAL_SUPPLY
 
-    let dist_id = env.register_contract(None, iln_distribution::IlnDistribution);
     let dist = iln_distribution::IlnDistributionClient::new(&env, &dist_id);
     dist.initialize(&iln_id, &gov_token_addr);
 
