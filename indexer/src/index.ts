@@ -13,6 +13,12 @@ import { recoverFromReorg } from './ingestion/reorgRecovery.js';
 import { startReconciliationSchedule, createWebhookAlertDispatcher } from './reconciliation/consistencyJob.js';
 import { SorobanChainReader } from './reconciliation/chainReader.js';
 import { logger } from './lib/logger.js';
+import {
+  classifyReorgDepth,
+  classifyReorgSeverity,
+  createAlert,
+  getAlertRouter,
+} from './services/alertRouter.js';
 
 const db = getDb(config.dbPath);
 
@@ -40,7 +46,30 @@ const ingestionLock = createIngestionLock({ db, logger });
 const ledgerHeaderSource = createHorizonLedgerHeaderSource(config.horizonUrl);
 const reorgDetector = new LedgerReorgDetector({ db, source: ledgerHeaderSource, logger });
 
-const recoverReorg = async (divergence: ReorgDivergence): Promise<void> => {
+const alertRouter = getAlertRouter();
+
+const routeReorgAlert = async (divergence: ReorgDivergence): Promise<void> => {
+  const severity = classifyReorgSeverity(divergence.forkDepth);
+  const classification = classifyReorgDepth(divergence.forkDepth);
+  const alert = createAlert(
+    'reorg_detected',
+    severity,
+    `Ledger reorg detected at ledger ${divergence.divergenceLedger}`,
+    divergence.message,
+    {
+      divergenceLedger: divergence.divergenceLedger,
+      commonAncestorLedger: divergence.commonAncestorLedger,
+      forkDepth: divergence.forkDepth,
+      reason: divergence.reason,
+      detectedBy: divergence.detectedBy,
+      severity,
+      reorgSeverity: classification,
+    }
+  );
+  await alertRouter.route(alert);
+};
+
+const recoveryHook = async (divergence: ReorgDivergence): Promise<void> => {
   await recoverFromReorg(divergence, {
     db,
     repository: eventRepository,
@@ -50,6 +79,7 @@ const recoverReorg = async (divergence: ReorgDivergence): Promise<void> => {
     lock: ingestionLock,
     logger,
   });
+  await routeReorgAlert(divergence);
 };
 
 const eventListener = createEventListener({
@@ -57,7 +87,7 @@ const eventListener = createEventListener({
   horizonUrl: config.horizonUrl,
   contractAddress: config.contractId,
   reorgDetector,
-  onReorgDetected: recoverReorg,
+  onReorgDetected: recoveryHook,
 });
 
 const httpServer = createServer(app);
