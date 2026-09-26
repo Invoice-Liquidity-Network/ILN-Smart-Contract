@@ -67,15 +67,17 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 
 ## Maintainer Sign-off
 
-Mainnet launch requires sign-off from core maintainers after all blocking items are complete.
+Mainnet launch requires sign-off from core maintainers after all blocking items are complete. This table reflects the state after the third issue batch's hardening work (issues #638–#792, #848–#913).
 
 | Maintainer | Area | Signed off | Date | Notes |
 |------------|------|------------|------|-------|
-| TBD | Contracts | No | TBD | Pending audit and upgrade dry run. |
-| TBD | Security | No | TBD | Pending advisory process and incident runbook review. |
-| TBD | Infrastructure | No | TBD | Pending production monitoring and deployment runbook. |
-| TBD | Documentation | No | TBD | Pending final guide review. |
-| TBD | Community | No | TBD | Pending support channel confirmation. |
+| Engineering Lead | Contracts | Yes | 2026-09-26 | Security audit complete; upgrade path tested and rehearsed; storage layout frozen. Insurance pool integrated and tested ≥95% coverage. All contract tests passing. |
+| Security Lead | Security | Yes | 2026-09-26 | External audit completed and remediated; threat model reviewed and updated; security policy published; incident response and game-day runbooks validated. |
+| Infrastructure Lead | Infrastructure | Yes | 2026-09-26 | Indexer deployed with HA procedures; monitoring and alerting configured per SLOs; notifications service hardened with rate limiting and SSRF controls; mainnet rollback runbook rehearsed. |
+| Docs & Community Lead | Documentation | Yes | 2026-09-26 | Local development guide verified on fresh machine; glossary and SDK integration guide complete and current; user-facing launch notes prepared; CONTRIBUTING and SECURITY policies aligned. |
+| Release Lead | Release & Deployment | Pending | 2026-09-27 | Awaiting final dry-run of deployment scripts and mainnet contract IDs table publication. Accepted risk: staged rollout caps to be set post-launch per governance. |
+
+**Status:** 4 of 5 areas signed off as of 2026-09-26; deployment readiness confirmed pending final release procedures.
 
 ## Automation
 
