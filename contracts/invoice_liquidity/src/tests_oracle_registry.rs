@@ -997,7 +997,10 @@ fn test_twap_disabled_by_default_spot_unchanged() {
     assert!(!t.contract.is_twap_enabled(&OracleFeedType::Price));
     // Default window is the 1-hour (720-ledger) documented default.
     assert_eq!(t.contract.get_twap_window(), 720);
-    assert_eq!(t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address), None);
+    assert_eq!(
+        t.contract.try_get_twap_price(&OracleFeedType::Price, &t.token.address),
+        Err(Ok(crate::errors::ContractError::InsufficientTwapObservations))
+    );
 }
 
 #[test]
@@ -1017,7 +1020,7 @@ fn test_twap_enabled_feed_reads_windowed_average() {
 
     assert_eq!(
         t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address),
-        Some(20_500)
+        20_500
     );
     // get_verified_price branches to the TWAP average when enabled (no spot
     // sources registered, so spot alone would error with NoPriceSource).
@@ -1068,3 +1071,81 @@ fn test_twap_window_bounds_accept_and_reject() {
         Err(Ok(crate::errors::ContractError::InvalidTwapWindow))
     );
 }
+
+#[test]
+fn test_twap_minimum_observations_enforced() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+    // Default min observations is 2.
+    // 0 observations
+    assert_eq!(
+        t.contract.try_get_twap_price(&OracleFeedType::Price, &t.token.address),
+        Err(Ok(crate::errors::ContractError::InsufficientTwapObservations))
+    );
+
+    // 1 observation
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    assert_eq!(
+        t.contract.try_get_twap_price(&OracleFeedType::Price, &t.token.address),
+        Err(Ok(crate::errors::ContractError::InsufficientTwapObservations))
+    );
+
+    // 2 observations - partially filled window? Wait, we can test higher minimum.
+    t.contract.set_min_twap_observations(&3);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+
+    // Now has 2, but requires 3 -> Error
+    assert_eq!(
+        t.contract.try_get_twap_price(&OracleFeedType::Price, &t.token.address),
+        Err(Ok(crate::errors::ContractError::InsufficientTwapObservations))
+    );
+
+    // 3 observations -> Success
+    let mut info2 = t.env.ledger().get();
+    info2.timestamp += 1800;
+    t.env.ledger().set(info2);
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &22_000);
+    assert!(t.contract.try_get_twap_price(&OracleFeedType::Price, &t.token.address).is_ok());
+}
+
+#[test]
+fn test_twap_sandwich_resistance() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+
+    let baseline_price = 10_000;
+    let sandwich_spike = 1_000_000; // 100x artificial price spike in a single block
+
+    // Fill buffer with baseline prices to simulate stable historical feed
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &baseline_price);
+    
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800; // 30 mins
+    t.env.ledger().set(info.clone());
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &baseline_price);
+    
+    info.timestamp += 1800; // 60 mins
+    t.env.ledger().set(info.clone());
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &baseline_price);
+
+    let pre_attack_price = t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address).unwrap();
+    assert_eq!(pre_attack_price, baseline_price);
+
+    // Attack block: price spiked to 1,000,000 just 10 seconds later
+    info.timestamp += 10;
+    t.env.ledger().set(info.clone());
+    t.contract.record_twap_sample(&OracleFeedType::Price, &t.token.address, &sandwich_spike);
+
+    let post_attack_price = t.contract.get_twap_price(&OracleFeedType::Price, &t.token.address).unwrap();
+    
+    // The TWAP should severely dilute the 10-second spike relative to the 1-hour window.
+    // 1 hour = 3600 seconds. Spike weight = 10 seconds.
+    // So the spike should contribute ~ (10/3600) * 1,000,000 to the average, which is small compared to the spot manipulation.
+    assert!(post_attack_price < baseline_price * 2, "TWAP failed to resist sandwich attack spike");
+}
+

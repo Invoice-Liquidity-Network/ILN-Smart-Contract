@@ -127,4 +127,5 @@ pub enum ContractError {
     /// queue vector was out of range. Returned instead of panicking so
     /// operators see a typed error rather than a raw abort.
     QueueIndexOutOfBounds = 61,
+    InsufficientTwapObservations = 62,
 }

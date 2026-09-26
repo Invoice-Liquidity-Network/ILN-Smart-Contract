@@ -102,6 +102,30 @@ pub struct PriceSourceRemoved {
     pub oracle: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwapEnabledForFeed {
+    pub feed_type: OracleFeedType,
+    pub enabled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwapWindowUpdated {
+    pub old_window: u64,
+    pub new_window: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TwapInsufficientData {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub observations: u32,
+    pub min_required: u32,
+}
+
+
 /// Emitted when a registered price source's reported price is rejected as
 /// an outlier relative to the cross-source median (Issue #price-deviation).
 #[contracttype]
