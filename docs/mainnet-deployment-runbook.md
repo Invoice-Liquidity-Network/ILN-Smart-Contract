@@ -120,6 +120,37 @@ WASM hash matches the artifact just built, and — when `EXPECTED_USDC_TOKEN` /
 constructor arguments landed correctly. It writes `verification-report.mainnet.json`
 and exits non-zero on any failure.
 
+### Governance-token SAC-admin invariant (`iln_distribution`)
+
+`iln_distribution.initialize(iln_contract, gov_token)` rejects any governance
+token that is not administered by the distribution contract itself (Issue
+#861): `claim_tokens` mints through `StellarAssetClient::mint`, which only the
+SAC admin may call, so a token administered by an operator key or multisig
+would make every non-empty claim revert at runtime. The check runs before any
+state is written, so a rejected initialization leaves the contract
+uninitialized and retryable.
+
+Deployment order this implies:
+
+1. Deploy `iln_distribution` and note its contract ID (`ILN_DISTRIBUTION_ID`).
+2. Create the governance token SAC with **that ID as its admin** — the SAC's
+   admin argument must be the `iln_distribution` contract address, never an
+   operator key.
+3. Call `initialize(ILN_ID, GOV_TOKEN_SAC)`. Doing step 2 out of order fails
+   fast with `governance token SAC admin must be the distribution contract`.
+
+Verify with a read-only simulation of `verify_mint_authority()` on
+`ILN_DISTRIBUTION_ID` (no transaction, no fee): it returns `true` only while
+the invariant holds. The same check runs in the smoke test when
+`DISTRIBUTION_CONTRACT_ID` is exported, which must pass during the testnet
+rehearsal:
+
+```bash
+CONTRACT_ID="$INVOICE_LIQUIDITY_ID" \
+DISTRIBUTION_CONTRACT_ID="$ILN_DISTRIBUTION_ID" \
+npx --yes tsx scripts/smoke-test.ts
+```
+
 **Do not proceed to Step 5 unless this exits 0.**
 
 ## Step 5 — Publish
@@ -156,5 +187,7 @@ Mainnet deployment requires:
       toolchain installed
 - [ ] Release lead + one additional maintainer present for the live run (Step 2)
 - [ ] `make verify-mainnet` (Step 4) exits 0 before `make publish-mainnet` is run
+- [ ] `iln_distribution` governance-token SAC-admin invariant verified:
+      `verify_mint_authority()` returns `true` (Issue #861)
 - [ ] Updated [Mainnet Launch Checklist](mainnet-launch-checklist.md) row: "Mainnet
       deployment runbook" → Complete once the above has happened for real

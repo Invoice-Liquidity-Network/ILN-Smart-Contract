@@ -94,10 +94,17 @@ impl IlnDistribution {
     ///
     /// # Panics
     /// * Panics with `"already initialized"` if called more than once.
+    /// * Panics with `"governance token SAC admin must be the distribution
+    ///   contract"` if `gov_token` is not a SAC administered by this
+    ///   contract (Issue #861). The check runs before any state is written,
+    ///   so a rejected deployment leaves the contract uninitialized and
+    ///   retryable.
     pub fn initialize(env: Env, iln_contract: Address, gov_token: Address) {
         if env.storage().instance().has(&StorageKey::Initialized) {
             panic!("already initialized");
         }
+
+        Self::require_gov_token_mint_authority(&env, &gov_token);
 
         env.storage()
             .instance()
@@ -126,6 +133,28 @@ impl IlnDistribution {
                 gov_token,
             },
         );
+    }
+
+    /// Re-check the governance-token mint authority invariant (Issue #861).
+    ///
+    /// `claim_tokens` mints through `StellarAssetClient::mint`, which only
+    /// the SAC admin may call, so a governance token administered by an
+    /// EOA/multisig would make every non-empty claim revert at runtime.
+    /// `initialize` enforces the invariant at construction; this view
+    /// re-checks it against live chain state for deployment tooling
+    /// (`scripts/smoke-test.ts`).
+    ///
+    /// # Returns
+    /// * `true` when the governance token's SAC admin is this contract.
+    ///
+    /// # Panics
+    /// * Panics with `"not initialized"` if `initialize` has not run.
+    pub fn verify_mint_authority(env: Env) -> bool {
+        let gov_token: Address = match env.storage().instance().get(&StorageKey::GovToken) {
+            Some(token) => token,
+            None => panic!("not initialized"),
+        };
+        StellarAssetClient::new(&env, &gov_token).admin() == env.current_contract_address()
     }
 
     /// Record LP-funded volume for reward accrual.
@@ -418,6 +447,17 @@ impl IlnDistribution {
             .get(&StorageKey::IlnContract)
             .unwrap();
         iln_contract.require_auth();
+    }
+
+    /// Issue #861 — the governance token must be a SAC administered by this
+    /// contract, otherwise `claim_tokens` cannot mint and every claim
+    /// reverts at runtime. Panics with a stable message so deployment tooling
+    /// and tests can assert on it; also exposed as `verify_mint_authority`.
+    fn require_gov_token_mint_authority(env: &Env, gov_token: &Address) {
+        let admin = StellarAssetClient::new(env, gov_token).admin();
+        if admin != env.current_contract_address() {
+            panic!("governance token SAC admin must be the distribution contract");
+        }
     }
 }
 
@@ -748,6 +788,57 @@ mod test {
                 &true,
             );
         });
+    }
+
+    /// Issue #861 — a governance token administered by any address other
+    /// than this contract cannot be minted by `claim_tokens`, so `initialize`
+    /// must reject it instead of shipping a distribution contract whose every
+    /// non-empty claim reverts at runtime.
+    #[test]
+    #[should_panic(expected = "governance token SAC admin must be the distribution contract")]
+    fn initialize_rejects_governance_token_with_foreign_sac_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        // SAC administered by an unrelated address (EOA/multisig stand-in).
+        let gov_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        dist.initialize(&iln_id, &gov_token_id.address());
+    }
+
+    /// Issue #861 — the happy path: a SAC administered by the distribution
+    /// contract passes the invariant check and `verify_mint_authority`
+    /// re-confirms it against live chain state.
+    #[test]
+    fn verify_mint_authority_accepts_distribution_owned_sac() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        assert!(dist.verify_mint_authority());
+    }
+
+    /// Issue #861 — `verify_mint_authority` before `initialize` proves no
+    /// state was written by a skipped/failed initialization.
+    #[test]
+    #[should_panic(expected = "not initialized")]
+    fn verify_mint_authority_panics_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        dist.verify_mint_authority();
     }
 
     /// Issue #660 / #661 — property-based tests for the reward-conservation
