@@ -75,19 +75,38 @@ Include as much as possible:
 
 Do not include live secrets, private keys, or personally identifiable information unless maintainers explicitly request a secure transfer method.
 
-## Response Timelines
+## Response Timelines and SLA Policy
+
+### Acknowledgment and Severity Assessment
 
 | Stage | Commitment |
 |-------|------------|
 | Acknowledgment | Within 48 hours. |
 | Initial severity assessment | Within 5 business days. |
-| Critical target fix window | Begin mitigation immediately; target patch or disabling mitigation within 7 days. |
-| High target fix window | Target patch within 14 days. |
-| Medium target fix window | Target patch within 30 days. |
-| Low target fix window | Track for the next planned maintenance release or documentation update. |
-| Public disclosure | Coordinated after a fix, mitigation, or maintainer-approved advisory timeline. |
 
-Timelines can change if a fix requires third-party coordination, contract migration, or user action. Maintainers will keep reporters updated when timelines change.
+### Remediation SLA by Severity
+
+This table defines time-bound SLAs for fixing reported or audit-found issues, distinct from the disclosure-timing language below. The SLA measures from the moment a vulnerability is confirmed (not from report receipt).
+
+| Severity | SLA for Fix | Definition | Example Actions |
+|----------|-------------|-----------|-----------------|
+| **Critical** | 7 calendar days | Patch or mitigation deployed to mainnet. An active workaround is acceptable if a code patch is not yet ready, provided it eliminates the exploit path. | Emergency hotfix, immediate pause, rollback to known-good, or governance action blocking the vulnerable path. |
+| **High** | 14 calendar days | Patch deployed to mainnet or documented mitigation accepted by security team. | Expedited upgrade vote, rotation of exposed secrets, network-wide deprecation of a component. |
+| **Medium** | 30 calendar days | Fix merged to main branch and scheduled in the next release. | Standard code review, staged rollout, documentation of workaround. |
+| **Low** | Next scheduled maintenance release | Fix incorporated into the next planned release or documentation update (e.g., quarterly). | Backlog, incorporated with other low-priority work. |
+
+**SLA extensions.** Timelines can be extended if a fix requires third-party coordination (e.g., infrastructure provider, oracle operator), contract migration (e.g., major schema change, governance vote), or user action (e.g., key rotation). The Security lead and IC document any extension in the incident log within the SLA window, including the reason and the new target date.
+
+### Public Disclosure Timelines
+
+Distinct from the remediation SLA above, these timelines govern when and how the fix is disclosed:
+
+| Severity | Disclosure Timeline | Cadence |
+|----------|-------------------|---------|
+| **Critical / High** | Within 7 calendar days of SLA met | Coordinated disclosure after fix is live. An advisory or CVE-equivalent is published with the fixed version identified. |
+| **Medium / Low** | Within 30 calendar days of SLA met OR with the next release | Batch disclosure acceptable; may be included in release notes. |
+
+Timelines assume SLA was met. If an SLA is extended, disclosure waits for the new SLA target or the next release, whichever comes first. Do not disclose before the fix is available to users.
 
 ## Severity Classification
 
