@@ -133,6 +133,9 @@ check fails if a row exists in one place but not the other.
 | [InvoiceDisputed](#invoicedisputed) | `dispute_invoice` |
 | [DisputeResolved](#disputeresolved) | `resolve_dispute`, `auto_resolve_dispute` |
 | [ReputationUpdated](#reputationupdated) | reputation score/counter changes (`invoice.rs`) |
+| [TwapEnabledForFeed](#twapenabledforfeed) | `set_twap_enabled` |
+| [TwapWindowUpdated](#twapwindowupdated) | `set_twap_window_ledgers` |
+| [TwapInsufficientData](#twapinsufficientdata) | `get_twap_price` (when observation count < minimum) |
 | [InvoiceNftMinted / InvoiceNftTransferred / InvoiceNftBurned](#invoice-nft-lifecycle) | invoice submit / fund / pay (`nft.rs`) |
 
 ### Full function inventory
@@ -480,6 +483,35 @@ events:
 - **InvoiceNftTransferred** — on `fund_invoice` (freelancer → LP): `invoice_id`, `from`, `to`, `timestamp`.
 - **InvoiceNftBurned** — on full `mark_paid`: `invoice_id`, `owner`, `timestamp`.
 
+### TwapEnabledForFeed
+
+Topics: `["twap_enabled", feed_type]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `feed_type` | `OracleFeedType` | Feed type for which TWAP was enabled/disabled |
+| `enabled` | `bool` | True if TWAP is enabled |
+
+### TwapWindowUpdated
+
+Topics: `["twap_window_updated"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `old_window` | `u64` | Previous window size in ledgers |
+| `new_window` | `u64` | New window size in ledgers |
+
+### TwapInsufficientData
+
+Topics: `["twap_insufficient_data", feed_type]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `feed_type` | `OracleFeedType` | Feed type queried |
+| `token` | `Address` | Token queried |
+| `observations` | `u32` | Number of observations found |
+| `min_required` | `u32` | Minimum number of observations required |
+
 ---
 
 ## `insurance_pool`
@@ -598,6 +630,50 @@ Topics: `["adm_exec"]`
 ### AdminTransferCancelled
 
 Topics: `["adm_cncl"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| (none) | | |
+
+### PremiumRateGovernanceUpdated
+
+Emitted when the premium rate is updated via governance.
+
+Topics: `["prem_gov"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `old_rate` | `i128` | Previous premium rate in bps |
+| `new_rate` | `i128` | New premium rate in bps |
+
+### RiskMultiplierProposed
+
+Emitted when a new risk multiplier is proposed with a timelock delay.
+
+Topics: `["rm_prop"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `numerator` | `i128` | Proposed risk multiplier numerator |
+| `denominator` | `i128` | Proposed risk multiplier denominator |
+| `eta` | `u64` | Timestamp when change becomes executable |
+
+### RiskMultiplierExecuted
+
+Emitted when a previously proposed risk multiplier change is executed after timelock.
+
+Topics: `["rm_exec"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `old_numerator` | `i128` | Previous numerator |
+| `old_denominator` | `i128` | Previous denominator |
+| `new_numerator` | `i128` | New numerator |
+| `new_denominator` | `i128` | New denominator |
+
+### RiskMultiplierCancelled
+
+Topics: `["rm_cncl"]`
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
@@ -734,7 +810,22 @@ the scope of this event-emission audit, and should be tracked separately.
 | `accrue_lp` | ✅ `lp_accr` topic → `LpVolumeAccrued` (added by this audit) |
 | `accrue_settlement` | ✅ `settled` topic → `SettlementAccrued` (added by this audit) |
 | `claim_tokens` | ✅ `claimed` topic → `TokensClaimed` (added by this audit) |
-| `get_accrual` | 🔍 read-only view |
+| `set_lp_reward_rate` | ✅ `rw_upd` topic → `RewardRateUpdated` |
+| `set_freelancer_reward_rate` | ✅ `rw_upd` topic → `RewardRateUpdated` |
+| `set_payer_reward_rate` | ✅ `rw_upd` topic → `RewardRateUpdated` |
+| `get_accrual` / `get_*_reward_rate` | 🔍 read-only views |
+
+### RewardRateUpdated
+
+Emitted when a reward rate is updated via governance.
+
+Topics: `["rw_upd"]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `rate_type` | `Symbol` | One of `"lp_reward"`, `"freelancer_reward"`, `"payer_reward"` |
+| `old_rate` | `i128` | Previous reward rate (stroops) |
+| `new_rate` | `i128` | New reward rate (stroops) |
 
 ---
 

@@ -9,6 +9,7 @@ import { config } from './config.js';
 import { createApiKeyMiddleware } from './middleware/apiKey.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.js';
 import { createEventsRouter } from './api/routes/events.js';
+import { createMonitoringRouter } from './api/routes/monitoring.js';
 import { createHealthRouter, type HealthCheckDeps } from './api/routes/health.js';
 import { createProtocolStatusRouter } from './api/routes/protocolStatus.js';
 import {
@@ -102,6 +103,7 @@ export function createApp(
   app.use(createInvoicesRouter(db));
   app.use(createInsuranceRouter(db));
   app.use(createEventsRouter(db));
+  app.use('/monitoring', createMonitoringRouter(db));
   mountGraphQL(app, db, {
     maxDepth: options.graphqlMaxDepth ?? config.graphqlMaxDepth,
     maxComplexity: options.graphqlMaxComplexity ?? config.graphqlMaxComplexity,

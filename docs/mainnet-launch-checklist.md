@@ -62,20 +62,20 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 | CONTRIBUTING up to date | Confirm contribution, review, testing, and local setup expectations are current. | Community lead | In progress | [CONTRIBUTING](../CONTRIBUTING.md) |
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
 | CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
-| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | In progress | [CODEOWNERS](../.github/CODEOWNERS) |
-| Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Not started | [Issue templates](../.github/ISSUE_TEMPLATE) |
+| Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | Complete | [MAINTAINERS.md](../MAINTAINERS.md), [CODEOWNERS](../.github/CODEOWNERS) |
+| Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Complete | [Support Channels](support-channels.md) |
 
 ## Maintainer Sign-off
 
 Mainnet launch requires sign-off from core maintainers after all blocking items are complete.
 
-| Maintainer | Area | Signed off | Date | Notes |
+| Maintainer (team) | Area | Signed off | Date | Notes |
 |------------|------|------------|------|-------|
-| TBD | Contracts | No | TBD | Pending audit and upgrade dry run. |
-| TBD | Security | No | TBD | Pending advisory process and incident runbook review. |
-| TBD | Infrastructure | No | TBD | Pending production monitoring and deployment runbook. |
-| TBD | Documentation | No | TBD | Pending final guide review. |
-| TBD | Community | No | TBD | Pending support channel confirmation. |
+| `@Keengfk/contracts-team` | Contracts | Pending launch | — | Ownership confirmed; individual launch sign-off still required at go-live. |
+| `@Keengfk/security-lead` | Security | Pending launch | — | Escalate via `security@invoice-liquidity-network.local` / Security Advisories. |
+| `@Keengfk/devops` | Infrastructure | Pending launch | — | Workflows/scripts owners; incident on-call per runbook. |
+| `@Keengfk/docs-lead` | Documentation | Pending launch | — | Docs CODEOWNERS path. |
+| `@Keengfk/maintainers` | Community | Pending launch | — | Default owners; support paths in support-channels.md. |
 
 ## Automation
 

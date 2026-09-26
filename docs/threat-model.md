@@ -686,11 +686,22 @@ Governance token balances determine voting weight in the ILN contract. To preven
 5. The attacker repays the flash loan.
 ```
 
-**Residual Risk:** ⚠️ **HIGH**
-Since Soroban lacks a native historical state-proof or checkpointing mechanism, the lazy-snapshot technique leaves the contract vulnerable to flash-loan manipulation if the token becomes composable in DeFi. Quadratic voting reduces the impact but does not eliminate it.
+**Residual Risk:** ✅ **FIXED (Issue #805)** — was ⚠️ HIGH.
+The lazy first-vote snapshot above is replaced by checkpoint-gated voting:
+a first vote requires a `BalanceCheckpoint` predating the proposal's
+creation ledger by `MIN_VOTE_HOLD_LEDGERS` (10 ledgers) and carries
+`min(checkpoint, current)`; same-transaction borrow-vote-repay is rejected
+with `InsufficientHoldingPeriod`, and `delegate_votes` entries are gated
+identically. The attack scenario above now fails at step 3. Remaining
+residual: multi-ledger (non-flash) borrows held past the holding period, and
+the proposer's live-balance creation snapshot — see
+[Governance Security Summary §3.2](governance-security-summary.md).
 
-**Recommendation:**
-If the governance token becomes widely flash-loanable, the protocol must transition to a staking-based governance model (e.g., locking tokens in an escrow vault for the duration of the proposal) or integrate with an oracle that provides cryptographic proofs of historical ledger balances prior to proposal creation.
+**Recommendation (kept for the residual):**
+If aged-balance manipulation ever becomes practical, transition to a
+staking-based governance model (e.g., locking tokens in an escrow vault for
+the duration of the proposal) or integrate an oracle with cryptographic
+proofs of historical ledger balances prior to proposal creation.
 
 
 ### F. TOKEN TRANSFER EDGE CASES
@@ -1151,9 +1162,9 @@ This document has been reviewed by a team member independent of the original thr
 **Review Date:** 2026-09-24  
 **Review Findings:**
 - ✅ v2.0 updates accurately reflect implemented components (Multi-Sig, Oracle Registry, Governance, Distribution, Insurance Pool)
-- ✅ Flash-loan risk (E3) properly documented as accepted risk pending governance token composability
+- ✅ Flash-loan risk (E3) fixed via checkpoint-gated voting (Issue #805); residual documented in E3 and governance-security-summary §3.2
 - ✅ No timelock on governance execution (ADR-005) correctly noted as accepted risk with veto as interim mitigation
-- ✅ Quorum consistency (caller-supplied `total_supply`) documented as accepted risk; admin veto is sufficient backstop for v1
+- ✅ Quorum consistency now reads the stored `GovTokenTotalSupply` (Issue #808); tracked-supply staleness residual documented, veto retained until live supply reads exist
 - ✅ All residual risks cross-referenced to primary mitigation sources (ADRs, governance docs, disaster-recovery runbook)
 - ✅ Parameter validation gaps (decay_rate_bps, high_rep_threshold) tracked as separate audit-prep issues (#692-693)
 - ✅ Distribution contract mint authority and event coverage concerns documented (Section H, Issue #691)

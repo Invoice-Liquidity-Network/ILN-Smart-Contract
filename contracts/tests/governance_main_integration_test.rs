@@ -161,6 +161,15 @@ fn setup() -> GovIntegrationEnv {
         &GOV_TOTAL_SUPPLY,
     );
 
+    // Issue #805: checkpoint the voter and age it past the holding period
+    // (10 ledgers) so votes below exercise the eligible path. The constant
+    // lives in the governance contract (`MIN_VOTE_HOLD_LEDGERS`); the `+ 1`
+    // keeps the Aged rule (`cp.ledger + 10 <= created_ledger`) satisfied.
+    governance.checkpoint_balance(&voter);
+    let mut ledger = env.ledger().get();
+    ledger.sequence_number += 11;
+    env.ledger().set(ledger);
+
     // Fix ledger timestamp.
     let mut ledger = env.ledger().get();
     ledger.timestamp = LEDGER_TIMESTAMP;

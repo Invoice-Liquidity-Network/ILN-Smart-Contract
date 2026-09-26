@@ -28,6 +28,7 @@ use crate::errors::ContractError;
 use crate::events::{
     OracleCircuitReset, OracleCircuitTripped, OracleHealthRecorded, OracleRegistered,
     OracleUnregistered, PriceOutlierRejected, PriceSourceAdded, PriceSourceRemoved,
+    TwapEnabledForFeed, TwapWindowUpdated, TwapInsufficientData,
 };
 use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
 use crate::storage::DataKey;
@@ -880,6 +881,25 @@ pub fn is_twap_enabled(env: &Env, feed_type: OracleFeedType) -> bool {
         .unwrap_or(false)
 }
 
+/// The currently configured minimum TWAP observations.
+pub fn get_min_twap_observations(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MinTwapObservations)
+        .unwrap_or(2)
+}
+
+/// Update the minimum TWAP observations.
+///
+/// Access: Admin only.
+pub fn set_min_twap_observations(env: &Env, min_obs: u32) -> Result<(), ContractError> {
+    require_admin(env)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::MinTwapObservations, &min_obs);
+    Ok(())
+}
+
 /// Enable or disable the TWAP path for `feed_type`.
 ///
 /// Access: Admin only (governance-controlled via the same
@@ -894,6 +914,10 @@ pub fn set_twap_enabled(
     env.storage()
         .instance()
         .set(&DataKey::TwapEnabled(feed_type), &enabled);
+    env.events().publish(
+        (soroban_sdk::Symbol::new(env, "twap_enabled"), feed_type),
+        TwapEnabledForFeed { feed_type, enabled },
+    );
     Ok(())
 }
 
@@ -916,9 +940,14 @@ pub fn set_twap_window_ledgers(env: &Env, window_ledgers: u64) -> Result<(), Con
     if window_ledgers < MIN_TWAP_WINDOW_LEDGERS || window_ledgers > MAX_TWAP_WINDOW_LEDGERS {
         return Err(ContractError::InvalidTwapWindow);
     }
+    let old_window = get_twap_window_ledgers(env);
     env.storage()
         .instance()
         .set(&DataKey::TwapWindowLedgers, &window_ledgers);
+    env.events().publish(
+        (soroban_sdk::Symbol::new(env, "twap_window_updated"),),
+        TwapWindowUpdated { old_window, new_window: window_ledgers },
+    );
     Ok(())
 }
 
@@ -978,15 +1007,27 @@ pub fn get_twap_price(env: &Env, feed_type: OracleFeedType, token: &Address) -> 
     let samples: soroban_sdk::Vec<crate::twap::TwapSample> = env
         .storage()
         .persistent()
-        .get(&DataKey::TwapSamples(feed_type, token.clone()))?;
-    if samples.len() < 2 {
-        return None;
+        .get(&DataKey::TwapSamples(feed_type, token.clone()))
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    let min_obs = get_min_twap_observations(env);
+    if samples.len() < min_obs {
+        env.events().publish(
+            (soroban_sdk::Symbol::new(env, "twap_insufficient_data"), feed_type),
+            TwapInsufficientData {
+                feed_type,
+                token: token.clone(),
+                observations: samples.len(),
+                min_required: min_obs,
+            },
+        );
+        return Err(ContractError::InsufficientTwapObservations);
     }
     let window_ledgers = get_twap_window_ledgers(env);
     let window_seconds = window_ledgers.saturating_mul(LEDGER_SECONDS);
     let current_time = env.ledger().timestamp();
     let window_start = current_time.saturating_sub(window_seconds);
     crate::twap::twap_average(&samples, window_start, current_time)
+        .ok_or(ContractError::InsufficientTwapObservations)
 }
 
 /// TWAP-aware price read used by numeric `Price` consumers.
@@ -1004,9 +1045,7 @@ pub fn get_twap_aware_price(
     token: Address,
 ) -> Result<i128, ContractError> {
     if is_twap_enabled(&env, feed_type) {
-        if let Some(avg) = get_twap_price(&env, feed_type, &token) {
-            return Ok(avg);
-        }
+        return get_twap_price(&env, feed_type, &token);
     }
     get_verified_price(env, feed_type, token)
 }

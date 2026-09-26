@@ -709,6 +709,13 @@ function canonicalEventType(rawEventType: string): string {
       return 'InsurancePremiumRateGovernance';
     case 'cap_set':
       return 'InsuranceBalanceCapSet';
+    // TWAP Oracle events
+    case 'twap_enabled':
+      return 'TwapEnabledForFeed';
+    case 'twap_window_updated':
+      return 'TwapWindowUpdated';
+    case 'twap_insufficient_data':
+      return 'TwapInsufficientData';
     default:
       return normalized
         .split('_')
@@ -754,6 +761,9 @@ function inferRawEventType(contractEventType: string): string {
     InsuranceAdminCancelled: 'adm_cncl',
     InsurancePremiumRateGovernance: 'prem_gov',
     InsuranceBalanceCapSet: 'cap_set',
+    TwapEnabledForFeed: 'twap_enabled',
+    TwapWindowUpdated: 'twap_window_updated',
+    TwapInsufficientData: 'twap_insufficient_data',
   };
 
   return mapping[contractEventType] ?? contractEventType.toLowerCase();
