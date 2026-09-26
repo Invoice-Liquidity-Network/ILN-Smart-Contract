@@ -31,7 +31,12 @@ pub fn init(env: Env, admin: Address) {
 ///
 /// Access: Anyone
 pub fn set_config(env: Env, config: Config) -> Result<(), ContractError> {
-        set_config(&env, &config).map_err(|_| ContractError::ConfigErrorUnauthorized)?;
+        set_config(&env, &config).map_err(|e| match e {
+            crate::config::ConfigError::InvalidHighRepThreshold => ContractError::ConfigErrorInvalidHighRepThreshold,
+            crate::config::ConfigError::InvalidBonusBps => ContractError::ConfigErrorInvalidBonusBps,
+            crate::config::ConfigError::InvalidMinDiscountRate => ContractError::ConfigErrorInvalidMinDiscountRate,
+            crate::config::ConfigError::Unauthorized => ContractError::ConfigErrorUnauthorized,
+        })?;
         emit_config_set(
             &env,
             config.high_rep_threshold,
@@ -65,7 +70,12 @@ pub fn update_config(
             bonus_bps,
             min_discount_rate_bps,
         )
-        .map_err(|_| ContractError::ConfigErrorUnauthorized)
+        .map_err(|e| match e {
+            crate::config::ConfigError::InvalidHighRepThreshold => ContractError::ConfigErrorInvalidHighRepThreshold,
+            crate::config::ConfigError::InvalidBonusBps => ContractError::ConfigErrorInvalidBonusBps,
+            crate::config::ConfigError::InvalidMinDiscountRate => ContractError::ConfigErrorInvalidMinDiscountRate,
+            crate::config::ConfigError::Unauthorized => ContractError::ConfigErrorUnauthorized,
+        })
     }
 
     /// `get_reputation` contract entry point.
