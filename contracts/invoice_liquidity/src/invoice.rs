@@ -1,5 +1,5 @@
 pub use crate::storage::DataKey as StorageKey;
-use soroban_sdk::{contracttype, Address, BytesN, Env, IntoVal, Symbol};
+use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol};
 
 /// A nullable BytesN<32> that works with #[contracttype] derive.
 /// In Soroban SDK 21.x, `Option<BytesN<32>>` doesn't implement the required
@@ -513,8 +513,8 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                     && decay_config.decay_rate_bps > 0
                 {
                     // Calculate number of decay periods that have passed
-                    let periods_passed =
-                        u64::from(ledgers_since_activity).saturating_div(decay_config.decay_period_ledgers);
+                    let periods_passed = u64::from(ledgers_since_activity)
+                        .saturating_div(decay_config.decay_period_ledgers);
 
                     // Apply decay: score = score * (1 - decay_rate/10000)^periods
                     // Issue #601: periods_passed is unbounded (governance-
@@ -526,8 +526,9 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                         } else {
                             let mut decayed_score = rep.score as u64;
                             for _ in 0..periods_passed {
-                                let mut decay_amount =
-                                    decayed_score.saturating_mul(decay_config.decay_rate_bps as u64).saturating_div(10_000);
+                                let mut decay_amount = decayed_score
+                                    .saturating_mul(decay_config.decay_rate_bps as u64)
+                                    .saturating_div(10_000);
                                 if decay_amount == 0 && decayed_score > 0 {
                                     decay_amount = 1;
                                 }
@@ -535,7 +536,6 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                             }
                             decayed_score
                         };
-
 
                     let new_score = (decayed_score.min(100)) as u32;
                     if new_score != rep.score {
@@ -954,11 +954,34 @@ pub fn get_contract_stats(env: &Env) -> ContractStats {
     }
 }
 
+/// Price used to USD-normalize `token`'s volume in `get_contract_stats`.
+///
+/// Issue #860: this used to bypass the oracle registry entirely — a bare
+/// (panicking) `invoke_contract` against the legacy `Config.price_oracle`,
+/// with no circuit-breaker or health check, so stats would happily
+/// normalize with data the registry had already observed as tripped/stale
+/// (or trap the whole read if the oracle didn't respond). It now resolves
+/// through the registry (per-token/feed `Price` entry first, legacy
+/// `price_oracle` as fallback) and consults the shared health gate before
+/// trusting anything:
+///
+/// - circuit tripped for `(Price, token)` → `None`
+/// - last health snapshot stale → `None`
+/// - oracle query fails / returns garbage → `None` (non-panicking
+///   `try_invoke_contract` via `oracle_registry::query_price`)
+///
+/// `None` makes `get_contract_stats` skip that token's contribution instead
+/// of trusting a bad price or aborting the read.
 fn get_price_from_oracle(env: &Env, token: &Address) -> Option<i128> {
-    let config = crate::storage::get_config(env)?;
-    let oracle = config.price_oracle?;
-    let args = soroban_sdk::vec![env, token.clone().into_val(env)];
-    Some(env.invoke_contract::<i128>(&oracle, &Symbol::new(env, "get_price"), args))
+    use crate::oracle_registry::{
+        query_price, require_healthy_price_feed, resolve_oracle, OracleFeedType,
+    };
+
+    let feed = OracleFeedType::Price;
+    require_healthy_price_feed(env, feed, token).ok()?;
+    let oracle = resolve_oracle(env, feed, token)
+        .or_else(|| crate::storage::get_config(env).and_then(|config| config.price_oracle))?;
+    query_price(env, &oracle, token)
 }
 
 pub fn add_volume(env: &Env, token: &Address, amount: i128) {

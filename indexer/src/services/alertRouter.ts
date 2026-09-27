@@ -14,6 +14,15 @@ import { logger } from '../lib/logger.js';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type AlertSeverity = 'critical' | 'warning' | 'info';
+export type ReorgDepthClass = 'shallow' | 'deep';
+
+export function classifyReorgDepth(forkDepth: number): ReorgDepthClass {
+  return forkDepth > 3 ? 'deep' : 'shallow';
+}
+
+export function classifyReorgSeverity(_forkDepth: number): AlertSeverity {
+  return 'critical';
+}
 
 export type AlertCategory =
   | 'solvency_circuit_tripped'
