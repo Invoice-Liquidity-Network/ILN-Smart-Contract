@@ -28,7 +28,7 @@
     "@iln/test-utils": "workspace:*",
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "^4.1.9",
-    "execa": "^9.0.0",
+    "execa": "^10.0.1",
     "typescript": "^5.4.0",
     "vite": "^6.0.0",
     "vitest": "^4.1.9"
