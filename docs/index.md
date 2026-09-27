@@ -31,6 +31,7 @@ Start here when you are looking for ILN protocol, contract, service, or contribu
 | [Security Policy](security.md) | Vulnerability classes, reporting, response timelines, severity, and safe harbor. |
 | [Threat Model](threat-model.md) | Trust assumptions, risks, and mitigations. |
 | [Governance Security Summary](governance-security-summary.md) | Reviewer-facing synthesis of governance-hardening findings: quadratic voting, delegation bounds, snapshot timing, spam resistance, quorum, and the veto sunset roadmap. |
+| [Public Status Page](public-status-page.md) | Public, non-sensitive protocol-health page: what is shown/excluded, hosting decision, thresholds, failure behaviour. |
 | [Incident Response Runbook](incident-response-runbook.md) | Protocol-wide incident coordination: severity, roles, `pause()` decision authority, communication, and links to every component runbook. |
 | [Observability Standards](observability-standards.md) | Structured JSON logging format and the correlation-ID scheme across the indexer and notifications services. |
 | [Access Control](access-control.md) | Roles and authorization rules. |
