@@ -128,8 +128,8 @@ importers:
         specifier: ^5.21.2
         version: 5.21.2(graphql@16.14.2)
       ws:
-        specifier: ^8.16.0
-        version: 8.21.0
+        specifier: ^8.21.3
+        version: 8.21.3
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.8
@@ -8778,8 +8778,8 @@ packages:
     resolution: {integrity: sha512-/lg70HAjtkUgWPVZhZcm+T4hkL8Zbtp1nFNOn3lRrxnlv50SRBv7cR7RqR+GMsd3hUXy9hWBo4CHTbFTcOYwig==}
     engines: {node: '>=4'}
 
-  ws@5.2.5:
-    resolution: {integrity: sha512-G0gACQIjFmv7NqpaOAXEpe9nEtRYD6ZCy2Ip/B4EzR08qEwnf/wYJoQd3cjosPdnJsHkeh0j2tzOaIBZIOC1yA==}
+  ws@5.2.7:
+    resolution: {integrity: sha512-Yp1RXz/2h2qC/Gy7d5mqQcpuCWbXiO6FgYw/jTbSvytZF9wD7fh7od+6WzWR/y9EAnXcJjQZpPkYVmj3T2bj+Q==}
     peerDependencies:
       bufferutil: ^4.0.1
       utf-8-validate: ^5.0.2
@@ -8789,8 +8789,8 @@ packages:
       utf-8-validate:
         optional: true
 
-  ws@8.21.0:
-    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
+  ws@8.21.3:
+    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -11134,7 +11134,7 @@ snapshots:
       recast: 0.23.21
       semver: 7.8.5
       util: 0.12.5
-      ws: 8.21.0
+      ws: 8.21.3
     optionalDependencies:
       prettier: 2.8.8
     transitivePeerDependencies:
@@ -15725,7 +15725,7 @@ snapshots:
       whatwg-encoding: 1.0.5
       whatwg-mimetype: 2.3.0
       whatwg-url: 6.5.0
-      ws: 5.2.5
+      ws: 5.2.7
       xml-name-validator: 3.0.0
     transitivePeerDependencies:
       - bufferutil
@@ -18669,11 +18669,11 @@ snapshots:
     dependencies:
       mkdirp: 0.5.6
 
-  ws@5.2.5:
+  ws@5.2.7:
     dependencies:
       async-limiter: 1.0.1
 
-  ws@8.21.0: {}
+  ws@8.21.3: {}
 
   xml-name-validator@3.0.0: {}
 
