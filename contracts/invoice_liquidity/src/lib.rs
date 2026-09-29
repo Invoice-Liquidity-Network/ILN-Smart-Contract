@@ -243,7 +243,7 @@ pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "set_admin");
-        let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        let old_admin: Address = crate::storage::read_admin(&env)?;
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
             (Symbol::new(&env, "admin_changed"),),
@@ -818,11 +818,7 @@ pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), Contract
         let token_client = token_client(&env, &token);
         let contract_address = env.current_contract_address();
         let test_amount: i128 = 1_000_000;
-        let admin_address: Address = env
-            .storage()
-            .instance()
-            .get(&crate::storage::DataKey::Admin)
-            .unwrap();
+        let admin_address: Address = crate::storage::read_admin(&env)?;
         let before_balance = token_client.balance(&contract_address);
 
         token_client.transfer(&admin_address, &contract_address, &test_amount);
@@ -1321,16 +1317,33 @@ pub fn get_storage_version(env: Env) -> u32 {
             .unwrap_or(1)
     }
 
-    // Issue #539: Migrate storage from an older schema version to the current
-    // version. Can only be called by admin. This allows incremental storage
-    // layout changes to be applied atomically after an upgrade.
-    //
-    // Issue #859 documented exemption (no rate limit): storage migrations are
-    // one-shot, version-gated (a second call at the current version is a
-    // no-op) ops that typically must run *immediately* after an upgrade —
-    // clamping them to the upgrade cooldown would block time-critical
-    // post-upgrade repairs. Every call is already audited via
-    // `record_admin_action` and gated by `require_admin`.
+    /// `migrate` contract entry point. Migrates storage from an older
+    /// schema version to the current version. Incremental storage layout
+    /// changes are applied atomically after an upgrade (Issue #539).
+    ///
+    /// Issue #859 documented exemption (no rate limit): storage migrations
+    /// are one-shot, version-gated ops (a second call at the current
+    /// version is a no-op) that typically must run immediately after an
+    /// upgrade; clamping them to the upgrade cooldown would block
+    /// time-critical post-upgrade repairs. Every call is already audited
+    /// via `record_admin_action` and gated by `require_admin`.
+    ///
+    /// Access: Admin
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - Soroban runtime environment.
+    ///
+    /// # Returns
+    ///
+    /// The storage version after the migration completes (equal to
+    /// `CURRENT_STORAGE_VERSION` on success, or unchanged if already
+    /// current).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContractError::Unauthorized` when the caller is not the
+    /// configured admin.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "migrate");
@@ -2758,11 +2771,7 @@ pub fn transfer_lp_position(
         let protocol_fee = invoice.amount.checked_mul(fee_rate as i128).unwrap_or(0) / 10_000;
 
         if protocol_fee > 0 {
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&crate::storage::DataKey::Admin)
-                .unwrap();
+            let admin: Address = crate::storage::read_admin(&env)?;
             token.transfer(&contract_address, &admin, &protocol_fee);
         }
 

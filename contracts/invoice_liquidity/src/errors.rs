@@ -121,4 +121,22 @@ pub enum ContractError {
     InvalidDecayRate = 60,
     /// Issue #915: high_rep_threshold outside valid 0-100 range.
     InvalidRepThreshold = 61,
+    /// Issue #840: internal invariant broken, a loop index into the funders
+    /// vector was out of range. Returned instead of panicking so operators
+    /// see a typed error rather than a raw abort. Originally landed via PR
+    /// #941 at discriminant 60; restored here under 62 because dev commit
+    /// `6166a4b` (issues #914/#915) reused 60/61 and dropped these variants,
+    /// leaving `lib.rs` with 7 unresolved references and dev in a
+    /// non-compiling state. See PR-level comment for the full history.
+    FunderIndexOutOfBounds = 62,
+    /// Issue #840: internal invariant broken, a loop index into the fund
+    /// queue vector was out of range. Returned instead of panicking so
+    /// operators see a typed error rather than a raw abort. Restored here
+    /// under 63 alongside `FunderIndexOutOfBounds`; see above.
+    QueueIndexOutOfBounds = 63,
+    /// Issue #843: an admin-gated function was called before `initialize` had
+    /// populated the admin storage slot. Returned instead of panicking on the
+    /// bare `.unwrap()` that pre-existed on some read sites, so operators see
+    /// a typed error rather than a raw abort.
+    NotInitialized = 64,
 }

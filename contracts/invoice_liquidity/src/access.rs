@@ -13,11 +13,10 @@ pub enum Role {
 }
 
 pub fn require_admin(env: &Env) -> Result<(), ContractError> {
-    let admin: Address = env
-        .storage()
-        .instance()
-        .get(&StorageKey::Admin)
-        .ok_or(ContractError::Unauthorized)?;
+    // Issue #843: return NotInitialized rather than Unauthorized when the
+    // admin storage slot is absent, so a pre-init call is distinguishable
+    // from a wrong-caller call.
+    let admin: Address = crate::storage::read_admin(env)?;
     admin.require_auth();
     Ok(())
 }
