@@ -212,6 +212,7 @@ the narrative.
 | `get_pending_coverage` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_pool_health` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_premiums_paid` | Anyone | `contracts/insurance_pool/src/lib.rs` |
+| `get_reputation_contract` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_reserve_ratio_bps` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_review_window_seconds` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_risk_multiplier_denominator` | Anyone | `contracts/insurance_pool/src/lib.rs` |
@@ -234,6 +235,7 @@ the narrative.
 | `set_coverage_via_governance` | Caller (require_auth) | `contracts/insurance_pool/src/lib.rs` |
 | `set_min_reserve_ratio_bps` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_premium_rate_via_governance` | Caller (require_auth) | `contracts/insurance_pool/src/lib.rs` |
+| `set_reputation_contract` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_review_window_seconds` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_risk_multiplier` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `submit_claim_evidence` | Admin | `contracts/insurance_pool/src/lib.rs` |
