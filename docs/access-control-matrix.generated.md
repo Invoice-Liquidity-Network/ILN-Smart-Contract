@@ -67,6 +67,7 @@ the narrative.
 | `initialize` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `initialize_multisig_admin` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `is_oracle_circuit_tripped` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `is_paused` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `is_twap_enabled` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `join_fund_queue` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `list_invoices_by_lp` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
@@ -117,7 +118,7 @@ the narrative.
 | `transfer_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `transfer_lp_position` | Caller (require_auth) | `contracts/invoice_liquidity/src/lib.rs` |
 | `unpause` | Admin | `contracts/invoice_liquidity/src/lib.rs` |
-| `update_config` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `update_config` | Anyone; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_decay_params` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_fee_rate` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_fee_tiers` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
@@ -184,6 +185,7 @@ the narrative.
 | `set_freelancer_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 | `set_lp_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 | `set_payer_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
+| `verify_mint_authority` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 
 ## `insurance_pool`
 
