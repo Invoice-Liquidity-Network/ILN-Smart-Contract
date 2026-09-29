@@ -49,9 +49,8 @@ pub enum DataKey {
     /// Issue #645: ring-buffer slot for the admin action audit log, indexed
     /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
     AdminActionLog(u32),
-    /// Issue #645: monotonically increasing count of admin actions written
-    /// to the audit log. Used to derive the next ring-buffer slot and the
-    /// starting point for `get_recent_admin_actions`.
+    /// Issue #645: monotonically increasing sequence counter for the admin
+    /// action audit log (instance storage).
     AdminActionCount,
 
     // Stats (Persistent)
@@ -125,6 +124,7 @@ pub enum DataKey {
     /// by `MIN/MAX_TWAP_WINDOW_LEDGERS`. Distinct from the
     /// `max_oracle_age_ledgers` staleness bound.
     TwapWindowLedgers,
+    MinTwapObservations,
     /// Issue #815/#816: chronological TWAP price samples per feed + token,
     /// backing the opt-in windowed average.
     TwapSamples(crate::oracle_registry::OracleFeedType, Address),

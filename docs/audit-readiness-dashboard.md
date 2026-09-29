@@ -6,6 +6,13 @@
 
 This dashboard unifies audit and mainnet readiness into one tracking document. Items are categorized by audit phase (Pre-Audit → Audit → Post-Audit → Mainnet Launch).
 
+> **Live automated checks:** the consolidated dashboard of every automated
+> security gate with self-updating CI status badges and local re-run
+> commands lives in
+> [auditor-onboarding.md § Consolidated Automated-Audit Dashboard (Issue #862)](./auditor-onboarding.md#consolidated-automated-audit-dashboard-issue-862).
+> That section is authoritative for *current* pass/fail state; this document
+> remains the tracking record for checklist items and blockers.
+
 ---
 
 ## 🔴 BLOCKER: Must Close Before Audit Handoff

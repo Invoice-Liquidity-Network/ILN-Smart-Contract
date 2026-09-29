@@ -51,3 +51,7 @@ This row validates the public summary format before real findings exist. It demo
 - [security.md](security.md) — reporting, severity, safe harbor
 - [audit-readiness-dashboard.md](audit-readiness-dashboard.md) — pre/during/post audit tracking
 - [pre-audit-checklist.md](pre-audit-checklist.md) — gates before audit kickoff
+
+
+## Tracking Board
+For a structured, tabular view of finding statuses and PR links, see the [Audit Finding Tracking Board](audit-finding-tracking-board.md).
