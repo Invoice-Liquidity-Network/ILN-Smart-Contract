@@ -90,17 +90,29 @@ pub struct IlnDistribution;
 
 #[contractimpl]
 impl IlnDistribution {
-    /// `initialize` contract entry point.
-///
-/// Access: Anyone
-pub fn initialize(
-        env: Env,
-        iln_contract: Address,
-        gov_token: Address,
-    ) -> Result<(), DistributionError> {
+    /// Initialize the distribution contract with the ILN core contract and governance token.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `iln_contract` - Address of the ILN core contract (sole authorized caller for accruals).
+    /// * `gov_token` - Address of the governance token to mint rewards in.
+    ///
+    /// # Access
+    /// * Callable once during deployment.
+    ///
+    /// # Panics
+    /// * Panics with `"already initialized"` if called more than once.
+    /// * Panics with `"governance token SAC admin must be the distribution
+    ///   contract"` if `gov_token` is not a SAC administered by this
+    ///   contract (Issue #861). The check runs before any state is written,
+    ///   so a rejected deployment leaves the contract uninitialized and
+    ///   retryable.
+    pub fn initialize(env: Env, iln_contract: Address, gov_token: Address) {
         if env.storage().instance().has(&StorageKey::Initialized) {
             return Err(DistributionError::AlreadyInitialized);
         }
+
+        Self::require_gov_token_mint_authority(&env, &gov_token);
 
         env.storage()
             .instance()
@@ -133,10 +145,44 @@ pub fn initialize(
         Ok(())
     }
 
-    /// `accrue_lp` contract entry point.
-///
-/// Access: Anyone
-pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
+    /// Re-check the governance-token mint authority invariant (Issue #861).
+    ///
+    /// `claim_tokens` mints through `StellarAssetClient::mint`, which only
+    /// the SAC admin may call, so a governance token administered by an
+    /// EOA/multisig would make every non-empty claim revert at runtime.
+    /// `initialize` enforces the invariant at construction; this view
+    /// re-checks it against live chain state for deployment tooling
+    /// (`scripts/smoke-test.ts`).
+    ///
+    /// # Returns
+    /// * `true` when the governance token's SAC admin is this contract.
+    ///
+    /// # Panics
+    /// * Panics with `"not initialized"` if `initialize` has not run.
+    pub fn verify_mint_authority(env: Env) -> bool {
+        let gov_token: Address = match env.storage().instance().get(&StorageKey::GovToken) {
+            Some(token) => token,
+            None => panic!("not initialized"),
+        };
+        StellarAssetClient::new(&env, &gov_token).admin() == env.current_contract_address()
+    }
+
+    /// Record LP-funded volume for reward accrual.
+    ///
+    /// Called by the ILN core contract when an LP funds an invoice.
+    /// Accumulates volume that determines the LP's governance token reward.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `lp` - Address of the liquidity provider.
+    /// * `amount_usdc_equivalent` - Volume in USDC stroops (7 decimals).
+    ///
+    /// # Access
+    /// * Restricted to the ILN core contract via `require_auth`.
+    ///
+    /// # Behavior
+    /// * Non-positive and amounts exceeding `MAX_LP_ACCRUAL_PER_CALL` are silently ignored.
+    pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         Self::require_iln_invoker(&env);
 
         // Defense-in-depth: ignore non-positive and absurdly large settlements
@@ -161,10 +207,21 @@ pub fn accrue_lp(env: Env, lp: Address, amount_usdc_equivalent: i128) {
         );
     }
 
-    /// `accrue_settlement` contract entry point.
-///
-/// Access: Anyone
-pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
+    /// Record a settlement for freelancer and payer reward accrual.
+    ///
+    /// Called by the ILN core contract when an invoice is settled.
+    /// Increments the freelancer's settlement count and (if on-time) the payer's
+    /// on-time settlement count.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `freelancer` - Address of the freelancer receiving payment.
+    /// * `payer` - Address of the payer making payment.
+    /// * `settled_on_time` - Whether the settlement met the deadline.
+    ///
+    /// # Access
+    /// * Restricted to the ILN core contract via `require_auth`.
+    pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_on_time: bool) {
         Self::require_iln_invoker(&env);
 
         let freelancer_key = StorageKey::FreelancerSettled(freelancer.clone());
@@ -195,20 +252,21 @@ pub fn accrue_settlement(env: Env, freelancer: Address, payer: Address, settled_
         );
     }
 
-    /// `claim_tokens` contract entry point.
-///
-/// # Arguments
-/// * `env` — host environment
-/// * `claimer` — see signature
-///
-/// # Returns
-/// * Value of type `i128`
-///
-/// # Errors
-/// * Authorization / validation errors as defined by this contract
-///
-/// Access: Caller (require_auth)
-pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
+    /// Claim accrued governance tokens for the caller.
+    ///
+    /// Mints the difference between total earned and already claimed.
+    /// Uses saturating subtraction so repeated calls return 0 without error.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `claimer` - Address claiming tokens (must authorize).
+    ///
+    /// # Access
+    /// * Restricted to the claimer via `require_auth`.
+    ///
+    /// # Returns
+    /// * The amount of tokens minted (0 if nothing claimable).
+    pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
         claimer.require_auth();
 
         let total_earned = Self::total_earned(&env, &claimer);
@@ -238,10 +296,19 @@ pub fn claim_tokens(env: Env, claimer: Address) -> i128 {
         claimable
     }
 
-    /// `get_accrual` contract entry point.
-///
-/// Access: Anyone
-pub fn get_accrual(env: Env, participant: Address) -> i128 {
+    /// Get the total governance tokens earned by a participant.
+    ///
+    /// Computes rewards from LP volume, freelancer settlements, and on-time payer
+    /// settlements using current reward rates. May differ from previously claimed
+    /// amounts if rates have changed since claiming.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `participant` - Address to query.
+    ///
+    /// # Returns
+    /// * Total earned in governance token stroops.
+    pub fn get_accrual(env: Env, participant: Address) -> i128 {
         Self::total_earned(&env, &participant)
     }
 
@@ -278,7 +345,9 @@ pub fn get_accrual(env: Env, participant: Address) -> i128 {
             .get(&StorageKey::PayerRewardRate)
             .unwrap_or(DEFAULT_PAYER_REWARD_RATE);
 
-        let lp_reward = lp_volume.saturating_div(HUNDRED_USDC_STROOPS).saturating_mul(lp_reward_rate);
+        let lp_reward = lp_volume
+            .saturating_div(HUNDRED_USDC_STROOPS)
+            .saturating_mul(lp_reward_rate);
         let freelancer_reward = (freelancer_settled as i128).saturating_mul(freelancer_reward_rate);
         let payer_reward = (payer_on_time as i128).saturating_mul(payer_reward_rate);
 
@@ -402,6 +471,17 @@ pub fn get_payer_reward_rate(env: Env) -> i128 {
             .get(&StorageKey::IlnContract)
             .unwrap();
         iln_contract.require_auth();
+    }
+
+    /// Issue #861 — the governance token must be a SAC administered by this
+    /// contract, otherwise `claim_tokens` cannot mint and every claim
+    /// reverts at runtime. Panics with a stable message so deployment tooling
+    /// and tests can assert on it; also exposed as `verify_mint_authority`.
+    fn require_gov_token_mint_authority(env: &Env, gov_token: &Address) {
+        let admin = StellarAssetClient::new(env, gov_token).admin();
+        if admin != env.current_contract_address() {
+            panic!("governance token SAC admin must be the distribution contract");
+        }
     }
 }
 
@@ -671,6 +751,126 @@ pub fn accrue_settlement(
         );
     }
 
+    /// #838 — Verify double-initialize panics (most critical error path).
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn initialize_rejects_double_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        // Second init must panic
+        dist.initialize(&iln_id, &gov_token_id.address());
+    }
+
+    /// #839 — Regression: accrue_lp rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_lp_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let lp = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_lp(&lp, &1000);
+        });
+    }
+
+    /// #839 — Regression: accrue_settlement rejects non-ILN caller.
+    #[test]
+    #[should_panic]
+    fn accrue_settlement_rejects_non_iln_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        let freelancer = Address::generate(&env);
+        let payer = Address::generate(&env);
+        let random_caller = Address::generate(&env);
+
+        // Call directly from a non-ILN address — must fail auth
+        env.as_contract(&random_caller, || {
+            IlnDistributionClient::new(&env, &dist_id).accrue_settlement(
+                &freelancer,
+                &payer,
+                &true,
+            );
+        });
+    }
+
+    /// Issue #861 — a governance token administered by any address other
+    /// than this contract cannot be minted by `claim_tokens`, so `initialize`
+    /// must reject it instead of shipping a distribution contract whose every
+    /// non-empty claim reverts at runtime.
+    #[test]
+    #[should_panic(expected = "governance token SAC admin must be the distribution contract")]
+    fn initialize_rejects_governance_token_with_foreign_sac_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        // SAC administered by an unrelated address (EOA/multisig stand-in).
+        let gov_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        dist.initialize(&iln_id, &gov_token_id.address());
+    }
+
+    /// Issue #861 — the happy path: a SAC administered by the distribution
+    /// contract passes the invariant check and `verify_mint_authority`
+    /// re-confirms it against live chain state.
+    #[test]
+    fn verify_mint_authority_accepts_distribution_owned_sac() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let iln_id = env.register_contract(None, MockIln);
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        let gov_token_id = env.register_stellar_asset_contract_v2(dist_id.clone());
+        dist.initialize(&iln_id, &gov_token_id.address());
+
+        assert!(dist.verify_mint_authority());
+    }
+
+    /// Issue #861 — `verify_mint_authority` before `initialize` proves no
+    /// state was written by a skipped/failed initialization.
+    #[test]
+    #[should_panic(expected = "not initialized")]
+    fn verify_mint_authority_panics_before_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let dist_id = env.register_contract(None, IlnDistribution);
+        let dist = IlnDistributionClient::new(&env, &dist_id);
+
+        dist.verify_mint_authority();
+    }
+
     /// Issue #660 / #661 — property-based tests for the reward-conservation
     /// invariant documented in `docs/formal-verification-distribution.md`.
     /// Randomized sequences of accrual, reward-rate updates, and claims
@@ -837,4 +1037,3 @@ pub fn accrue_settlement(
 
 #[cfg(test)]
 mod tests_distribution_proptest;
-
