@@ -67,6 +67,7 @@ the narrative.
 | `initialize` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `initialize_multisig_admin` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `is_oracle_circuit_tripped` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `is_paused` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `is_twap_enabled` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `join_fund_queue` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `list_invoices_by_lp` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
@@ -117,7 +118,7 @@ the narrative.
 | `transfer_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `transfer_lp_position` | Caller (require_auth) | `contracts/invoice_liquidity/src/lib.rs` |
 | `unpause` | Admin | `contracts/invoice_liquidity/src/lib.rs` |
-| `update_config` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `update_config` | Anyone; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_decay_params` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_fee_rate` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `update_fee_tiers` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
@@ -184,6 +185,7 @@ the narrative.
 | `set_freelancer_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 | `set_lp_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 | `set_payer_reward_rate` | Anyone | `contracts/iln_distribution/src/lib.rs` |
+| `verify_mint_authority` | Anyone | `contracts/iln_distribution/src/lib.rs` |
 
 ## `insurance_pool`
 
@@ -212,6 +214,7 @@ the narrative.
 | `get_pending_coverage` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_pool_health` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_premiums_paid` | Anyone | `contracts/insurance_pool/src/lib.rs` |
+| `get_reputation_contract` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_reserve_ratio_bps` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_review_window_seconds` | Anyone | `contracts/insurance_pool/src/lib.rs` |
 | `get_risk_multiplier_denominator` | Anyone | `contracts/insurance_pool/src/lib.rs` |
@@ -234,6 +237,7 @@ the narrative.
 | `set_coverage_via_governance` | Caller (require_auth) | `contracts/insurance_pool/src/lib.rs` |
 | `set_min_reserve_ratio_bps` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_premium_rate_via_governance` | Caller (require_auth) | `contracts/insurance_pool/src/lib.rs` |
+| `set_reputation_contract` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_review_window_seconds` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `set_risk_multiplier` | Admin | `contracts/insurance_pool/src/lib.rs` |
 | `submit_claim_evidence` | Admin | `contracts/insurance_pool/src/lib.rs` |

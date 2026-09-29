@@ -1321,16 +1321,33 @@ pub fn get_storage_version(env: Env) -> u32 {
             .unwrap_or(1)
     }
 
-    // Issue #539: Migrate storage from an older schema version to the current
-    // version. Can only be called by admin. This allows incremental storage
-    // layout changes to be applied atomically after an upgrade.
-    //
-    // Issue #859 documented exemption (no rate limit): storage migrations are
-    // one-shot, version-gated (a second call at the current version is a
-    // no-op) ops that typically must run *immediately* after an upgrade —
-    // clamping them to the upgrade cooldown would block time-critical
-    // post-upgrade repairs. Every call is already audited via
-    // `record_admin_action` and gated by `require_admin`.
+    /// `migrate` contract entry point. Migrates storage from an older
+    /// schema version to the current version. Incremental storage layout
+    /// changes are applied atomically after an upgrade (Issue #539).
+    ///
+    /// Issue #859 documented exemption (no rate limit): storage migrations
+    /// are one-shot, version-gated ops (a second call at the current
+    /// version is a no-op) that typically must run immediately after an
+    /// upgrade; clamping them to the upgrade cooldown would block
+    /// time-critical post-upgrade repairs. Every call is already audited
+    /// via `record_admin_action` and gated by `require_admin`.
+    ///
+    /// Access: Admin
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - Soroban runtime environment.
+    ///
+    /// # Returns
+    ///
+    /// The storage version after the migration completes (equal to
+    /// `CURRENT_STORAGE_VERSION` on success, or unchanged if already
+    /// current).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ContractError::Unauthorized` when the caller is not the
+    /// configured admin.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "migrate");
@@ -1618,7 +1635,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             payer,
             token,
             amount,
-            due_date: due_date.try_into().unwrap(),
+            due_date: due_date
+                .try_into()
+                .map_err(|_| ContractError::InvalidDueDate)?,
             discount_rate,
             status: InvoiceStatus::Pending,
             funder: None,
@@ -1722,7 +1741,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         validate_invoice_terms_with_token(&env, amount, due_date, discount_rate, &invoice.token)?;
 
         invoice.amount = amount;
-        invoice.due_date = due_date.try_into().unwrap();
+        invoice.due_date = due_date
+            .try_into()
+            .map_err(|_| ContractError::InvalidDueDate)?;
         invoice.discount_rate = discount_rate;
 
         save_invoice(&env, &invoice);
@@ -1860,7 +1881,10 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 payer: params.payer,
                 token: params.token,
                 amount: params.amount,
-                due_date: params.due_date.try_into().unwrap(),
+                due_date: params
+                    .due_date
+                    .try_into()
+                    .map_err(|_| ContractError::InvalidDueDate)?,
                 discount_rate: params.discount_rate,
                 status: InvoiceStatus::Pending,
                 funder: None,
