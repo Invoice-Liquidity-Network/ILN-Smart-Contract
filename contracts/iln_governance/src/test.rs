@@ -122,7 +122,7 @@ fn setup() -> GovTestEnv {
     let rep_contract = ReputationBonusContractClient::new(&env, &rep_contract_id);
     rep_contract.init(&contract_id);
     rep_contract.set_config(&RepBonusConfig {
-        high_rep_threshold: 700,
+        high_rep_threshold: 70,
         bonus_bps: 100,
         min_discount_rate_bps: 50,
     });
@@ -1372,33 +1372,33 @@ fn test_list_proposals_pagination_and_ordering() {
     }
 
     // Test page 0, size 10 (should return ids 25 down to 16)
-    let page0 = t.contract.list_proposals(&None, &0, &10);
+    let page0 = t.contract.list_proposals(&None, &None, &10);
     assert_eq!(page0.len(), 10);
     assert_eq!(page0.get(0).unwrap().id, 25);
     assert_eq!(page0.get(9).unwrap().id, 16);
 
-    // Test page 1, size 10 (should return ids 15 down to 6)
-    let page1 = t.contract.list_proposals(&None, &1, &10);
+    // Test page 1 using cursor from page 0, size 10 (should return ids 15 down to 6)
+    let page1 = t.contract.list_proposals(&None, &Some(16), &10);
     assert_eq!(page1.len(), 10);
     assert_eq!(page1.get(0).unwrap().id, 15);
     assert_eq!(page1.get(9).unwrap().id, 6);
 
-    // Test page 2, size 10 (should return ids 5 down to 1)
-    let page2 = t.contract.list_proposals(&None, &2, &10);
+    // Test page 2 using cursor from page 1, size 10 (should return ids 5 down to 1)
+    let page2 = t.contract.list_proposals(&None, &Some(6), &10);
     assert_eq!(page2.len(), 5);
     assert_eq!(page2.get(0).unwrap().id, 5);
     assert_eq!(page2.get(4).unwrap().id, 1);
 
-    // Test empty page
-    let page3 = t.contract.list_proposals(&None, &3, &10);
+    // Test empty page (cursor at or below 1)
+    let page3 = t.contract.list_proposals(&None, &Some(1), &10);
     assert_eq!(page3.len(), 0);
 
     // Test zero page size
-    let page_zero = t.contract.list_proposals(&None, &0, &0);
+    let page_zero = t.contract.list_proposals(&None, &None, &0);
     assert_eq!(page_zero.len(), 0);
 
     // Test max page size enforced (request 30, get 20)
-    let page_max = t.contract.list_proposals(&None, &0, &30);
+    let page_max = t.contract.list_proposals(&None, &None, &30);
     assert_eq!(page_max.len(), 20);
     assert_eq!(page_max.get(0).unwrap().id, 25);
     assert_eq!(page_max.get(19).unwrap().id, 6);
@@ -1448,37 +1448,91 @@ fn test_list_proposals_status_filtering() {
     // List active
     let active_list = t
         .contract
-        .list_proposals(&Some(ProposalStatus::Active), &0, &10);
+        .list_proposals(&Some(ProposalStatus::Active), &None, &10);
     assert_eq!(active_list.len(), 1);
     assert_eq!(active_list.get(0).unwrap().id, id1);
 
     // List vetoed
     let vetoed_list = t
         .contract
-        .list_proposals(&Some(ProposalStatus::Vetoed), &0, &10);
+        .list_proposals(&Some(ProposalStatus::Vetoed), &None, &10);
     assert_eq!(vetoed_list.len(), 1);
     assert_eq!(vetoed_list.get(0).unwrap().id, id2);
 
     // List rejected
     let rejected_list = t
         .contract
-        .list_proposals(&Some(ProposalStatus::Rejected), &0, &10);
+        .list_proposals(&Some(ProposalStatus::Rejected), &None, &10);
     assert_eq!(rejected_list.len(), 1);
     assert_eq!(rejected_list.get(0).unwrap().id, id3);
 
     // List passed (none)
     let passed_list = t
         .contract
-        .list_proposals(&Some(ProposalStatus::Passed), &0, &10);
+        .list_proposals(&Some(ProposalStatus::Passed), &None, &10);
     assert_eq!(passed_list.len(), 0);
 
     // List all
-    let all_list = t.contract.list_proposals(&None, &0, &10);
+    let all_list = t.contract.list_proposals(&None, &None, &10);
     assert_eq!(all_list.len(), 3);
     // Order is most recent first (id3, id2, id1)
     assert_eq!(all_list.get(0).unwrap().id, id3);
     assert_eq!(all_list.get(1).unwrap().id, id2);
     assert_eq!(all_list.get(2).unwrap().id, id1);
+}
+
+#[test]
+fn test_list_proposals_concurrent_write_stability() {
+    let t = setup();
+    let action = ProposalAction::UpdateFeeRate(100);
+
+    // Create 20 baseline proposals (ids 1..=20).
+    for _ in 0..20 {
+        t.contract
+            .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+    }
+
+    // Full unpaginated baseline read of the 20 proposals (most-recent-first: ids 20 down to 1).
+    let unpaginated = t.contract.list_proposals(&None, &None, &20);
+    assert_eq!(unpaginated.len(), 20);
+
+    // Fetch page 1 (cursor: None, page_size: 10) -> returns ids 20 down to 11.
+    let page1 = t.contract.list_proposals(&None, &None, &10);
+    assert_eq!(page1.len(), 10);
+    assert_eq!(page1.get(0).unwrap().id, 20);
+    let last_id_page1 = page1.get(9).unwrap().id;
+    assert_eq!(last_id_page1, 11);
+
+    // Concurrently create a new proposal (id 21) while client was between page 1 and page 2.
+    let new_id = t
+        .contract
+        .create_proposal(&t.proposer, &action, &dummy_hash(&t.env), &0);
+    assert_eq!(new_id, 21);
+
+    // Fetch page 2 using the stable cursor from the end of page 1 (cursor: Some(11), page_size: 10).
+    let page2 = t.contract.list_proposals(&None, &Some(last_id_page1), &10);
+    assert_eq!(page2.len(), 10);
+    assert_eq!(page2.get(0).unwrap().id, 10);
+    assert_eq!(page2.get(9).unwrap().id, 1);
+
+    // Confirm no proposal from the original dataset is skipped or duplicated across the two calls.
+    let mut combined_ids = soroban_sdk::Vec::new(&t.env);
+    for p in page1.iter() {
+        combined_ids.push_back(p.id);
+    }
+    for p in page2.iter() {
+        assert!(
+            !combined_ids.contains(&p.id),
+            "proposal {} duplicated across paginated calls",
+            p.id
+        );
+        combined_ids.push_back(p.id);
+    }
+
+    assert_eq!(combined_ids.len(), 20);
+    for i in 0..20 {
+        assert_eq!(combined_ids.get(i).unwrap(), unpaginated.get(i).unwrap().id);
+    }
 }
 
 // ── Issue #545: UpdateDecayParams proposal ──────────────────────────────────
@@ -2295,9 +2349,9 @@ fn test_governance_reputation_bonus_params_e2e() {
     let t = setup();
     let hash = dummy_hash(&t.env);
 
-    // Baseline set in setup(): high_rep_threshold=700, bonus_bps=100,
+    // Baseline set in setup(): high_rep_threshold=70, bonus_bps=100,
     // min_discount_rate_bps=50. Propose a genuine change to all three.
-    let new_threshold = 800_u32;
+    let new_threshold = 80_u32;
     let new_bonus_bps = 150_u32;
     let new_min_discount_rate_bps = 75_u32;
 
@@ -2338,7 +2392,7 @@ fn test_governance_reputation_bonus_params_e2e() {
     // reputation_bonus's Config must still hold the pre-proposal values —
     // nothing should change before the timelock actually expires.
     let mid_config = t.rep_contract.get_config();
-    assert_eq!(mid_config.high_rep_threshold, 700);
+    assert_eq!(mid_config.high_rep_threshold, 70);
     assert_eq!(mid_config.bonus_bps, 100);
     assert_eq!(mid_config.min_discount_rate_bps, 50);
 

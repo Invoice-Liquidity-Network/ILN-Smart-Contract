@@ -1448,7 +1448,7 @@ pub fn cast_vote(
         };
 
         // Issue #64: add delegated weight.
-        let delegated: i128 = env.storage().persistent().get(&StorageKey::DelegatedToMeSnapshot(proposal_id, voter.clone())).unwrap_or_else(|| env
+        let delegated: i128 = env
             .storage()
             .persistent()
             .get(&StorageKey::DelegatedToMe(voter.clone()))
@@ -2106,12 +2106,12 @@ pub fn get_proposal(env: Env, proposal_id: u64) -> Result<GovernanceProposal, Go
     }
 
     /// `list_proposals` contract entry point.
-///
-/// Access: Anyone
-pub fn list_proposals(
+    ///
+    /// Access: Anyone
+    pub fn list_proposals(
         env: Env,
         status: Option<ProposalStatus>,
-        page: u32,
+        cursor: Option<u64>,
         page_size: u32,
     ) -> Vec<GovernanceProposal> {
         let count: u64 = env
@@ -2126,10 +2126,17 @@ pub fn list_proposals(
         }
 
         let actual_page_size = if page_size > 20 { 20 } else { page_size };
-        let skip = page.saturating_mul(actual_page_size) as u64;
-        let mut skipped = 0_u64;
+        let start_id = match cursor {
+            Some(c) => {
+                if c <= 1 {
+                    return result;
+                }
+                (c - 1).min(count)
+            }
+            None => count,
+        };
 
-        for id in (1..=count).rev() {
+        for id in (1..=start_id).rev() {
             if let Some(proposal) = env
                 .storage()
                 .persistent()
@@ -2141,13 +2148,9 @@ pub fn list_proposals(
                 };
 
                 if matches_status {
-                    if skipped < skip {
-                        skipped += 1;
-                    } else {
-                        result.push_back(proposal);
-                        if result.len() == actual_page_size {
-                            break;
-                        }
+                    result.push_back(proposal);
+                    if result.len() == actual_page_size {
+                        break;
                     }
                 }
             }
