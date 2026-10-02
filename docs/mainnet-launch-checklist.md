@@ -61,7 +61,7 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | CONTRIBUTING up to date | Confirm contribution, review, testing, and local setup expectations are current. | Community lead | In progress | [CONTRIBUTING](../CONTRIBUTING.md) |
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
-| CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
+| CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Complete | [CHANGELOG](../CHANGELOG.md) |
 | Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | Complete | [MAINTAINERS.md](../MAINTAINERS.md), [CODEOWNERS](../.github/CODEOWNERS) |
 | Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Complete | [Support Channels](support-channels.md) |
 

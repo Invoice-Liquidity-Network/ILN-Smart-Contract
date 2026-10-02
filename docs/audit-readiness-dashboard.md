@@ -101,10 +101,10 @@ These items **must reach ✅ Complete** before mainnet deployment but are not bl
 | Glossary complete (DeFi, invoice factoring, Stellar, ILN-specific terms) | ✅ Complete | [#301](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/301) | Docs lead | Published |
 | SDK integration guide complete (examples match current contracts, methods, error handling) | ⚠️ In Progress | [sdk-integration.md](sdk-integration.md) | SDK lead | Verify with deployed testnet |
 | Security policy linked from root, docs index, release checklist | ⚠️ In Progress | [SECURITY.md](../SECURITY.md) | Docs lead | Links in README, CONTRIBUTING, releases |
-| Final mainnet usage & migration notes published | ❌ Not started | [CHANGELOG.md](../CHANGELOG.md) | Release lead | Known limitations, upgrade path |
+| Final mainnet usage & migration notes published | ✅ Complete | [mainnet-launch-notes.md](mainnet-launch-notes.md) | Release lead | Known limitations, upgrade path |
 | CONTRIBUTING guide up to date (contribution, review, testing, local setup) | ⚠️ In Progress | [CONTRIBUTING.md](../CONTRIBUTING.md) | Community lead | Verify all commands still work |
 | SECURITY.md up to date (reporting channels, response SLAs, safe-harbor) | ⚠️ In Progress | [SECURITY.md](../SECURITY.md) | Security lead | Align with detailed policy |
-| CHANGELOG reviewed for launch release | ❌ Not started | [CHANGELOG.md](../CHANGELOG.md) | Release lead | Run `make changelog` and review |
+| CHANGELOG reviewed for launch release | ✅ Complete | [CHANGELOG.md](../CHANGELOG.md) | Release lead | Curated Mainnet Launch release section authored and reviewed |
 | Maintainer ownership confirmed (CODEOWNERS, approvers, emergency contacts) | ✅ Complete | [MAINTAINERS.md](../MAINTAINERS.md) | Community lead | Team owners + emergency channels documented |
 | Public support channels ready (bug reporting, integration questions, incidents) | ✅ Complete | [support-channels.md](support-channels.md) | Community lead | Issues + security live; Discussions/Discord deferred pre-launch |
 
