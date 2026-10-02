@@ -413,7 +413,7 @@ export async function hasVoted(
 /**
  * List proposals, optionally filtered by status and/or proposer (read-only).
  * @param filter Optional filters (status sent on-chain, proposer applied client-side)
- * @param page Page number (0-indexed, defaults to 0)
+ * @param cursor Optional proposal ID cursor (reads proposals before this ID; defaults to latest)
  * @param pageSize Results per page (defaults to 20, max 20)
  */
 export async function listProposals(
@@ -422,7 +422,7 @@ export async function listProposals(
   sourceAccount: Account,
   networkPassphrase: string,
   filter?: ProposalFilter,
-  page: number = 0,
+  cursor?: bigint | number,
   pageSize: number = 20
 ): Promise<Proposal[]> {
   const contract = new Contract(contractAddress);
@@ -430,10 +430,14 @@ export async function listProposals(
     filter?.status !== undefined
       ? nativeToScVal({ tag: filter.status, values: [] }, { type: "instance" })
       : nativeToScVal(undefined);
+  const cursorScVal =
+    cursor !== undefined
+      ? nativeToScVal(BigInt(cursor), { type: "u64" })
+      : nativeToScVal(undefined);
   const op = contract.call(
     "list_proposals",
     statusScVal,
-    nativeToScVal(page, { type: "u32" }),
+    cursorScVal,
     nativeToScVal(pageSize, { type: "u32" })
   );
 
