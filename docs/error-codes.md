@@ -102,6 +102,11 @@ Source of truth: [`contracts/iln_governance/src/lib.rs`](../contracts/iln_govern
 | 19 | `InsufficientProposerBalance` | Proposer does not hold the minimum required token balance. | Proposer's token balance is below `MinProposalBalance`. | Acquire enough governance tokens to meet the proposal threshold. |
 | 28 | `NotInitialized` | Contract called before `initialize()`. | Calling an admin-gated function on a contract instance that was never initialized. | Call `initialize()` first. |
 | 29 | `InsufficientHoldingPeriod` | Voter has no balance checkpoint predating the proposal by `MIN_VOTE_HOLD_LEDGERS` (10 ledgers). | First vote (or delegation) from a newly funded address; possible flash-loan attempt. | Call `checkpoint_balance` and wait ~10 ledgers (or vote on a later proposal). |
+| 30 | `DelayReductionBypassesScheduled` | Execution delay reduction is blocked while scheduled proposals remain pending. | Admin attempted to reduce `execution_delay` while proposals are waiting in timelock. | Wait for scheduled proposals to execute before reducing the delay. |
+| 31 | `ContractPaused` | Governance execution is currently paused. | Admin paused proposal execution for emergency response. | Wait for governance execution to be unpaused. |
+| 32 | `ProposalAlreadyExecuted` | Proposal has already been executed. | Delayed execution replay attempt on an already executed proposal. | Treat proposal as terminal; do not retry execution. |
+| 33 | `ConsentRequired` | Veto requires explicit non-empty consent reason hash. | Veto signer called `veto_proposal` with an empty (all zeros) reason hash. | Provide a non-empty 32-byte hash representing the veto justification. |
+| 34 | `VetoReasonMismatch` | Signer's reason hash does not match prior veto approvals. | Veto multisig signer submitted a reason hash differing from prior signers' consent. | Signers must coordinate and consent to the exact same veto reason hash. |
 
 ---
 

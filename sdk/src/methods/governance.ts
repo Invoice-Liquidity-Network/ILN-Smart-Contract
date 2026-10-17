@@ -115,6 +115,21 @@ export class GovernanceContractError extends Error {
   static InvalidVetoMultisigConfig = class InvalidVetoMultisigConfig extends GovernanceContractError {
     constructor(msg = "Veto signer list/threshold combination is invalid") { super(msg, 25); }
   };
+  static DelayReductionBypassesScheduled = class DelayReductionBypassesScheduled extends GovernanceContractError {
+    constructor(msg = "Reducing execution delay is blocked while scheduled proposals are pending in timelock") { super(msg, 30); }
+  };
+  static ContractPaused = class ContractPaused extends GovernanceContractError {
+    constructor(msg = "Governance execution is currently paused") { super(msg, 31); }
+  };
+  static ProposalAlreadyExecuted = class ProposalAlreadyExecuted extends GovernanceContractError {
+    constructor(msg = "Proposal has already been executed") { super(msg, 32); }
+  };
+  static ConsentRequired = class ConsentRequired extends GovernanceContractError {
+    constructor(msg = "Veto requires explicit non-empty consent reason hash") { super(msg, 33); }
+  };
+  static VetoReasonMismatch = class VetoReasonMismatch extends GovernanceContractError {
+    constructor(msg = "Signer reason hash does not match consented reason hash for this veto") { super(msg, 34); }
+  };
 
   static fromError(error: unknown): Error {
     const match = String(error).match(/Error\(Contract, (\d+)\)/);
@@ -145,6 +160,11 @@ export class GovernanceContractError extends Error {
       case 23: return new GovernanceContractError.NotVetoSigner();
       case 24: return new GovernanceContractError.VetoAlreadyApproved();
       case 25: return new GovernanceContractError.InvalidVetoMultisigConfig();
+      case 30: return new GovernanceContractError.DelayReductionBypassesScheduled();
+      case 31: return new GovernanceContractError.ContractPaused();
+      case 32: return new GovernanceContractError.ProposalAlreadyExecuted();
+      case 33: return new GovernanceContractError.ConsentRequired();
+      case 34: return new GovernanceContractError.VetoReasonMismatch();
       default: return new GovernanceContractError(`iln_governance error: ${String(error)}`);
     }
   }
@@ -914,3 +934,155 @@ export async function getAppliedVoteWeight(
   const decoded = scValToNative(sim.result.retval);
   return decoded === null || decoded === undefined ? undefined : BigInt(String(decoded));
 }
+
+/**
+ * Emergency pause for governance execution (Issue #984).
+ */
+export async function pauseGovernance(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  adminAddress: string,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string
+): Promise<{ txHash: string }> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "pause",
+    nativeToScVal(adminAddress, { type: "address" })
+  );
+
+  const { txHash } = await sendGovernanceCall(
+    server,
+    sourceAccount,
+    networkPassphrase,
+    op,
+    signTransaction,
+    GovernanceContractError.fromError
+  );
+  return { txHash };
+}
+
+/**
+ * Unpause governance execution (Issue #984).
+ */
+export async function unpauseGovernance(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  adminAddress: string,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string
+): Promise<{ txHash: string }> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "unpause",
+    nativeToScVal(adminAddress, { type: "address" })
+  );
+
+  const { txHash } = await sendGovernanceCall(
+    server,
+    sourceAccount,
+    networkPassphrase,
+    op,
+    signTransaction,
+    GovernanceContractError.fromError
+  );
+  return { txHash };
+}
+
+/**
+ * Returns whether governance execution is currently paused (Issue #984).
+ */
+export async function isGovernancePaused(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<boolean> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call("is_paused");
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw GovernanceContractError.fromError(sim.error);
+  }
+  if (!sim.result?.retval) {
+    return false;
+  }
+  return scValToNative(sim.result.retval) as boolean;
+}
+
+/**
+ * Returns whether a proposal has already been executed (replay protection) (Issue #986).
+ */
+export async function isProposalExecuted(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  proposalId: bigint,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<boolean> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "is_proposal_executed",
+    nativeToScVal(proposalId, { type: "u64" })
+  );
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw GovernanceContractError.fromError(sim.error);
+  }
+  if (!sim.result?.retval) {
+    return false;
+  }
+  return scValToNative(sim.result.retval) as boolean;
+}
+
+/**
+ * Returns the current governance execution nonce (Issue #986).
+ */
+export async function getExecutionNonce(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<bigint> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call("get_execution_nonce");
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw GovernanceContractError.fromError(sim.error);
+  }
+  if (!sim.result?.retval) {
+    return 0n;
+  }
+  const decoded = scValToNative(sim.result.retval);
+  return BigInt(String(decoded));
+}
+

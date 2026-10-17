@@ -37,16 +37,18 @@ Competing concerns:
 
 ## Decision
 
-**No timelock delay in v1.** `execute_proposal` is callable by anyone
-immediately after the 3-day voting window closes, provided quorum and majority
-criteria are met. The admin veto power serves as the emergency brake during the
-early phase.
+**Phase 3 Timelock Implementation and Hardening (Issues #983, #984, #986, #988).**
 
-The `TimelockNotExpired` error code is reserved in the error enum for a future
-timelock implementation.
+While v1 initially launched without an execution delay, ADR-012 Phase 3 established a governance execution timelock with the following critical security controls:
 
-A timelock **must be introduced before the admin veto power is disabled**
-(which must happen before mainnet launch per the governance documentation).
+1. **Configurable Execution Delay & Queue Ordering (Issue #983):**
+   `set_execution_delay(delay)` configures the delay between proposal passing and execution. To prevent delay reductions from bypassing scheduled proposals, reductions are blocked while pending proposals remain in timelock (`DelayReductionBypassesScheduled`), and newly scheduled proposals cannot receive an `eta_ledger` earlier than any previously scheduled proposal.
+2. **Emergency Pause Semantics Without Timelock Bypass (Issue #984):**
+   Governance provides `pause()` / `unpause()` controls for emergency incident response. Crucially, emergency pause **cannot skip timelock**: proposal execution is blocked while paused, and unpausing continues to enforce `current_ledger >= proposal.eta_ledger` strictly without shortcuts.
+3. **Replay Protection for Delayed Executions (Issue #986):**
+   Delayed proposal executions are guarded against replay via persistent `ProposalExecutedRecord(proposal_id)` records and monotonic `ExecutionNonce` counters. Attempting to re-execute a completed proposal fails fail-closed with `ProposalAlreadyExecuted`.
+4. **Explicit Consent for Veto Transitions (Issue #988):**
+   The multisig veto mechanism (`veto_proposal`) enforces explicit consent: signers must provide a non-empty `reason_hash` (`ConsentRequired`) and all approving signers must consent to the exact same `reason_hash` (`VetoReasonMismatch`), preventing ambiguous or conflicting veto approvals.
 
 ## Alternatives Considered
 
@@ -55,27 +57,19 @@ A timelock **must be introduced before the admin veto power is disabled**
 | **24-hour timelock** | Adds friction without meaningful security benefit while the admin veto exists; a 24-hour window is too short for large token holders to coordinate a response anyway. |
 | **48-hour timelock** | Same reasoning as 24-hour; the admin veto already covers the early phase. |
 | **7-day timelock (Compound-style)** | Appropriate for a mature, decentralised protocol, but excessive for a protocol in active parameter tuning. Would slow down legitimate fee adjustments. |
-| **Configurable timelock (governance sets the delay)** | Correct long-term design, but adds implementation complexity at v1. Deferred to a future upgrade. |
+| **Configurable timelock (governance sets the delay)** | Implemented in Phase 3 with strict delay-reduction bounds and FIFO scheduling protection (Issue #983). |
 | **Optimistic execution with challenge period** | Complex to implement correctly; requires a separate challenge mechanism and bond. Out of scope for v1. |
 
 ## Consequences
 
 **Positive:**
-- Proposals can be executed immediately after voting closes, enabling rapid
-  response to protocol conditions.
-- Implementation is simpler — no timelock storage, no expiry checks on
-  execution.
-- The admin veto provides equivalent protection during the early phase when
-  token distribution is concentrated.
+- Proposals are safely timelocked, allowing token holders and participants to react before state changes execute.
+- Delay reductions cannot manipulate or bypass execution queue order.
+- Emergency pause controls provide incident containment without introducing backdoors to bypass timelocks.
+- Replay protection guarantees that delayed proposal execution is strictly idempotent and one-time.
+- Explicit multisig consent ensures transparent, unified veto reasoning.
 
 **Negative / Trade-offs:**
-- Without a timelock, a proposal that passes cannot be stopped by the community
-  once the admin veto is disabled. This is a significant risk for a mature,
-  decentralised protocol.
-- The absence of a timelock is a known deviation from DeFi governance best
-  practices (MakerDAO, Compound, Uniswap all use timelocks of 2–7 days).
-- **Action required:** A timelock must be implemented and activated via a
-  governance upgrade before `disable_veto_power()` is called. Failure to do
-  so leaves the protocol without any execution delay after full decentralisation.
-- The `TimelockNotExpired` error is reserved but unimplemented; contributors
-  must not assume it is enforced.
+- Execution requires two transactions when delay > 0 (one to pass and queue, one to execute after delay).
+- Admin veto must still be formally disabled via governance proposal prior to final mainnet decentralization.
+

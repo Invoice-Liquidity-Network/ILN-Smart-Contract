@@ -103,6 +103,19 @@ pub enum GovernanceError {
     /// `checkpoint_balance` and wait out the holding period (or vote on a
     /// later proposal) before voting.
     InsufficientHoldingPeriod = 29,
+    /// Issue #983: Reducing execution delay is blocked while scheduled
+    /// proposals are pending in timelock, preventing delay reduction from bypassing them.
+    DelayReductionBypassesScheduled = 30,
+    /// Issue #984: Governance execution is currently paused.
+    ContractPaused = 31,
+    /// Issue #986: Proposal has already been executed (replay protection).
+    ProposalAlreadyExecuted = 32,
+    /// Issue #988: Veto requires explicit consent (non-empty reason hash and
+    /// matching consent across all veto signers).
+    ConsentRequired = 33,
+    /// Issue #988: Signer's reason hash does not match the reason hash consented
+    /// to by prior veto approvals for this proposal.
+    VetoReasonMismatch = 34,
 }
 
 // ================================================================
@@ -385,6 +398,20 @@ pub struct VetoApproved {
     pub threshold: u32,
 }
 
+/// Issue #984: emitted when governance execution is paused.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovernancePaused {
+    pub admin: Address,
+}
+
+/// Issue #984: emitted when governance execution is unpaused.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovernanceUnpaused {
+    pub admin: Address,
+}
+
 // ================================================================
 // Storage keys
 // ================================================================
@@ -460,6 +487,16 @@ pub enum StorageKey {
     /// `GovernanceProposal` XDR schema — and every persisted proposal —
     /// stays byte-compatible.
     ProposalCreatedLedger(u64),
+    /// Issue #983: Maximum eta_ledger across scheduled proposals in Passed status.
+    MaxScheduledEta,
+    /// Issue #984: Emergency pause state for proposal execution.
+    Paused,
+    /// Issue #986: Permanent execution record preventing replay of delayed proposals.
+    ProposalExecutedRecord(u64),
+    /// Issue #986: Global monotonic execution nonce.
+    ExecutionNonce,
+    /// Issue #988: Pending veto multisig consented reason hash.
+    VetoReasonHash(u64),
 }
 
 // ================================================================
@@ -1548,6 +1585,22 @@ pub fn set_execution_delay(
             .instance()
             .get(&StorageKey::ExecutionDelay)
             .unwrap_or(0_u32);
+
+        // Issue #983: Prevent delay reduction from bypassing scheduled proposals.
+        // If the new delay is smaller than the old delay, verify that there are no
+        // pending scheduled proposals whose timelock eta has not elapsed yet.
+        if delay < old_value {
+            let max_scheduled: u32 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::MaxScheduledEta)
+                .unwrap_or(0_u32);
+            let current_ledger = env.ledger().sequence();
+            if current_ledger < max_scheduled {
+                return Err(GovernanceError::DelayReductionBypassesScheduled);
+            }
+        }
+
         env.storage()
             .instance()
             .set(&StorageKey::ExecutionDelay, &delay);
@@ -1565,13 +1618,93 @@ pub fn set_execution_delay(
     }
 
     /// `get_execution_delay` contract entry point.
-///
-/// Access: Anyone
-pub fn get_execution_delay(env: Env) -> u32 {
+    ///
+    /// Access: Anyone
+    pub fn get_execution_delay(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&StorageKey::ExecutionDelay)
             .unwrap_or(0)
+    }
+
+    /// Issue #984: Emergency pause for governance proposal execution.
+    /// Callable by the stored admin.
+    pub fn pause(env: Env, admin: Address) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        if let Some(stored_admin) = env
+            .storage()
+            .instance()
+            .get::<StorageKey, Address>(&StorageKey::Admin)
+        {
+            if admin != stored_admin {
+                return Err(GovernanceError::Unauthorized);
+            }
+        } else {
+            return Err(GovernanceError::NotInitialized);
+        }
+
+        env.storage().instance().set(&StorageKey::Paused, &true);
+        env.events().publish(
+            (Symbol::new(&env, "governance_paused"), admin.clone()),
+            GovernancePaused { admin },
+        );
+        Ok(())
+    }
+
+    /// Issue #984: Unpause governance execution.
+    /// Callable by the stored admin.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), GovernanceError> {
+        admin.require_auth();
+        if let Some(stored_admin) = env
+            .storage()
+            .instance()
+            .get::<StorageKey, Address>(&StorageKey::Admin)
+        {
+            if admin != stored_admin {
+                return Err(GovernanceError::Unauthorized);
+            }
+        } else {
+            return Err(GovernanceError::NotInitialized);
+        }
+
+        env.storage().instance().set(&StorageKey::Paused, &false);
+        env.events().publish(
+            (Symbol::new(&env, "governance_unpaused"), admin.clone()),
+            GovernanceUnpaused { admin },
+        );
+        Ok(())
+    }
+
+    /// Issue #984: Returns whether governance execution is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&StorageKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Issue #983: Returns the maximum scheduled eta_ledger across proposals.
+    pub fn get_max_scheduled_eta(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxScheduledEta)
+            .unwrap_or(0_u32)
+    }
+
+    /// Issue #986: Returns whether a proposal has been executed (replay protection check).
+    pub fn is_proposal_executed(env: Env, proposal_id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ProposalExecutedRecord(proposal_id))
+            .unwrap_or(false)
+    }
+
+    /// Issue #986: Returns the global execution nonce.
+    pub fn get_execution_nonce(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::ExecutionNonce)
+            .unwrap_or(0_u64)
     }
 
     // ── execute_proposal ─────────────────────────────────────────
@@ -1580,11 +1713,30 @@ pub fn get_execution_delay(env: Env) -> u32 {
 ///
 /// Access: Anyone
 pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
+        // Issue #984: Emergency pause semantics — cannot execute while paused.
+        if Self::is_paused(env.clone()) {
+            return Err(GovernanceError::ContractPaused);
+        }
+
+        // Issue #986: Replay protection for delayed executions — reject already executed proposals.
+        if env
+            .storage()
+            .persistent()
+            .get::<StorageKey, bool>(&StorageKey::ProposalExecutedRecord(proposal_id))
+            .unwrap_or(false)
+        {
+            return Err(GovernanceError::ProposalAlreadyExecuted);
+        }
+
         let mut proposal: GovernanceProposal = env
             .storage()
             .persistent()
             .get(&StorageKey::Proposal(proposal_id))
             .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if proposal.status == ProposalStatus::Executed {
+            return Err(GovernanceError::ProposalAlreadyExecuted);
+        }
 
         let now = env.ledger().timestamp();
         if now < proposal.voting_end {
@@ -1644,7 +1796,18 @@ pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), GovernanceErro
                 .instance()
                 .get(&StorageKey::ExecutionDelay)
                 .unwrap_or(0_u32);
-            proposal.eta_ledger = env.ledger().sequence().saturating_add(delay);
+            let calculated_eta = env.ledger().sequence().saturating_add(delay);
+            let max_scheduled: u32 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::MaxScheduledEta)
+                .unwrap_or(0_u32);
+            // Issue #983: Ensure eta_ledger cannot bypass previously scheduled proposals.
+            let eta = calculated_eta.max(max_scheduled);
+            proposal.eta_ledger = eta;
+            env.storage()
+                .instance()
+                .set(&StorageKey::MaxScheduledEta, &eta);
 
             env.storage()
                 .persistent()
@@ -1814,6 +1977,21 @@ pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), GovernanceErro
                 .persistent()
                 .set(&StorageKey::Proposal(proposal_id), &proposal);
 
+            // Issue #986: Permanent replay protection record and monotonic execution nonce.
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ProposalExecutedRecord(proposal_id), &true);
+
+            let nonce: u64 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::ExecutionNonce)
+                .unwrap_or(0_u64);
+            let next_nonce = nonce.saturating_add(1);
+            env.storage()
+                .instance()
+                .set(&StorageKey::ExecutionNonce, &next_nonce);
+
             // Issue #814: executed — ensure refund (no-op if already
             // refunded at Passed time; covers zero-deposit proposals).
             Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer);
@@ -1924,6 +2102,13 @@ pub fn get_veto_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Issue #988: Returns the consented reason hash for a pending veto, if any.
+    pub fn get_veto_reason_hash(env: Env, proposal_id: u64) -> Option<BytesN<32>> {
+        env.storage()
+            .temporary()
+            .get(&StorageKey::VetoReasonHash(proposal_id))
+    }
+
     // ── Issue #68 / #642: veto_proposal ───────────────────────────
 
 /// Approve vetoing an active (or passed) proposal. Once `threshold`
@@ -1948,6 +2133,13 @@ pub fn veto_proposal(
         reason_hash: BytesN<32>,
     ) -> Result<(), GovernanceError> {
         signer.require_auth();
+
+        // Issue #988: Require explicit consent for veto transitions.
+        // Reason hash must be non-empty (cannot be all zeroes).
+        let empty_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if reason_hash == empty_hash {
+            return Err(GovernanceError::ConsentRequired);
+        }
 
         // ── Guard: veto power must still be enabled ───────────────
         let enabled: bool = env
@@ -1985,6 +2177,21 @@ pub fn veto_proposal(
         match proposal.status {
             ProposalStatus::Active | ProposalStatus::Passed => {}
             _ => return Err(GovernanceError::NotVetoable),
+        }
+
+        // Issue #988: Validate consistent explicit consent on reason_hash
+        let reason_key = StorageKey::VetoReasonHash(proposal_id);
+        if let Some(stored_reason) = env.storage().temporary().get::<_, BytesN<32>>(&reason_key) {
+            if stored_reason != reason_hash {
+                return Err(GovernanceError::VetoReasonMismatch);
+            }
+        } else {
+            env.storage().temporary().set(&reason_key, &reason_hash);
+            env.storage().temporary().extend_ttl(
+                &reason_key,
+                VOTE_RECEIPT_TTL_THRESHOLD_LEDGERS,
+                VOTE_RECEIPT_TTL_LEDGERS,
+            );
         }
 
         // ── Record this signer's approval ─────────────────────────
@@ -2025,6 +2232,7 @@ pub fn veto_proposal(
 
         // ── Threshold reached: execute the veto ───────────────────
         env.storage().temporary().remove(&approvals_key);
+        env.storage().temporary().remove(&reason_key);
 
         proposal.status = ProposalStatus::Vetoed;
         env.storage()

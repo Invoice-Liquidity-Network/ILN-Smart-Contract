@@ -2694,4 +2694,254 @@ fn test_pre_init_calls_return_not_initialized() {
         contract.try_disable_veto_power(),
         Err(Ok(GovernanceError::NotInitialized))
     );
+    assert_eq!(
+        contract.try_pause(&Address::generate(&env)),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(
+        contract.try_unpause(&Address::generate(&env)),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+}
+
+// ── Issue #983: Prevent delay reduction from bypassing scheduled proposals ──
+
+#[test]
+fn test_delay_reduction_blocked_while_proposals_scheduled() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &100);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id, &true);
+    t.contract.cast_vote(&t.voter_a, &id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    let voting_end = t.contract.get_proposal(&id).voting_end;
+    ledger.timestamp = voting_end + 1;
+    t.env.ledger().set(ledger);
+
+    // Schedule proposal (transitions Active -> Passed, eta_ledger = initial + 100)
+    t.contract.execute_proposal(&id);
+    let p = t.contract.get_proposal(&id);
+    assert_eq!(p.status, ProposalStatus::Passed);
+
+    // Attempting to reduce delay to 50 while current_ledger < max_scheduled_eta must fail
+    let res = t.contract.try_set_execution_delay(&t.admin, &50);
+    assert_eq!(res, Err(Ok(GovernanceError::DelayReductionBypassesScheduled)));
+
+    // Increasing delay is always safe and permitted
+    let res_inc = t.contract.try_set_execution_delay(&t.admin, &150);
+    assert!(res_inc.is_ok());
+}
+
+#[test]
+fn test_delay_reduction_allowed_after_timelock_elapsed() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &100);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id, &true);
+    t.contract.cast_vote(&t.voter_a, &id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    let voting_end = t.contract.get_proposal(&id).voting_end;
+    ledger.timestamp = voting_end + 1;
+    t.env.ledger().set(ledger);
+
+    t.contract.execute_proposal(&id);
+
+    // Advance ledger past the timelock
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 101;
+    t.env.ledger().set(ledger);
+
+    // Now delay reduction is allowed because current_ledger >= max_scheduled_eta
+    let res = t.contract.try_set_execution_delay(&t.admin, &50);
+    assert!(res.is_ok());
+    assert_eq!(t.contract.get_execution_delay(), 50);
+}
+
+#[test]
+fn test_scheduled_eta_cannot_bypass_earlier_scheduled_proposals() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &100);
+
+    let id1 = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id1, &true);
+    t.contract.cast_vote(&t.voter_a, &id1, &true);
+
+    let mut ledger = t.env.ledger().get();
+    let voting_end = t.contract.get_proposal(&id1).voting_end;
+    ledger.timestamp = voting_end + 1;
+    t.env.ledger().set(ledger);
+
+    t.contract.execute_proposal(&id1);
+    let p1 = t.contract.get_proposal(&id1);
+    let eta1 = p1.eta_ledger;
+
+    // Second proposal created and scheduled
+    let id2 = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id2, &true);
+    t.contract.cast_vote(&t.voter_a, &id2, &true);
+
+    let mut ledger = t.env.ledger().get();
+    let voting_end2 = t.contract.get_proposal(&id2).voting_end;
+    ledger.timestamp = voting_end2 + 1;
+    t.env.ledger().set(ledger);
+
+    t.contract.execute_proposal(&id2);
+    let p2 = t.contract.get_proposal(&id2);
+    // eta2 must be >= eta1, preventing bypass
+    assert!(p2.eta_ledger >= eta1);
+}
+
+// ── Issue #984: Add emergency pause semantics that cannot skip timelock ──────
+
+#[test]
+fn test_emergency_pause_blocks_execution() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &10);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id, &true);
+    t.contract.cast_vote(&t.voter_a, &id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += VOTING_PERIOD_SECS + 1;
+    t.env.ledger().set(ledger);
+
+    // Pause contract
+    t.contract.pause(&t.admin);
+    assert!(t.contract.is_paused());
+
+    // Execution is blocked while paused
+    let res = t.contract.try_execute_proposal(&id);
+    assert_eq!(res, Err(Ok(GovernanceError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_pause_cannot_skip_timelock_on_unpause() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &100);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id, &true);
+    t.contract.cast_vote(&t.voter_a, &id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += VOTING_PERIOD_SECS + 1;
+    t.env.ledger().set(ledger);
+
+    // Schedule proposal
+    t.contract.execute_proposal(&id);
+
+    // Admin emergency pauses
+    t.contract.pause(&t.admin);
+
+    // While paused, execution fails with ContractPaused
+    let res = t.contract.try_execute_proposal(&id);
+    assert_eq!(res, Err(Ok(GovernanceError::ContractPaused)));
+
+    // Admin unpauses — but timelock has NOT elapsed yet!
+    t.contract.unpause(&t.admin);
+    assert!(!t.contract.is_paused());
+
+    // Execution MUST NOT skip timelock: returns TimelockNotExpired
+    let res_unpaused = t.contract.try_execute_proposal(&id);
+    assert_eq!(res_unpaused, Err(Ok(GovernanceError::TimelockNotExpired)));
+
+    // Advance sequence past timelock
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 101;
+    t.env.ledger().set(ledger);
+
+    // Now execution succeeds
+    let res_final = t.contract.try_execute_proposal(&id);
+    assert!(res_final.is_ok());
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn test_non_admin_cannot_pause() {
+    let t = setup();
+    let non_admin = Address::generate(&t.env);
+    let res = t.contract.try_pause(&non_admin);
+    assert_eq!(res, Err(Ok(GovernanceError::Unauthorized)));
+}
+
+// ── Issue #986: Add replay protection for delayed executions ────────────────
+
+#[test]
+fn test_delayed_execution_replay_protection() {
+    let t = setup();
+    t.contract.set_execution_delay(&t.admin, &50);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.proposer, &id, &true);
+    t.contract.cast_vote(&t.voter_a, &id, &true);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.timestamp += VOTING_PERIOD_SECS + 1;
+    t.env.ledger().set(ledger);
+
+    t.contract.execute_proposal(&id);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 51;
+    t.env.ledger().set(ledger);
+
+    assert_eq!(t.contract.get_execution_nonce(), 0);
+    assert!(!t.contract.is_proposal_executed(&id));
+
+    // First execution succeeds
+    t.contract.execute_proposal(&id);
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Executed);
+    assert!(t.contract.is_proposal_executed(&id));
+    assert_eq!(t.contract.get_execution_nonce(), 1);
+
+    // Replay attempt fails with ProposalAlreadyExecuted
+    let res = t.contract.try_execute_proposal(&id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalAlreadyExecuted)));
+}
+
+// ── Issue #988: Require explicit consent for veto transitions ───────────────
+
+#[test]
+fn test_veto_empty_reason_hash_fails_consent() {
+    let t = setup();
+    setup_veto_multisig(&t);
+    let id = create_fee_proposal(&t);
+
+    let empty_hash = BytesN::from_array(&t.env, &[0u8; 32]);
+    let res = t.contract.try_veto_proposal(&t.admin, &id, &empty_hash);
+    assert_eq!(res, Err(Ok(GovernanceError::ConsentRequired)));
+}
+
+#[test]
+fn test_veto_reason_hash_mismatch_fails() {
+    let t = setup();
+    let signer1 = Address::generate(&t.env);
+    let signer2 = Address::generate(&t.env);
+    let signers = vec![&t.env, signer1.clone(), signer2.clone()];
+    t.contract.configure_veto_multisig(&signers, &2);
+
+    let id = create_fee_proposal(&t);
+
+    let hash_a = BytesN::from_array(&t.env, &[0xAAu8; 32]);
+    let hash_b = BytesN::from_array(&t.env, &[0xBBu8; 32]);
+
+    // Signer 1 consents with hash_a
+    t.contract.veto_proposal(&signer1, &id, &hash_a);
+    assert_eq!(t.contract.get_veto_approvals(&id).len(), 1);
+    assert_eq!(t.contract.get_veto_reason_hash(&id), Some(hash_a.clone()));
+
+    // Signer 2 tries to approve with different hash_b — fails explicit consent
+    let res = t.contract.try_veto_proposal(&signer2, &id, &hash_b);
+    assert_eq!(res, Err(Ok(GovernanceError::VetoReasonMismatch)));
+
+    // Signer 2 consents with matching hash_a — succeeds and executes veto
+    let res_ok = t.contract.try_veto_proposal(&signer2, &id, &hash_a);
+    assert!(res_ok.is_ok());
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Vetoed);
+    assert_eq!(t.contract.get_veto_reason_hash(&id), None);
 }
