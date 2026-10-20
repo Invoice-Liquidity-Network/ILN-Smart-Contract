@@ -4723,3 +4723,6 @@ mod tests_token_safety;
 mod tests_max_depth_extension;
 // Issue #1027: Focused tests for join-order tie-breaking replacement
 mod tests_tie_breaking;
+// Issue #1035: configurable tie fairness policy — default parity,
+// authorization boundary, DeterministicFirst reproducibility and queue bounds.
+mod tests_tie_fairness_policy;
