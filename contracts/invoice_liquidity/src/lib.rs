@@ -2442,14 +2442,41 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
     /// Returns the winning LP address.
     /// Can be called by anyone once at least one LP has joined the queue.
     ///
-    /// **Optimization Note**: The queue is maintained in sorted order (descending score)
-    /// by `join_fund_queue`, so the winning score is always at index 0. The cost is
-    /// O(tied_count) rather than O(1), however: Issue #708's fairness fix scans the
-    /// contiguous top-score prefix (`queue[0..tied_count]`) to pick uniformly among
-    /// ties. That loop is bounded by the queue length — worst case (every entry tied)
-    /// it reads all `MAX_FUND_QUEUE_LEN` entries — which the
-    /// `queue_resolution_tie_fanout` entry in `storage::RESOURCE_ENVELOPE` declares
-    /// and `tests_benchmarks.rs` measures (Issue #1058). Access: Anyone
+    /// **Verified invariant (Issue #1036)**: before any entry is read for
+    /// scoring, the persisted queue is structurally verified — snapshot
+    /// scores monotone non-increasing, LP addresses unique, length at most
+    /// `MAX_FUND_QUEUE_LEN`. The queue's sortedness is no longer merely
+    /// asserted from `join_fund_queue`'s insertion policy; a corrupted or
+    /// badly restored persisted queue fails closed with
+    /// `fund_queue_ordering_rejected` instead of silently deciding the
+    /// winner from it.
+    ///
+    /// **Candidate group (Issue #1039)**: the winner is drawn uniformly (PRNG)
+    /// from the set of LPs whose *current* score equals the current maximum —
+    /// every such LP is a candidate, nothing else is, and membership never
+    /// depends on join order. It is NOT a contiguous prefix
+    /// `queue[0..tied_count]`: the sort key is the join-time snapshot while
+    /// the ranking key is the current score (#1019), so ties can scatter.
+    /// Worst-case cost is one fused pass over the capped queue — at most
+    /// `MAX_FUND_QUEUE_LEN` `get_lp_score` reads, declared as the
+    /// `queue_resolution_tie_fanout` entry in `storage::RESOURCE_ENVELOPE`
+    /// and measured by `tests_benchmarks.rs` (Issues #1058/#1040).
+    ///
+    /// **Before / After**: before this change a hand-corrupted persisted
+    /// queue (out of order, duplicated LP, over-cap length) could select a
+    /// winner — including handing a duplicated LP multiple draws — and the
+    /// doc-claimed prefix tie structure was false; after, every such queue
+    /// is refused and the candidate-group post-condition fails closed.
+    /// **Rollout**: purely additive refusal paths on an already-deployed
+    /// interface; no entry point, storage key, or event topic changes for
+    /// healthy queues, so behavior on non-corrupt state is unchanged
+    /// (modulo the halved score-read count). **Recovery**: a rejected queue
+    /// awards nothing and persists nothing; operators re-drive LP membership
+    /// via `recover_fund_queue` (evict/reopen, order-preserving) and joins,
+    /// which re-establishes the sorted, deduped, capped shape. **Upgrade
+    /// impact**: none beyond the two emitted event schemas
+    /// (`fund_queue_ordering_rejected`); no storage layout or TTL change, so
+    /// deploy of this version over existing state requires no migration. Access: Anyone
     pub fn resolve_fund_queue(env: Env, invoice_id: u64) -> Result<Address, ContractError> {
         if is_paused(&env) {
             return Err(ContractError::ContractPaused);
