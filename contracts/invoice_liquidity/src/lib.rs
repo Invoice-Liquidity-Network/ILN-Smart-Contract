@@ -4629,6 +4629,8 @@ mod tests_lp_priority_queue;
 mod tests_tie_manipulation_corpus;
 #[cfg(test)]
 mod tests_burst_deposit_fairness;
+#[cfg(test)]
+mod tests_equal_score_invariant;
 // Issue #848: ADR-011 reputation cross-contract consistency audit
 mod tests_reputation_state_isolation;
 // Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
