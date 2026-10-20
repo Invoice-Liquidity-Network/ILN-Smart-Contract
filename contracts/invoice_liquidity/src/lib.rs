@@ -4732,3 +4732,6 @@ mod tests_queue_ordering_verification;
 // Issue #1039: equal-score candidate-group invariant of `resolve_fund_queue`
 // (scattered ties, position independence, single-candidate and all-tied cases).
 mod tests_equal_score_priority_invariant;
+// Issue #1040: burst-deposit fairness measurement harness (win-share
+// deviation vs the uniform expectation) + the static score-read before/after.
+mod tests_fairness_burst_measurement;

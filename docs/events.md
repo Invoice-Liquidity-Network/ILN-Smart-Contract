@@ -359,6 +359,39 @@ inspect and repair via `recover_fund_queue`/rejoin, never silently repaired.
 | `observed` | `u32` | Offending score (monotonicity), `2` (duplicate), `queue.len()` (length), `1` (#1039) |
 | `expected` | `u32` | Preceding score (monotonicity), `1` (dedupe), `MAX_FUND_QUEUE_LEN` (length), `0` (#1039) |
 
+#### Fairness measurement under burst deposits (Issue #1040)
+
+The three resolution-side events form the off-chain fairness observation
+surface for queues where many LPs join in a burst (all before the first
+resolution):
+
+* **`fund_queue_tie_broken`** (Issue #1027) — emitted only when the winner
+  was drawn by PRNG among `tied_count >= 2` equally-current-scored LPs,
+  carrying `tied_count` and the drawn `winner_index`. Indexers compute
+  **tie frequency** (share of resolutions emitting the event) and, per
+  invoice cohort, **per-LP win rates** within ties. A tie that never emits
+  the event, or a `winner_index` outside `[0, tied_count)` semantics, is a
+  bug signal.
+* **`fund_queue_ordering_rejected`** (Issues #1036/#1039) — emitted when a
+  resolution fails closed on persisted-state corruption or a
+  candidate-group post-condition violation. Bursts that surface this event
+  are excluded from win-share statistics (they awarded no winner) and paged
+  to operators instead; a rising rate is a state-integrity alarm, not a
+  fairness variance.
+* **`fund_queue_resolved`** — the successful outcome (winner + winning
+  score); join by `invoice_id` with the two events above to build the full
+  per-resolution ledger.
+
+Long-run per-LP win share for an equal-reputation burst of size `n` should
+converge to `1/n`. The deterministic in-test harness
+(`tests_fairness_burst_measurement.rs`) measures `max_win_share_deviation`
+against that expectation with an explicit tolerance; note that the on-chain
+draw uses the network-seeded PRNG, so **a single run is not a fairness
+proof** — the statistical claim is what the harness exists to make
+off-chain from event streams. No counters are persisted on-chain for this
+(avoided unbounded state growth by design): measurement lives in events +
+tests only.
+
 ### InvoiceFunded
 
 Topics: `["funded", invoice_id, funder]`
