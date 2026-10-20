@@ -4637,6 +4637,8 @@ mod tests_burst_deposit_fairness;
 mod tests_equal_score_invariant;
 #[cfg(test)]
 mod tests_tie_entropy;
+#[cfg(test)]
+mod tests_queue_ordering;
 // Issue #848: ADR-011 reputation cross-contract consistency audit
 mod tests_reputation_state_isolation;
 // Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
