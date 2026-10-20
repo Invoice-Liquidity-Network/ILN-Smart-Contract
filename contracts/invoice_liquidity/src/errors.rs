@@ -95,4 +95,8 @@ pub enum ContractError {
     /// Issue #1020: `recover_fund_queue` was called but there is nothing to
     /// recover yet (no stalled resolution, or the grace period has not elapsed).
     QueueNotStalled = 48,
+    /// Issue #1037: tie-break entropy or bounds for uniform PRNG resolution are malformed.
+    InvalidEntropy = 49,
+    /// Issue #1036: Queue ordering invariant violated or disordered during resolution.
+    QueueDisordered = 50,
 }
