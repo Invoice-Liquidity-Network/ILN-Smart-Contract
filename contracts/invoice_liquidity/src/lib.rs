@@ -14,6 +14,10 @@ pub mod events;
 pub mod invoice;
 pub mod multisig;
 pub mod nft;
+// Issue #1036: fail-closed structural verification of the persisted fund
+// queue, executed by `resolve_fund_queue` before it trusts the queue.
+// Crate-internal — adds no contract entry point.
+pub(crate) mod queue_invariants;
 pub mod rate_logic;
 pub mod storage;
 pub mod top_payers;
@@ -2514,6 +2518,51 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::QueueNotMature);
         }
 
+        // Issue #1036: fail-closed structural verification of the persisted
+        // queue before anything reads its contents for scoring. This runs
+        // AFTER the maturity gate above (a caller-facing refusal must stay
+        // first) and BEFORE the score scan below (a state-integrity guard
+        // belongs before any use of the guarded state). On any violation we
+        // emit `fund_queue_ordering_rejected` plus the house
+        // `queue_resolve_attempt` (success=false) marker and return Err —
+        // never re-sort, never de-duplicate, never skip (no silent fallback;
+        // see `queue_invariants` module docs).
+        if let Err(violation) = crate::queue_invariants::verify_fund_queue_ordering(&env, &queue) {
+            let (index, observed, expected) = violation.descriptor();
+            env.events().publish(
+                (
+                    Symbol::new(&env, "fund_queue_ordering_rejected"),
+                    invoice_id,
+                ),
+                crate::events::FundQueueOrderingRejected {
+                    invoice_id,
+                    index,
+                    observed,
+                    expected,
+                },
+            );
+            env.events().publish(
+                (Symbol::new(&env, "queue_resolve_attempt"), invoice_id),
+                FundQueueResolutionAttempted {
+                    invoice_id,
+                    caller_ledger: get_fund_queue_opened_at(&env, invoice_id).unwrap_or(0),
+                    attempted_at_ledger: env.ledger().sequence(),
+                    success: false,
+                },
+            );
+            // NOTE (Issue #1036 disclosure): reuses the existing
+            // `ContractError::IncompatibleInterfaceVersion` variant — the
+            // persisted queue's shape is incompatible with the invariants
+            // this code version enforces. No new ContractError variant is
+            // added (errors.rs is out of this issue's scope) and no
+            // queue-specific variant (QueueFull/QueueNotMature/QueueNotStalled/
+            // AlreadyInQueue) is already returned on this path, but each of
+            // them carries a *different* caller-facing meaning, so
+            // overloading one of them would be worse than the slight
+            // name/semantics mismatch of this general-purpose variant.
+            return Err(ContractError::IncompatibleInterfaceVersion);
+        }
+
         // Queue is sorted by score (descending), so the highest score is at
         // index 0 — but join_fund_queue's insertion (`score < new_score`,
         // strictly less-than) breaks ties by join order, meaning the LP who
@@ -4641,3 +4690,6 @@ mod tests_token_safety;
 mod tests_max_depth_extension;
 // Issue #1027: Focused tests for join-order tie-breaking replacement
 mod tests_tie_breaking;
+// Issue #1036: fail-closed structural verification of the persisted fund
+// queue before `resolve_fund_queue` trusts it (ordering, dedupe, length cap).
+mod tests_queue_ordering_verification;

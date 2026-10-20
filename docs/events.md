@@ -121,6 +121,7 @@ check fails if a row exists in one place but not the other.
 | [FundRequested](#fundrequested) | `join_fund_queue` |
 | [FundQueueResolved](#fundqueueresolved) | `resolve_fund_queue` |
 | [FundQueueRecovered](#fundqueuerecovered) | `recover_fund_queue` |
+| [FundQueueOrderingRejected](#fundqueueorderingrejected) | `resolve_fund_queue` (Issue #1036/#1039) |
 | [InvoiceFunded](#invoicefunded) | `fund_invoice` |
 | [InvoiceTransferred](#invoicetransferred) | `transfer_invoice` |
 | [LPPositionTransferred](#lppositiontransferred) | `transfer_lp_position` |
@@ -163,7 +164,7 @@ State-changing functions and their event coverage (✅ = emits an event,
 | `convert_invoice_token` | ✅ `InvoiceTokenChanged` |
 | `submit_invoices_batch` | ✅ `InvoiceSubmitted` per invoice |
 | `join_fund_queue` | ✅ `FundRequested` |
-| `resolve_fund_queue` | ✅ `FundQueueResolved` |
+| `resolve_fund_queue` | ✅ `FundQueueResolved` (+ `queue_resolve_attempt` per Issue #MEV-1; + `FundQueueOrderingRejected` on fail-closed verification failure, Issue #1036) |
 | `recover_fund_queue` | ✅ `FundQueueRecovered` |
 | `fund_invoice` | ✅ `InvoiceFunded` (+ `InvoiceExpired` if expiry detected, + `InvoiceNftTransferred`) |
 | `transfer_invoice` | ✅ `InvoiceTransferred` |
@@ -339,6 +340,24 @@ Topics: `["fund_queue_recovered", invoice_id]`
 | `evicted_lp` | `Option<Address>` | Stalled approved LP that was evicted, if any |
 | `remaining_lps` | `u32` | LPs left in the reopened queue (`0` when purged) |
 | `purged` | `bool` | `true` when the invoice was no longer fundable and all queue state was deleted |
+
+### FundQueueOrderingRejected
+
+Topics: `["fund_queue_ordering_rejected", invoice_id]`
+
+Emitted by `resolve_fund_queue` when the fail-closed structural verification
+of the persisted queue (Issue #1036) rejects it — monotonicity, LP uniqueness,
+or the `MAX_FUND_QUEUE_LEN` bound is violated — or when the equal-score
+candidate-group post-condition (Issue #1039) fires. A resolution that emits
+this event persisted no winner; the queue is left untouched for operators to
+inspect and repair via `recover_fund_queue`/rejoin, never silently repaired.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Queue whose persisted state failed verification |
+| `index` | `u32` | Violation position: monotonicity pair start `i`; duplicate's later position; `0` sentinel for length; drawn `winner_index` for the #1039 post-condition |
+| `observed` | `u32` | Offending score (monotonicity), `2` (duplicate), `queue.len()` (length), `1` (#1039) |
+| `expected` | `u32` | Preceding score (monotonicity), `1` (dedupe), `MAX_FUND_QUEUE_LEN` (length), `0` (#1039) |
 
 ### InvoiceFunded
 
