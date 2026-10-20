@@ -2563,39 +2563,41 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::IncompatibleInterfaceVersion);
         }
 
-        // Queue is sorted by score (descending), so the highest score is at
-        // index 0 — but join_fund_queue's insertion (`score < new_score`,
-        // strictly less-than) breaks ties by join order, meaning the LP who
-        // joins first among equal-reputation competitors always wins
-        // deterministically. That's the gameable ordering the threat model
-        // (docs/threat-model.md, "Add Randomness to Queue Tie-Breaking")
-        // flagged as an open recommendation (Issue #708): a would-be LP with
-        // knowledge of another LP's equal reputation gains nothing from
-        // reputation, only from being first to submit.
-        //
-        // All entries tied for the top score form a contiguous prefix
-        // (queue[0..tied_count]), since the queue is sorted by score alone.
-        // When there's more than one, pick uniformly among them using
-        // Soroban's network-seeded PRNG instead of always taking index 0.
+        // Queue is sorted by join-time snapshot score (descending) — an
+        // order now *verified*, not merely asserted, by the fail-closed
+        // structural guard above (Issue #1036) — and join_fund_queue's
+        // insertion (`score < new_score`, strictly less-than) breaks
+        // snapshot ties by join order. Taking index 0 would let the first
+        // joiner among equal-reputation competitors win deterministically:
+        // the gameable ordering the threat model (docs/threat-model.md,
+        // "Add Randomness to Queue Tie-Breaking") flagged for Issue #708.
         //
         // Issue #1019: scores are snapshotted at join time, but resolution
         // is delayed (QUEUE_DELAY_LEDGERS and beyond), so a snapshot can be
-        // stale. Re-read each LP's *current* score (queue length is capped
-        // by MAX_FUND_QUEUE_LEN) and pick the winner among the current
-        // maximum, so a stale high snapshot cannot win.
-        let mut best_score: u32 = 0;
-        for i in 0..queue.len() {
-            let s = get_lp_score(&env, &queue.get(i).unwrap().lp);
-            if s > best_score {
-                best_score = s;
-            }
-        }
-        let mut tied: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&env);
-        for i in 0..queue.len() {
-            if get_lp_score(&env, &queue.get(i).unwrap().lp) == best_score {
-                tied.push_back(i);
-            }
-        }
+        // stale. The winner is therefore picked among the CURRENT maximum:
+        // each LP's current score is re-read (the queue length is capped by
+        // MAX_FUND_QUEUE_LEN), so a stale high snapshot cannot win.
+        //
+        // Issue #1039 — the real candidate-group invariant: the entries
+        // tied for the current top score do NOT form a contiguous prefix
+        // (`queue[0..tied_count]`) of the persisted queue. The queue's sort
+        // key is the join-time snapshot while the ranking key is the
+        // current score, so the tied set can be scattered anywhere in the
+        // queue. The invariant is exactly: every LP whose current score
+        // equals the maximum is a candidate, nothing else is, and
+        // membership never depends on join order. When the group has more
+        // than one member, pick uniformly among them using Soroban's
+        // network-seeded PRNG instead of always taking index 0.
+        // `queue_invariants::top_score_and_equal_candidates` computes
+        // (current maximum, candidate indices) in ONE pass over the queue
+        // — the pre-#1039 form scanned twice, 2x reads per entry (Issue
+        // #1040 records the static before/after: 100 -> 50 `get_lp_score`
+        // reads at the cap). The candidate group is bound as `tied` (a set
+        // of queue indices, one read per entry — NOT the pre-existing,
+        // #1027-owned `tied_count` symbol, which remains unbound and
+        // untouched).
+        let (best_score, tied) =
+            crate::queue_invariants::top_score_and_equal_candidates(&env, &queue);
         let winner_index: u32 = if tied.len() > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
             // version — generate as u64, then narrow (safe: tied.len() is
@@ -2605,6 +2607,40 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         } else {
             tied.get(0).unwrap()
         };
+        // Issue #1039 post-condition: the drawn winner must be a member of
+        // the equal-score candidate group. Given the PRNG draw above is
+        // bounded by `tied.len()`, membership should be unconditional —
+        // this guard exists precisely because the claim was never stated
+        // before: if the draw ever produced an index outside the group
+        // (a future policy change, a broken PRNG narrowing), resolution
+        // fails closed and persists nothing, rather than handing the win
+        // to a non-candidate. Reuses the #1036 rejection event with
+        // `index = winner_index`, `observed = 1` (drawn outside the
+        // group), `expected = 0`.
+        if !tied.contains(&winner_index) {
+            env.events().publish(
+                (
+                    Symbol::new(&env, "fund_queue_ordering_rejected"),
+                    invoice_id,
+                ),
+                crate::events::FundQueueOrderingRejected {
+                    invoice_id,
+                    index: winner_index,
+                    observed: 1,
+                    expected: 0,
+                },
+            );
+            env.events().publish(
+                (Symbol::new(&env, "queue_resolve_attempt"), invoice_id),
+                FundQueueResolutionAttempted {
+                    invoice_id,
+                    caller_ledger: get_fund_queue_opened_at(&env, invoice_id).unwrap_or(0),
+                    attempted_at_ledger: env.ledger().sequence(),
+                    success: false,
+                },
+            );
+            return Err(ContractError::IncompatibleInterfaceVersion);
+        }
         let best_entry = queue
             .get(winner_index)
             .ok_or(ContractError::QueueIndexOutOfBounds)?;
@@ -4693,3 +4729,6 @@ mod tests_tie_breaking;
 // Issue #1036: fail-closed structural verification of the persisted fund
 // queue before `resolve_fund_queue` trusts it (ordering, dedupe, length cap).
 mod tests_queue_ordering_verification;
+// Issue #1039: equal-score candidate-group invariant of `resolve_fund_queue`
+// (scattered ties, position independence, single-candidate and all-tied cases).
+mod tests_equal_score_priority_invariant;

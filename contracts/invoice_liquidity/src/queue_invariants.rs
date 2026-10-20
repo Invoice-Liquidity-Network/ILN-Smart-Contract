@@ -27,6 +27,29 @@
 //!    `queue_resolution_tie_fanout` resource envelope are only provably safe
 //!    under the cap. A longer persisted vector means corruption.
 //!
+//! # Equal-score candidate group (Issue #1039)
+//!
+//! The doc-comment this module replaced claimed that "all entries tied for
+//! the top score form a contiguous prefix (`queue[0..tied_count]`)". **That
+//! is false since Issue #1019.** The queue's *sort key* is the join-time
+//! snapshot score, while `resolve_fund_queue`'s *ranking key* is each LP's
+//! **current** score, so the entries that tie at the current maximum are
+//! generally scattered across the queue — never merely a prefix. The real
+//! invariant, stated and enforced here, is:
+//!
+//! * every LP whose current score equals the maximum is a candidate;
+//! * nothing else is;
+//! * membership never depends on join order (position in the persisted
+//!   vector is irrelevant to candidacy).
+//!
+//! [`top_score_and_equal_candidates`] is the fused single-pass engine
+//! `resolve_fund_queue` uses to compute `(best_score, candidate group)` —
+//! one `get_lp_score` read per entry instead of the pre-#1039 two scans
+//! (50 reads instead of 100 at the cap; see Issue #1040's static
+//! before/after). [`current_score_max`] and [`equal_score_candidate_group`]
+//! are the same invariant expressed as standalone diagnostics — the
+//! definition of the group, used by tests and off-chain verifiers.
+//!
 //! # Failure policy
 //!
 //! Verification is fail-closed: on any violation `resolve_fund_queue` emits
@@ -146,4 +169,79 @@ pub(crate) fn verify_fund_queue_ordering(
     }
 
     Ok(())
+}
+
+// ----------------------------------------------------------------
+// Issue #1039 — equal-score candidate group
+// ----------------------------------------------------------------
+
+/// The maximum *current* reputation score among the queue's entries.
+///
+/// Diagnostic definition of the ranking key: one `get_lp_score` read per
+/// entry. `resolve_fund_queue` uses the fused
+/// [`top_score_and_equal_candidates`] instead (single pass).
+pub(crate) fn current_score_max(env: &Env, queue: &Vec<LpFundRequest>) -> u32 {
+    let mut best: u32 = 0;
+    for i in 0..queue.len() {
+        let s = crate::invoice::get_lp_score(env, &queue.get(i).unwrap().lp);
+        if s > best {
+            best = s;
+        }
+    }
+    best
+}
+
+/// The indices whose *current* score equals `best` — the equal-score
+/// candidate group.
+///
+/// Diagnostic definition of the group: the result is exactly
+/// `{ i : get_lp_score(queue[i].lp) == best }`, in ascending index order,
+/// each index appearing once. It is NOT a prefix (`queue[0..tied_count]`):
+/// because the queue is sorted by join-time snapshot score while candidacy
+/// is defined on current score, the group can be scattered anywhere
+/// (Issue #1039). The caller is expected to have obtained `best` from
+/// [`current_score_max`] on the same queue.
+pub(crate) fn equal_score_candidate_group(
+    env: &Env,
+    queue: &Vec<LpFundRequest>,
+    best: u32,
+) -> Vec<u32> {
+    let mut group: Vec<u32> = Vec::new(env);
+    for i in 0..queue.len() {
+        if crate::invoice::get_lp_score(env, &queue.get(i).unwrap().lp) == best {
+            group.push_back(i);
+        }
+    }
+    group
+}
+
+/// Fused single-pass computation of the current maximum score and its
+/// candidate group — the engine behind `resolve_fund_queue`'s winner scan.
+///
+/// Reads each entry's current score exactly once (O(len) storage reads,
+/// worst case `MAX_FUND_QUEUE_LEN` at the cap; the pre-#1039 two-scan form
+/// read 2x per entry). Maintains the classic top-tie-set accumulator: a new
+/// strictly-higher score resets the group to the current index; an
+/// equal-to-best score appends it. This yields, identically to the two
+/// standalone helpers composed,
+/// `(current_score_max(env, queue), equal_score_candidate_group(env, queue, best))`
+/// — in particular the group may be scattered across the queue, and its
+/// membership never depends on join order.
+pub(crate) fn top_score_and_equal_candidates(
+    env: &Env,
+    queue: &Vec<LpFundRequest>,
+) -> (u32, Vec<u32>) {
+    let mut best: u32 = 0;
+    let mut group: Vec<u32> = Vec::new(env);
+    for i in 0..queue.len() {
+        let s = crate::invoice::get_lp_score(env, &queue.get(i).unwrap().lp);
+        if s > best {
+            best = s;
+            group = Vec::new(env);
+            group.push_back(i);
+        } else if s == best {
+            group.push_back(i);
+        }
+    }
+    (best, group)
 }
