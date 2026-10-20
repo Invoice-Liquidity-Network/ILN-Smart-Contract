@@ -2551,8 +2551,12 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             // GenRange is only implemented for u64 in this soroban-sdk
             // version — generate as u64, then narrow (safe: tied.len() is
             // bounded by MAX_FUND_QUEUE_LEN).
-            tied.get(env.prng().gen_range::<u64>(0..u64::from(tied.len())) as u32)
-                .unwrap()
+            let max_bound = u64::from(tied.len());
+            if max_bound <= 1 || max_bound > u64::from(crate::constants::MAX_FUND_QUEUE_LEN) {
+                return Err(ContractError::InvalidEntropy);
+            }
+            let chosen = env.prng().gen_range::<u64>(0..max_bound) as u32;
+            tied.get(chosen).ok_or(ContractError::QueueIndexOutOfBounds)?
         } else {
             tied.get(0).unwrap()
         };
@@ -4625,6 +4629,14 @@ mod tests_economic_security;
 // Issue #34 reputation-weighted queue was previously ORPHANED (file present
 // but never declared), so its queue-integrity/griefing guards never ran.
 mod tests_lp_priority_queue;
+#[cfg(test)]
+mod tests_tie_manipulation_corpus;
+#[cfg(test)]
+mod tests_burst_deposit_fairness;
+#[cfg(test)]
+mod tests_equal_score_invariant;
+#[cfg(test)]
+mod tests_tie_entropy;
 // Issue #848: ADR-011 reputation cross-contract consistency audit
 mod tests_reputation_state_isolation;
 // Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
