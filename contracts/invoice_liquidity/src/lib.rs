@@ -4625,6 +4625,10 @@ mod tests_economic_security;
 // Issue #34 reputation-weighted queue was previously ORPHANED (file present
 // but never declared), so its queue-integrity/griefing guards never ran.
 mod tests_lp_priority_queue;
+#[cfg(test)]
+mod tests_tie_manipulation_corpus;
+#[cfg(test)]
+mod tests_burst_deposit_fairness;
 // Issue #848: ADR-011 reputation cross-contract consistency audit
 mod tests_reputation_state_isolation;
 // Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
