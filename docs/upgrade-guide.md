@@ -749,9 +749,9 @@ soroban contract info --id $CONTRACT_ID --network mainnet
 
 For upgrade-related questions or issues:
 
-1. **GitHub Issues:** https://github.com/drips-network/ILN-Smart-Contract/issues
+1. **GitHub Issues:** https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues
 2. **Discord:** [Link to community Discord]
-3. **Email:** security@drips.network (for security issues)
+3. **Security issues:** report privately through the channels in [SECURITY.md](../SECURITY.md) — the private GitHub Security Advisory for this repository is the intended path. Do not mail `security@drips.network`: this document published that address previously, but no maintainer has confirmed that ILN reads that mailbox, and it is not an address under this repository's own organization. See [Contact Status](../SECURITY.md#contact-status) for what is verified and what is still awaiting an owner.
 
 ---
 
