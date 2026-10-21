@@ -115,20 +115,17 @@ export class GovernanceContractError extends Error {
   static InvalidVetoMultisigConfig = class InvalidVetoMultisigConfig extends GovernanceContractError {
     constructor(msg = "Veto signer list/threshold combination is invalid") { super(msg, 25); }
   };
-  static DelayReductionBypassesScheduled = class DelayReductionBypassesScheduled extends GovernanceContractError {
-    constructor(msg = "Reducing execution delay is blocked while scheduled proposals are pending in timelock") { super(msg, 30); }
+  static ExecutionDelayOutOfBounds = class ExecutionDelayOutOfBounds extends GovernanceContractError {
+    constructor(msg = "Execution delay violates production minimum or maximum bounds") { super(msg, 35); }
   };
-  static ContractPaused = class ContractPaused extends GovernanceContractError {
-    constructor(msg = "Governance execution is currently paused") { super(msg, 31); }
+  static InvalidVetoTransition = class InvalidVetoTransition extends GovernanceContractError {
+    constructor(msg = "Invalid transition in veto transition state machine") { super(msg, 36); }
   };
-  static ProposalAlreadyExecuted = class ProposalAlreadyExecuted extends GovernanceContractError {
-    constructor(msg = "Proposal has already been executed") { super(msg, 32); }
+  static VetoPowerAlreadyDisabled = class VetoPowerAlreadyDisabled extends GovernanceContractError {
+    constructor(msg = "Admin veto power has already been permanently disabled") { super(msg, 37); }
   };
   static ConsentRequired = class ConsentRequired extends GovernanceContractError {
-    constructor(msg = "Veto requires explicit non-empty consent reason hash") { super(msg, 33); }
-  };
-  static VetoReasonMismatch = class VetoReasonMismatch extends GovernanceContractError {
-    constructor(msg = "Signer reason hash does not match consented reason hash for this veto") { super(msg, 34); }
+    constructor(msg = "Consent reason hash is required and cannot be empty") { super(msg, 38); }
   };
 
   static fromError(error: unknown): Error {
@@ -160,11 +157,10 @@ export class GovernanceContractError extends Error {
       case 23: return new GovernanceContractError.NotVetoSigner();
       case 24: return new GovernanceContractError.VetoAlreadyApproved();
       case 25: return new GovernanceContractError.InvalidVetoMultisigConfig();
-      case 30: return new GovernanceContractError.DelayReductionBypassesScheduled();
-      case 31: return new GovernanceContractError.ContractPaused();
-      case 32: return new GovernanceContractError.ProposalAlreadyExecuted();
-      case 33: return new GovernanceContractError.ConsentRequired();
-      case 34: return new GovernanceContractError.VetoReasonMismatch();
+      case 35: return new GovernanceContractError.ExecutionDelayOutOfBounds();
+      case 36: return new GovernanceContractError.InvalidVetoTransition();
+      case 37: return new GovernanceContractError.VetoPowerAlreadyDisabled();
+      case 38: return new GovernanceContractError.ConsentRequired();
       default: return new GovernanceContractError(`iln_governance error: ${String(error)}`);
     }
   }
@@ -433,7 +429,7 @@ export async function hasVoted(
 /**
  * List proposals, optionally filtered by status and/or proposer (read-only).
  * @param filter Optional filters (status sent on-chain, proposer applied client-side)
- * @param page Page number (0-indexed, defaults to 0)
+ * @param cursor Optional proposal ID cursor (reads proposals before this ID; defaults to latest)
  * @param pageSize Results per page (defaults to 20, max 20)
  */
 export async function listProposals(
@@ -442,7 +438,7 @@ export async function listProposals(
   sourceAccount: Account,
   networkPassphrase: string,
   filter?: ProposalFilter,
-  page: number = 0,
+  cursor?: bigint | number,
   pageSize: number = 20
 ): Promise<Proposal[]> {
   const contract = new Contract(contractAddress);
@@ -450,10 +446,14 @@ export async function listProposals(
     filter?.status !== undefined
       ? nativeToScVal({ tag: filter.status, values: [] }, { type: "instance" })
       : nativeToScVal(undefined);
+  const cursorScVal =
+    cursor !== undefined
+      ? nativeToScVal(BigInt(cursor), { type: "u64" })
+      : nativeToScVal(undefined);
   const op = contract.call(
     "list_proposals",
     statusScVal,
-    nativeToScVal(page, { type: "u32" }),
+    cursorScVal,
     nativeToScVal(pageSize, { type: "u32" })
   );
 
@@ -936,72 +936,16 @@ export async function getAppliedVoteWeight(
 }
 
 /**
- * Emergency pause for governance execution (Issue #984).
+ * Fetch the minimum and maximum execution delay bounds (Issue #985).
  */
-export async function pauseGovernance(
-  server: SorobanRpc.Server,
-  contractAddress: string,
-  adminAddress: string,
-  sourceAccount: Account,
-  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
-  networkPassphrase: string
-): Promise<{ txHash: string }> {
-  const contract = new Contract(contractAddress);
-  const op = contract.call(
-    "pause",
-    nativeToScVal(adminAddress, { type: "address" })
-  );
-
-  const { txHash } = await sendGovernanceCall(
-    server,
-    sourceAccount,
-    networkPassphrase,
-    op,
-    signTransaction,
-    GovernanceContractError.fromError
-  );
-  return { txHash };
-}
-
-/**
- * Unpause governance execution (Issue #984).
- */
-export async function unpauseGovernance(
-  server: SorobanRpc.Server,
-  contractAddress: string,
-  adminAddress: string,
-  sourceAccount: Account,
-  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
-  networkPassphrase: string
-): Promise<{ txHash: string }> {
-  const contract = new Contract(contractAddress);
-  const op = contract.call(
-    "unpause",
-    nativeToScVal(adminAddress, { type: "address" })
-  );
-
-  const { txHash } = await sendGovernanceCall(
-    server,
-    sourceAccount,
-    networkPassphrase,
-    op,
-    signTransaction,
-    GovernanceContractError.fromError
-  );
-  return { txHash };
-}
-
-/**
- * Returns whether governance execution is currently paused (Issue #984).
- */
-export async function isGovernancePaused(
+export async function getProductionDelayBounds(
   server: SorobanRpc.Server,
   contractAddress: string,
   sourceAccount: Account,
   networkPassphrase: string
-): Promise<boolean> {
+): Promise<[number, number]> {
   const contract = new Contract(contractAddress);
-  const op = contract.call("is_paused");
+  const op = contract.call("get_production_delay_bounds");
 
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
@@ -1015,27 +959,83 @@ export async function isGovernancePaused(
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw GovernanceContractError.fromError(sim.error);
   }
-  if (!sim.result?.retval) {
-    return false;
-  }
-  return scValToNative(sim.result.retval) as boolean;
+  const decoded = scValToNative(sim.result.retval) as [number, number];
+  return decoded;
 }
 
 /**
- * Returns whether a proposal has already been executed (replay protection) (Issue #986).
+ * Validate whether a delay meets production requirements (Issue #985).
  */
-export async function isProposalExecuted(
+export async function isValidProductionDelay(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  delay: number,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<boolean> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call("is_valid_production_delay", nativeToScVal(delay, { type: "u32" }));
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw GovernanceContractError.fromError(sim.error);
+  }
+  return Boolean(scValToNative(sim.result.retval));
+}
+
+/**
+ * Verify whether currentLedger has reached etaLedger across rollover (Issue #987).
+ */
+export async function isEtaReached(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  currentLedger: number,
+  etaLedger: number,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<boolean> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "is_eta_reached",
+    nativeToScVal(currentLedger, { type: "u32" }),
+    nativeToScVal(etaLedger, { type: "u32" })
+  );
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw GovernanceContractError.fromError(sim.error);
+  }
+  return Boolean(scValToNative(sim.result.retval));
+}
+
+/**
+ * Get the current state in the veto transition state machine (Issue #989).
+ */
+export async function getVetoState(
   server: SorobanRpc.Server,
   contractAddress: string,
   proposalId: bigint,
   sourceAccount: Account,
   networkPassphrase: string
-): Promise<boolean> {
+): Promise<{ status: number; approvals_count: number; threshold: number; reason_hash: Buffer }> {
   const contract = new Contract(contractAddress);
-  const op = contract.call(
-    "is_proposal_executed",
-    nativeToScVal(proposalId, { type: "u64" })
-  );
+  const op = contract.call("get_veto_state", nativeToScVal(proposalId, { type: "u64" }));
 
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
@@ -1049,23 +1049,48 @@ export async function isProposalExecuted(
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw GovernanceContractError.fromError(sim.error);
   }
-  if (!sim.result?.retval) {
-    return false;
-  }
-  return scValToNative(sim.result.retval) as boolean;
+  return scValToNative(sim.result.retval);
 }
 
 /**
- * Returns the current governance execution nonce (Issue #986).
+ * Permanently disable admin veto power with an explicit reason hash (Issue #990).
  */
-export async function getExecutionNonce(
+export async function disableVetoPowerWithReason(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  reasonHash: Buffer,
+  sourceAccount: Account,
+  signTransaction: (tx: Transaction) => Promise<Transaction> | Transaction,
+  networkPassphrase: string
+): Promise<{ txHash: string }> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "disable_veto_power_with_reason",
+    nativeToScVal(reasonHash, { type: "bytes" })
+  );
+
+  const { txHash } = await sendGovernanceCall(
+    server,
+    sourceAccount,
+    networkPassphrase,
+    op,
+    signTransaction,
+    GovernanceContractError.fromError
+  );
+  return { txHash };
+}
+
+/**
+ * Fetch the recorded veto-disable authorization details, if disabled (Issue #990).
+ */
+export async function getVetoDisableRecord(
   server: SorobanRpc.Server,
   contractAddress: string,
   sourceAccount: Account,
   networkPassphrase: string
-): Promise<bigint> {
+): Promise<{ authorized_by: string; disabled_at_ledger: number; reason_hash: Buffer } | undefined> {
   const contract = new Contract(contractAddress);
-  const op = contract.call("get_execution_nonce");
+  const op = contract.call("get_veto_disable_record");
 
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
@@ -1080,9 +1105,9 @@ export async function getExecutionNonce(
     throw GovernanceContractError.fromError(sim.error);
   }
   if (!sim.result?.retval) {
-    return 0n;
+    return undefined;
   }
   const decoded = scValToNative(sim.result.retval);
-  return BigInt(String(decoded));
+  return decoded ?? undefined;
 }
 

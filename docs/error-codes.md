@@ -44,11 +44,13 @@ Source of truth: [`contracts/invoice_liquidity/src/errors.rs`](../contracts/invo
 | 32 | `ArithmeticOverflow` | A checked arithmetic operation overflowed. | Large amounts, counters, or computed values exceeded `u64`/`i128` limits during processing. | Re-check inputs for unreasonable values and investigate the caller data or contract math path. |
 | 33 | `FeeOnTransferToken` | The token charges a transfer fee, so the received amount differs from the amount sent. | An unsupported fee-on-transfer asset was added or used for settlement. | Use a standard token that transfers the full amount, or remove the fee-on-transfer asset from configuration. |
 | 33 | `PayerUnverified` | The oracle did not verify the payer when verification was required. | Oracle verification is enabled, but the payer is not present or not verified in the oracle response. | Use a verified payer account, or disable payer verification if that policy is not required. |
-| 34 | `OracleDataStale` | The oracle response is older than the configured freshness window. | The payer-verification oracle data has exceeded `max_oracle_age_ledgers`. | Refresh oracle data and retry, or increase the freshness window only if that tradeoff is acceptable. |
+| 34 | `OracleDataStale` | The oracle response is outside the configured freshness window. | The payer-verification oracle data has exceeded `max_oracle_age_ledgers` — or the response's `timestamp` is **ahead of the current ledger sequence** (Issue #1050), which is treated as stale rather than as maximally fresh. | Refresh oracle data and retry, or increase the freshness window only if that tradeoff is acceptable. A future-dated timestamp indicates a buggy or dishonest oracle and should be investigated, not accommodated. |
 | 35 | `InvoiceNftAlreadyExists` | An NFT has already been minted for this invoice. | Attempted to mint a duplicate NFT for an invoice that already has one. | Check `invoice_nft_exists` before minting. |
 | 36 | `InvoiceNftNotFound` | No NFT exists for the requested invoice. | Querying or transferring an NFT that was never minted (or was burned). | Verify the invoice was funded and the NFT was minted before querying. |
 | 37 | `InvoiceNftNotOwned` | The caller is not the current owner of this NFT. | A non-owner attempted to transfer or burn an NFT. | Verify ownership via `invoice_nft_owner` before attempting transfer or burn. |
 | 38 | `AmountTooSmall` | The invoice amount is below the configurable minimum threshold. | The submitted invoice amount is too low to be economically viable. | Increase the invoice amount to meet the minimum required by the contract configuration. |
+| 47 | `QueueFull` | The invoice's fund queue already holds `MAX_FUND_QUEUE_LEN` (50) LPs. | An additional LP tried to `join_fund_queue`. | Wait for the queue to be resolved/recovered, or fund directly if no resolution exists. |
+| 48 | `QueueNotStalled` | `recover_fund_queue` found nothing to recover. | No queue entries, winner not yet resolved, or the recovery grace period has not elapsed. | Retry after `QUEUE_RESOLUTION_TTL_LEDGERS` (or `QUEUE_DELAY_LEDGERS` when the invoice is within 24h of its due date). |
 
 ---
 
@@ -88,8 +90,8 @@ Source of truth: [`contracts/iln_governance/src/lib.rs`](../contracts/iln_govern
 | 5 | `NoVotingPower` | The voter has no governance token balance at the snapshot block. | Voter held no tokens when the proposal was created. | Acquire governance tokens before the proposal's snapshot block. |
 | 6 | `AlreadyVoted` | The address has already voted on this proposal. | Double-vote attempt on the same proposal. | Each address may vote once per proposal. |
 | 7 | `VotingOngoing` | The proposal's voting period is still in progress. | Attempted to finalize or execute a proposal before voting ended. | Wait for the voting period to end. |
-| 8 | `QuorumNotReached` | The proposal did not meet the minimum participation threshold. | Insufficient total votes relative to governance token supply. | Encourage more token holders to vote. |
-| 9 | `ProposalRejected` | The proposal was rejected (more votes against than for). | More weight voted against the proposal. | Revise the proposal and resubmit. |
+| 8 | `QuorumNotReached` | The proposal did not meet the minimum participation threshold. | Insufficient total votes relative to governance token supply. | Retained for ABI stability; no longer returned by `execute_proposal` (Issue #1007). A quorum miss now commits `Rejected` and emits `proposal_rejected` with reason `QuorumNotReached`. |
+| 9 | `ProposalRejected` | The proposal was rejected (more votes against than for). | More weight voted against the proposal. | Retained for ABI stability; no longer returned by `execute_proposal` (Issue #1007). A majority-against result now commits `Rejected` and emits `proposal_rejected` with reason `MajorityAgainst`. |
 | 10 | `AlreadyResolved` | The proposal has already been resolved (passed/rejected/executed/vetoed). | Action on a proposal that is already in a terminal state. | No further action is possible on a resolved proposal. |
 | 11 | `CannotDelegateToSelf` | Delegating to self is not allowed. | `delegate_votes` called with `to == caller`. | Delegate to a different address. |
 | 12 | `DelegationCyclePrevented` | Delegation would create a cycle. | Delegating A → B → A (directly or transitively). | Break the delegation chain before delegating. |
@@ -100,13 +102,10 @@ Source of truth: [`contracts/iln_governance/src/lib.rs`](../contracts/iln_govern
 | 17 | `NotVetoable` | Proposal cannot be vetoed in its current status. | Admin attempted to veto a proposal that is not in `Active` status. | Veto only active proposals. |
 | 18 | `VetoPowerDisabled` | Admin veto power has been disabled by governance. | Admin veto was disabled via a governance proposal. | Re-enable veto via governance before using it. |
 | 19 | `InsufficientProposerBalance` | Proposer does not hold the minimum required token balance. | Proposer's token balance is below `MinProposalBalance`. | Acquire enough governance tokens to meet the proposal threshold. |
-| 28 | `NotInitialized` | Contract called before `initialize()`. | Calling an admin-gated function on a contract instance that was never initialized. | Call `initialize()` first. |
-| 29 | `InsufficientHoldingPeriod` | Voter has no balance checkpoint predating the proposal by `MIN_VOTE_HOLD_LEDGERS` (10 ledgers). | First vote (or delegation) from a newly funded address; possible flash-loan attempt. | Call `checkpoint_balance` and wait ~10 ledgers (or vote on a later proposal). |
-| 30 | `DelayReductionBypassesScheduled` | Execution delay reduction is blocked while scheduled proposals remain pending. | Admin attempted to reduce `execution_delay` while proposals are waiting in timelock. | Wait for scheduled proposals to execute before reducing the delay. |
-| 31 | `ContractPaused` | Governance execution is currently paused. | Admin paused proposal execution for emergency response. | Wait for governance execution to be unpaused. |
-| 32 | `ProposalAlreadyExecuted` | Proposal has already been executed. | Delayed execution replay attempt on an already executed proposal. | Treat proposal as terminal; do not retry execution. |
-| 33 | `ConsentRequired` | Veto requires explicit non-empty consent reason hash. | Veto signer called `veto_proposal` with an empty (all zeros) reason hash. | Provide a non-empty 32-byte hash representing the veto justification. |
-| 34 | `VetoReasonMismatch` | Signer's reason hash does not match prior veto approvals. | Veto multisig signer submitted a reason hash differing from prior signers' consent. | Signers must coordinate and consent to the exact same veto reason hash. |
+| 20–28 | *(see source)* | `ExecutionFailed`, `MaxDelegationDepthExceeded`, veto-multisig errors, deposit errors, `NotInitialized`. | — | See [`contracts/iln_governance/src/lib.rs`](../contracts/iln_governance/src/lib.rs). |
+| 29 | `InvalidStateTransition` | Proposal status change is not a legal forward move, or the proposal is not `Passed` at execution. | A code path tried to leave a terminal state (`Rejected`/`Executed`/`Vetoed`) or skip a lifecycle step. Should be unreachable through the public API. | Treat as an invariant violation; capture the proposal id and escalate (see governance-security-summary §3.1). |
+| 30 | `InvalidTimelock` | `eta_ledger` could not be computed without overflow. | Ledger sequence + execution delay exceeded `u32::MAX`. | Fix the ledger/delay configuration; the proposal stays `Active`. |
+| 31 | `InvalidExecutionDelay` | Requested execution delay exceeds 518,400 ledgers (~30 days). | `set_execution_delay` called with a value above the cap. | Use a delay at or below the cap. |
 
 ---
 

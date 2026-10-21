@@ -60,6 +60,10 @@ pub struct OracleHealthRecorded {
     pub is_stale: bool,
     pub last_data_age_ledgers: u64,
     pub consecutive_stale_count: u32,
+    /// Issue #1053: consecutive duplicate (identical-timestamp) updates from
+    /// the same oracle, so monitors can see a "frozen" oracle building up
+    /// before oracle-gated funding is rejected with `OracleDuplicateUpdate`.
+    pub consecutive_duplicate_count: u32,
 }
 
 /// Emitted once when a feed type + token's oracle resolution channel is
@@ -85,6 +89,23 @@ pub struct OracleCircuitReset {
     pub token: Address,
 }
 
+/// Issue #1048: emitted when a tripped oracle circuit breaker auto-recovers
+/// (half-open → closed) after the oracle that caused the trip served a
+/// *sustained* run of fresh, timestamp-advancing responses — see
+/// `oracle_registry::CIRCUIT_RECOVERY_HEALTHY_OBSERVATIONS` /
+/// `CIRCUIT_RECOVERY_MIN_LEDGERS`. Distinct from `OracleCircuitReset`, which is
+/// the governance fast-path clear. `healthy_observations` is the length of the
+/// qualifying streak and `elapsed_ledgers` the number of ledgers it spanned.
+/// The message is `symbol!("oracle_circuit_recovered")`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleCircuitRecovered {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub healthy_observations: u32,
+    pub elapsed_ledgers: u64,
+}
+
 /// Emitted when a price source is added to a feed type's multi-source list
 /// (Issue #price-deviation).
 #[contracttype]
@@ -100,6 +121,70 @@ pub struct PriceSourceAdded {
 pub struct PriceSourceRemoved {
     pub feed_type: OracleFeedType,
     pub oracle: Address,
+}
+
+/// Issue #1047: emitted when an Identity oracle is added to a feed type's
+/// multi-oracle quorum list, so `fund_invoice` will consult it (alongside the
+/// others) and require N-of-M agreement on payer verification.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdentityOracleAdded {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Issue #1047: emitted when an Identity oracle is removed from a feed type's
+/// multi-oracle quorum list.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdentityOracleRemoved {
+    pub feed_type: OracleFeedType,
+    pub oracle: Address,
+}
+
+/// Issue #1047: emitted when the registered Identity oracles fail to reach the
+/// configured quorum on a payer's verification during oracle-gated funding —
+/// feeders disagreed (or too few responded fresh + verified), so the call fails
+/// closed. `verified_count` is how many agreed the payer was verified (with
+/// fresh data); `required_quorum` is the configured `N`; `total_oracles` is the
+/// size of the registered list. The message is
+/// `symbol!("oracle_feeder_disagreement")`, and the token identifies which
+/// resolution channel disagreed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleFeederDisagreement {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub verified_count: u32,
+    pub required_quorum: u32,
+    pub total_oracles: u32,
+}
+
+/// Issue #1049: emitted when oracle-gated payer verification is rejected
+/// because the oracle's data is **stale** — its `timestamp` is older than
+/// `max_age_ledgers` (or future-dated, which the shared freshness rule treats
+/// as stale). This is the *failure* signal, distinct from `OracleHealthRecorded`
+/// (a raw observation): it records the rejection reason and the exact bound
+/// that was exceeded.
+///
+/// `age_ledgers` is the saturating ledger distance (`current - data_timestamp`)
+/// — `0` when the data is future-dated. Compare `data_timestamp` against the
+/// ledger the event was emitted at to distinguish the two.
+///
+/// Because `fund_invoice` returns `Err(OracleDataStale)` and Soroban rolls back
+/// every write/event of a call that returns `Err`, this event only *survives*
+/// when emitted from a committed path — the permissionless
+/// `check_oracle_verification` diagnostic entrypoint. The message is
+/// `symbol!("oracle_stale_data_rejected")`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OracleDataStaleRejected {
+    pub feed_type: OracleFeedType,
+    pub token: Address,
+    pub oracle: Address,
+    pub data_timestamp: u32,
+    pub age_ledgers: u64,
+    pub max_age_ledgers: u64,
 }
 
 #[contracttype]
@@ -170,6 +255,44 @@ pub struct TokenAdded {
     pub token: Address,
     /// Number of decimal places for this token (e.g. 6 for USDC, 7 for XLM).
     pub decimals: u32,
+}
+
+/// Issue #1069: an already-approved token's registered decimals were
+/// corrected to match a value the admin re-validated against the token's
+/// own `decimals()`. Distinct from `TokenAdded` — this does not approve a
+/// new token, it corrects one that was already approved (most notably one
+/// of `initialize`'s bootstrap tokens, which — see docs/token-safety.md
+/// "Known limitations" — are set to a fixed value without ever being
+/// checked against the token itself).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenDecimalsCorrected {
+    pub token: Address,
+    pub old_decimals: u32,
+    pub new_decimals: u32,
+    pub updated_by: Address,
+}
+
+/// Issue #1072: a payout to a frozen recipient was escrowed instead of
+/// transferred.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayoutEscrowed {
+    pub invoice_id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Recipient's total pending balance for this token after the credit.
+    pub total_pending: i128,
+}
+
+/// Issue #1072: an escrowed payout was released to its recipient.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingPayoutClaimed {
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
 }
 
 /// Emitted when governance removes a token from the funding allowlist (Issue #19).
@@ -473,6 +596,19 @@ pub struct FundQueueResolutionAttempted {
     pub success: bool,
 }
 
+/// Emitted by `recover_fund_queue` (Issues #1020/#1021). `evicted_lp` is the
+/// stalled approved LP removed from the queue (if any); `purged` is true when
+/// the invoice was no longer fundable and all queue state was deleted rather
+/// than reopened for the remaining `remaining_lps`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueRecovered {
+    pub invoice_id: u64,
+    pub evicted_lp: Option<Address>,
+    pub remaining_lps: u32,
+    pub purged: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvoiceExpired {
@@ -531,4 +667,93 @@ pub struct InvoiceNftBurned {
     pub invoice_id: u64,
     pub owner: Address,
     pub timestamp: u64,
+}
+
+// ── Issue #1083: Rollback rehearsal events ────────────────────────────────────
+
+/// The outcome of a `rehearse_rollback()` call.
+///
+/// Returned by `rehearse_rollback()` and included in the
+/// `RollbackRehearsalCompleted` event so off-chain monitors can assess
+/// rollback readiness without replaying the full storage scan.
+///
+/// # Fields
+///
+/// * `invoices_checked`   — total number of invoice IDs sampled
+///   (capped at `ROLLBACK_SAMPLE_SIZE`).
+/// * `split_format_count` — invoices stored as `InvoiceCore` + `InvoiceMetadata`
+///   (new format, both halves present).
+/// * `legacy_format_count`— invoices stored as monolithic `Invoice` key
+///   (old format, fully rollback-safe by itself).
+/// * `orphaned_count`     — invoices with only one half of the split format
+///   (either `InvoiceCore` without `InvoiceMetadata`, or vice versa).
+///   **Any non-zero value means rollback is unsafe.**
+/// * `rollback_safe`      — `true` iff `orphaned_count == 0` AND every
+///   checked invoice satisfies at least one of the two safe invariants.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollbackRehearsalReport {
+    pub invoices_checked: u32,
+    pub split_format_count: u32,
+    pub legacy_format_count: u32,
+    pub orphaned_count: u32,
+    pub rollback_safe: bool,
+}
+
+/// Emitted by `rehearse_rollback()` when the rollback safety scan completes.
+///
+/// The `rollback_safe` field mirrors `RollbackRehearsalReport::rollback_safe`
+/// and is surfaced as a top-level event field so indexers can filter on it
+/// without deserializing the full report body.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollbackRehearsalCompleted {
+    pub admin: Address,
+    pub report: RollbackRehearsalReport,
+    pub timestamp: u64,
+}
+
+// ----------------------------------------------------------------
+// Issue #1031: Equal-score manipulation economics simulation
+// ----------------------------------------------------------------
+
+/// Emitted by `simulate_equal_score_attack()`.
+///
+/// Describes the economic cost–benefit breakdown of an equal-score
+/// queue manipulation attempt. Off-chain analytics and dashboards can
+/// consume this event to monitor whether the configured `tie_score_margin`
+/// is producing an adequate deterrent.
+///
+/// # Fields
+/// * `attacker_score`     — score the simulated attacker starts with
+/// * `defender_score`     — score of the legitimate LP being challenged
+/// * `n_attackers`        — number of colluding attacker accounts in the simulation
+/// * `invoices_to_tie`    — funded invoices needed to reach `defender_score`
+///                          (0 when `attacker_score >= defender_score`)
+/// * `invoices_to_beat`   — funded invoices needed to outscore `defender_score`
+///                          by at least 1 (including any active `tie_score_margin`)
+/// * `tie_win_probability_pct` — expected win rate at `defender_score` with
+///                          `n_attackers` colluding (0 when margin prevents joining)
+/// * `tie_score_margin`   — active margin at simulation time
+/// * `attacker_can_join`  — `true` iff the attacker score satisfies the margin
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EqualScoreManipulationSimulated {
+    pub attacker_score: u32,
+    pub defender_score: u32,
+    pub n_attackers: u32,
+    pub invoices_to_tie: u32,
+    pub invoices_to_beat: u32,
+    pub tie_win_probability_pct: u32,
+    pub tie_score_margin: u32,
+    pub attacker_can_join: bool,
+}
+
+/// Emitted by `set_queue_tie_score_margin()` when an admin updates the margin.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueTieScoreMarginUpdated {
+    pub old_margin: u32,
+    pub new_margin: u32,
+    pub updated_by: Address,
 }

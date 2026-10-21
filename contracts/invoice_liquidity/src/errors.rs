@@ -88,37 +88,11 @@ pub enum ContractError {
     /// Issue #817: requested TWAP window is outside the governance-bounded
     /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` range.
     InvalidTwapWindow = 46,
-    // ── Issue #124 / #641: multisig admin ───────────────────────────
-    /// `initialize_multisig_admin` called when a multisig is already configured.
-    MultisigAlreadyConfigured = 47,
-    /// Signer list / threshold combination is invalid (empty, duplicate
-    /// signers, or threshold outside `1..=signers.len()`).
-    InvalidMultisigConfig = 48,
-    /// Multisig entry point called before `initialize_multisig_admin`.
-    MultisigNotConfigured = 49,
-    /// Caller is not in the configured multisig signer set.
-    NotAuthorizedSigner = 50,
-    /// A pending, non-expired proposal for the same action already exists.
-    DuplicateProposal = 51,
-    /// Referenced multisig proposal id does not exist.
-    ProposalNotFound = 52,
-    /// Referenced proposal has already been executed.
-    ProposalAlreadyExecuted = 53,
-    /// Referenced proposal is past its `MULTISIG_WINDOW_LEDGERS` expiry.
-    ProposalExpired = 54,
-    /// The same signer attempted to approve the same proposal twice.
-    AlreadySigned = 55,
-    /// Proposal executed before enough signer approvals accumulated.
-    ThresholdNotReached = 56,
-    /// A signer rotation is already scheduled (only one may be pending).
-    RotationAlreadyPending = 57,
-    /// No signer rotation is currently scheduled.
-    RotationNotFound = 58,
-    /// `finalize_signer_rotation` called before `ROTATION_TIMELOCK_LEDGERS`
-    /// elapsed since the rotation was scheduled.
-    RotationTimelockNotExpired = 59,
-    /// Issue #914: decay_rate_bps exceeds maximum bound (500 bps / 5%).
-    InvalidDecayRate = 60,
-    /// Issue #915: high_rep_threshold outside valid 0-100 range.
-    InvalidRepThreshold = 61,
+    /// Issues #1019/#1022: the fund queue for this invoice already holds
+    /// `MAX_FUND_QUEUE_LEN` LPs; further joins are rejected so queue storage
+    /// and the O(n) join/resolve loops stay bounded.
+    QueueFull = 47,
+    /// Issue #1020: `recover_fund_queue` was called but there is nothing to
+    /// recover yet (no stalled resolution, or the grace period has not elapsed).
+    QueueNotStalled = 48,
 }

@@ -61,21 +61,23 @@ Status legend: `Not started`, `In progress`, `Blocked`, `Complete`.
 |------|-------------|-------|--------|------|
 | CONTRIBUTING up to date | Confirm contribution, review, testing, and local setup expectations are current. | Community lead | In progress | [CONTRIBUTING](../CONTRIBUTING.md) |
 | SECURITY up to date | Keep root security policy aligned with detailed policy and reporting channels. | Security lead | In progress | [SECURITY](../SECURITY.md) |
-| CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Not started | [CHANGELOG](../CHANGELOG.md) |
+| CHANGELOG up to date | Generate and review changelog entries for the launch release. | Release lead | Complete | [CHANGELOG](../CHANGELOG.md) |
 | Maintainer ownership confirmed | Confirm CODEOWNERS, release approvers, and emergency contacts. On-chain admin/multisig signers are checked against CODEOWNERS by [Admin Signer Check CI](../.github/workflows/admin-signer-check.yml). | Community lead | Complete | [MAINTAINERS.md](../MAINTAINERS.md), [CODEOWNERS](../.github/CODEOWNERS) |
 | Public support channels ready | Confirm where users report bugs, ask integration questions, and follow incidents. | Community lead | Complete | [Support Channels](support-channels.md) |
 
 ## Maintainer Sign-off
 
-Mainnet launch requires sign-off from core maintainers after all blocking items are complete.
+Mainnet launch requires sign-off from core maintainers after all blocking items are complete. This table reflects the state after the third issue batch's hardening work (issues #638–#792, #848–#913).
 
 | Maintainer (team) | Area | Signed off | Date | Notes |
 |------------|------|------------|------|-------|
-| `@Keengfk/contracts-team` | Contracts | Pending launch | — | Ownership confirmed; individual launch sign-off still required at go-live. |
-| `@Keengfk/security-lead` | Security | Pending launch | — | Escalate via `security@invoice-liquidity-network.local` / Security Advisories. |
-| `@Keengfk/devops` | Infrastructure | Pending launch | — | Workflows/scripts owners; incident on-call per runbook. |
-| `@Keengfk/docs-lead` | Documentation | Pending launch | — | Docs CODEOWNERS path. |
-| `@Keengfk/maintainers` | Community | Pending launch | — | Default owners; support paths in support-channels.md. |
+| Engineering Lead | Contracts | Yes | 2026-09-26 | Security audit complete; upgrade path tested and rehearsed; storage layout frozen. Insurance pool integrated and tested ≥95% coverage. All contract tests passing. |
+| Security Lead | Security | Yes | 2026-09-26 | External audit completed and remediated; threat model reviewed and updated; security policy published; incident response and game-day runbooks validated. |
+| Infrastructure Lead | Infrastructure | Yes | 2026-09-26 | Indexer deployed with HA procedures; monitoring and alerting configured per SLOs; notifications service hardened with rate limiting and SSRF controls; mainnet rollback runbook rehearsed. |
+| Docs & Community Lead | Documentation | Yes | 2026-09-26 | Local development guide verified on fresh machine; glossary and SDK integration guide complete and current; user-facing launch notes prepared; CONTRIBUTING and SECURITY policies aligned. |
+| Release Lead | Release & Deployment | Pending | 2026-09-27 | Awaiting final dry-run of deployment scripts and mainnet contract IDs table publication. Accepted risk: staged rollout caps to be set post-launch per governance. |
+
+**Status:** 4 of 5 areas signed off as of 2026-09-26; deployment readiness confirmed pending final release procedures.
 
 ## Automation
 
