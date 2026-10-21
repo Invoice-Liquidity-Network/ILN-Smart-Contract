@@ -489,6 +489,20 @@ pub struct VetoApproved {
     pub threshold: u32,
 }
 
+/// Issue #984: emitted when governance execution is paused.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovernancePaused {
+    pub admin: Address,
+}
+
+/// Issue #984: emitted when governance execution is unpaused.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GovernanceUnpaused {
+    pub admin: Address,
+}
+
 // ================================================================
 // Storage keys
 // ================================================================
@@ -1881,9 +1895,9 @@ pub fn set_execution_delay(
     }
 
     /// `get_execution_delay` contract entry point.
-///
-/// Access: Anyone
-pub fn get_execution_delay(env: Env) -> u32 {
+    ///
+    /// Access: Anyone
+    pub fn get_execution_delay(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&StorageKey::ExecutionDelay)
@@ -1915,6 +1929,10 @@ pub fn get_execution_delay(env: Env) -> u32 {
         // #1000: a vetoed (cancelled) proposal is dead regardless of timing.
         if proposal.status == ProposalStatus::Vetoed {
             return Err(GovernanceError::ProposalCancelled);
+        }
+
+        if proposal.status == ProposalStatus::Executed {
+            return Err(GovernanceError::ProposalAlreadyExecuted);
         }
 
         let now = env.ledger().timestamp();
@@ -2147,6 +2165,21 @@ pub fn get_execution_delay(env: Env) -> u32 {
 
             Self::transition_status(&env, &mut proposal, ProposalStatus::Executed)?;
 
+            // Issue #986: Permanent replay protection record and monotonic execution nonce.
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ProposalExecutedRecord(proposal_id), &true);
+
+            let nonce: u64 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::ExecutionNonce)
+                .unwrap_or(0_u64);
+            let next_nonce = nonce.saturating_add(1);
+            env.storage()
+                .instance()
+                .set(&StorageKey::ExecutionNonce, &next_nonce);
+
             // Issue #814: executed — ensure refund (no-op if already
             // refunded at Passed time; covers zero-deposit proposals).
             Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer)?;
@@ -2284,6 +2317,13 @@ pub fn get_veto_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
         approvals
     }
 
+    /// Issue #988: Returns the consented reason hash for a pending veto, if any.
+    pub fn get_veto_reason_hash(env: Env, proposal_id: u64) -> Option<BytesN<32>> {
+        env.storage()
+            .temporary()
+            .get(&StorageKey::VetoReasonHash(proposal_id))
+    }
+
     // ── Issue #68 / #642: veto_proposal ───────────────────────────
 
 /// Approve vetoing an active (or passed) proposal. Once `threshold`
@@ -2308,6 +2348,13 @@ pub fn veto_proposal(
         reason_hash: BytesN<32>,
     ) -> Result<(), GovernanceError> {
         signer.require_auth();
+
+        // Issue #988: Require explicit consent for veto transitions.
+        // Reason hash must be non-empty (cannot be all zeroes).
+        let empty_hash = BytesN::from_array(&env, &[0u8; 32]);
+        if reason_hash == empty_hash {
+            return Err(GovernanceError::ConsentRequired);
+        }
 
         // ── Guard: veto power must still be enabled ───────────────
         let enabled: bool = env
