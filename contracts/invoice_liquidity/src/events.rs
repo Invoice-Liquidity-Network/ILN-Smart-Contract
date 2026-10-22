@@ -757,3 +757,15 @@ pub struct QueueTieScoreMarginUpdated {
     pub new_margin: u32,
     pub updated_by: Address,
 }
+
+/// Issue #1035: emitted by `set_tie_fairness_policy()` when an admin flips
+/// the fund-queue tie fairness policy. Records both sides of the change so
+/// indexers can reconstruct the policy in effect for any historical
+/// `fund_queue_tie_broken` draw (topic: `tie_fairness_policy_updated`).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TieFairnessPolicyUpdated {
+    pub old_policy: crate::storage::TiePolicy,
+    pub new_policy: crate::storage::TiePolicy,
+    pub updated_by: Address,
+}

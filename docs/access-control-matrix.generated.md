@@ -23,25 +23,33 @@ the narrative.
 
 | Instruction | Inferred gate | Source |
 | ----------- | ------------- | ------ |
+| `add_identity_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `add_price_source` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `add_token` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `appeal_default` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `audit_token_decimals` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `auto_resolve_dispute` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `cancel_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `cancel_signer_rotation` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `check_identity_quorum_health` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `check_oracle_health` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `check_oracle_verification` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `claim_default` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `claim_pending_payout` | Caller (require_auth) | `contracts/invoice_liquidity/src/lib.rs` |
 | `claim_yield` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `convert_invoice_token` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `correct_token_decimals` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `dispute_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `execute_proposal` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `expire_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `finalize_signer_rotation` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `fund_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `get_circuit_recovery_state` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_config` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_contract_stats` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_fee_tiers` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `get_identity_oracles` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `get_identity_quorum` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_insurance_pool` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_invoice` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_invoice_count` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
@@ -51,6 +59,7 @@ the narrative.
 | `get_multisig_proposal` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_oracle_for_token` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_oracle_health` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `get_oracle_status` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_pending_payout` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_pending_signer_rotation` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `get_price_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
@@ -91,8 +100,11 @@ the narrative.
 | `query_nft_metadata` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `query_nft_owner` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `record_twap_sample` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `recover_fund_queue` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `register_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `register_token_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
+| `rehearse_rollback` | Admin | `contracts/invoice_liquidity/src/lib.rs` |
+| `remove_identity_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `remove_oracle` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `remove_price_source` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `remove_token` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
@@ -103,12 +115,14 @@ the narrative.
 | `resolve_fund_queue` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_admin` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_distribution_contract` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
+| `set_identity_quorum` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_insurance_pool` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_max_invoice_amount` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_max_oracle_age` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_max_price_deviation_bps` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_min_payer_reputation` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_price_oracle` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
+| `set_tie_fairness_policy` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_token_volume_cap` | Admin; rate-limited | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_twap_enabled` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
 | `set_twap_window` | Anyone | `contracts/invoice_liquidity/src/lib.rs` |
@@ -134,13 +148,16 @@ the narrative.
 | ----------- | ------------- | ------ |
 | `cast_vote` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
 | `checkpoint_balance` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
+| `compute_eta` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `configure_veto_multisig` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
 | `create_proposal` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
 | `delegate_votes` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
-| `disable_veto_power` | Caller (require_auth) | `contracts/iln_governance/src/lib.rs` |
+| `disable_veto_power` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `disable_veto_power_with_reason` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `execute_proposal` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_applied_vote_weight` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_delegate` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_eligible_checkpoint` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_execution_delay` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_gov_token_total_supply` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_max_delegation_depth` | Anyone | `contracts/iln_governance/src/lib.rs` |
@@ -151,10 +168,16 @@ the narrative.
 | `get_proposal_created_ledger` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_proposal_deposit` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_proposal_deposit_sink` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_proposal_eta` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_proposal_proposer` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_timelock_status` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_veto_approvals` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_veto_disable_record` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_veto_signers` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_veto_state` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_veto_threshold` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `get_voter_checkpoint` | Anyone | `contracts/iln_governance/src/lib.rs` |
+| `get_voter_prior_checkpoint` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `has_voted` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `initialize` | Anyone | `contracts/iln_governance/src/lib.rs` |
 | `is_proposal_deposit_settled` | Anyone | `contracts/iln_governance/src/lib.rs` |

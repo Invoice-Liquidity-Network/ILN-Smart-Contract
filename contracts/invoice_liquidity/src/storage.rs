@@ -197,6 +197,14 @@ pub enum DataKey {
     /// `best_score + margin` or higher, raising the economic barrier to
     /// equal-score manipulation.  Stored as a `u32` in instance storage.
     QueueTieScoreMargin,
+    /// Issue #1035: governance-configurable fairness policy applied when
+    /// `resolve_fund_queue` draws a winner among two or more LPs tied for
+    /// the current top score.  Absent (default) means
+    /// `TiePolicy::UniformRandom` — the pre-existing PRNG draw from
+    /// Issues #708/#1027 is preserved unchanged, so the control is opt-in.
+    /// Stored as a `TiePolicy` in instance storage (one bounded entry; no
+    /// per-LP state, so switching policies can never grow state unbounded).
+    QueueTiePolicy,
 }
 
 // ----------------------------------------------------------------
@@ -1167,4 +1175,57 @@ pub fn set_queue_tie_score_margin(env: &Env, margin: u32) {
     env.storage()
         .instance()
         .set(&DataKey::QueueTieScoreMargin, &margin);
+}
+
+// ----------------------------------------------------------------
+// Issue #1035: Queue Tie-Fairness Policy helpers
+// ----------------------------------------------------------------
+
+/// The fairness policy applied when `resolve_fund_queue` must choose a
+/// winner among two or more LPs tied for the current top score
+/// (Issue #1035).
+///
+/// Exactly two variants by design. A "least prior tie-wins" (round-robin)
+/// policy would need a per-LP win counter in persistent storage, which
+/// grows unbounded with LP cardinality — the issue's acceptance criteria
+/// forbid unbounded state growth — so it is documented as rejected rather
+/// than implemented.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TiePolicy {
+    /// Draw uniformly at random among the tied entries using the
+    /// network-seeded PRNG — the behaviour introduced by Issues #708/#1027.
+    /// This is the absent/default value, so Issue #1035 is
+    /// behaviour-preserving until an admin explicitly opts in to another
+    /// policy.
+    UniformRandom,
+    /// Deterministic tie-break: the tied entry with the lowest queue index
+    /// wins. Removes the PRNG surface entirely and makes every resolution
+    /// replayable from the queue state, at the cost of favouring the
+    /// earliest joiner among equal scores (the join-order gameability
+    /// Issue #708 fixed — hence strictly opt-in).
+    DeterministicFirst,
+}
+
+/// Return the current queue tie-fairness policy (Issue #1035).
+///
+/// Fail-closed: an absent record yields `TiePolicy::UniformRandom` — the
+/// exact behaviour this contract had before the control existed — and
+/// never silently falls back to anything else.
+pub fn get_queue_tie_policy(env: &Env) -> TiePolicy {
+    env.storage()
+        .instance()
+        .get(&DataKey::QueueTiePolicy)
+        .unwrap_or(TiePolicy::UniformRandom)
+}
+
+/// Persist a new queue tie-fairness policy (Issue #1035).
+///
+/// The value lives in instance storage keyed by `DataKey::QueueTiePolicy`:
+/// per contract instance, one bounded entry, and no storage migration is
+/// required because an absent record already means the default policy.
+pub fn set_queue_tie_policy(env: &Env, policy: &TiePolicy) {
+    env.storage()
+        .instance()
+        .set(&DataKey::QueueTiePolicy, policy);
 }

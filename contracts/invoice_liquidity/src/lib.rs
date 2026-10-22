@@ -48,6 +48,8 @@ use soroban_sdk::{
 };
 
 use crate::storage::get_admin;
+// Issue #1035: tie-fairness policy storage accessors + policy type.
+use crate::storage::{get_queue_tie_policy, set_queue_tie_policy, TiePolicy};
 use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
@@ -57,7 +59,7 @@ use events::{
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
     PriceOracleUpdated, SignerRotationCancelled, SignerRotationFinalized,
-    SignerRotationScheduled, TokenAdded, TokenRemoved,
+    SignerRotationScheduled, TieFairnessPolicyUpdated, TokenAdded, TokenRemoved,
 };
 use invoice::get_last_pause_timestamp;
 use invoice::{
@@ -2548,11 +2550,23 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             }
         }
         let winner_index: u32 = if tied.len() > 1 {
-            // GenRange is only implemented for u64 in this soroban-sdk
-            // version — generate as u64, then narrow (safe: tied.len() is
-            // bounded by MAX_FUND_QUEUE_LEN).
-            tied.get(env.prng().gen_range::<u64>(0..u64::from(tied.len())) as u32)
-                .unwrap()
+            // Issue #1035: the draw below is now governed by the
+            // admin-configurable tie-fairness policy. UniformRandom (the
+            // absent/default) preserves today's PRNG behaviour exactly;
+            // DeterministicFirst takes the lowest tied index and never
+            // touches the PRNG. The pre-existing expression is *wrapped*,
+            // not restructured, so this rebases mechanically onto the
+            // bounded-entropy rewrite in-flight in #1135/#1136.
+            match get_queue_tie_policy(&env) {
+                TiePolicy::DeterministicFirst => tied.get(0).unwrap(),
+                TiePolicy::UniformRandom => {
+                    // GenRange is only implemented for u64 in this soroban-sdk
+                    // version — generate as u64, then narrow (safe: tied.len() is
+                    // bounded by MAX_FUND_QUEUE_LEN).
+                    tied.get(env.prng().gen_range::<u64>(0..u64::from(tied.len())) as u32)
+                        .unwrap()
+                }
+            }
         } else {
             tied.get(0).unwrap()
         };
@@ -2704,6 +2718,74 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             },
         );
         Ok(Some(winner))
+    }
+
+    // ------------------------------------------------------------
+    // Issue #1035: configurable tie fairness policy
+    // ------------------------------------------------------------
+    /// `set_tie_fairness_policy` contract entry point.
+    ///
+    /// Sets the governance-configurable fairness policy used by
+    /// `resolve_fund_queue` when two or more LPs are tied for the current
+    /// top score.  Before: the winner was always drawn uniformly at random
+    /// with the network-seeded PRNG (Issues #708/#1027).  After: the draw
+    /// obeys the stored `TiePolicy` — `UniformRandom` (absent/default,
+    /// identical to the old behaviour) or `DeterministicFirst` (lowest
+    /// tied index wins, no PRNG at all, replayable resolutions).
+    ///
+    /// Rollout / recovery / upgrade impact (Issue #1035 AC): the setting is
+    /// one instance-storage entry (`DataKey::QueueTiePolicy`), per contract
+    /// instance, with no unbounded state growth.  No storage migration is
+    /// needed because an absent record already means `UniformRandom`, so a
+    /// mid-deploy upgrade is a no-op for behaviour.  Recovery from a
+    /// mistaken flip is symmetric: the admin calls this entry point again
+    /// with `UniformRandom`.  Instance storage survives WASM upgrades, so
+    /// the policy persists across contract version bumps and is readable by
+    /// any off-chain indexer from the `tie_fairness_policy_updated` event
+    /// audit trail.
+    ///
+    /// # Arguments
+    /// * `env` — host environment
+    /// * `caller` — the account performing the update; must equal the stored admin
+    /// * `policy` — new `TiePolicy` (`UniformRandom` | `DeterministicFirst`)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    ///
+    /// # Errors
+    /// * `Unauthorized` if `caller` is not the admin (or no admin is configured)
+    /// * `RateLimited` if called again inside the admin-parameter cooldown
+    ///
+    /// Access: Admin only
+    pub fn set_tie_fairness_policy(
+        env: Env,
+        caller: Address,
+        policy: TiePolicy,
+    ) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        let admin: Address = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        // `require_admin` already authorized the stored admin; fail closed
+        // if the caller submitted on-chain is not that same admin, so the
+        // emitted event can never misattribute who changed the control.
+        if caller != admin {
+            return Err(ContractError::Unauthorized);
+        }
+        check_rate_limit(&env, "set_tie_fairness_policy", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        record_admin_action(&env, "set_tie_fairness_policy");
+        let old_policy = get_queue_tie_policy(&env);
+        set_queue_tie_policy(&env, &policy);
+        env.events().publish(
+            (
+                Symbol::new(&env, "tie_fairness_policy_updated"),
+                caller.clone(),
+            ),
+            TieFairnessPolicyUpdated {
+                old_policy,
+                new_policy: policy,
+                updated_by: caller,
+            },
+        );
+        Ok(())
     }
 
     // ------------------------------------------------------------
@@ -4641,3 +4723,6 @@ mod tests_token_safety;
 mod tests_max_depth_extension;
 // Issue #1027: Focused tests for join-order tie-breaking replacement
 mod tests_tie_breaking;
+// Issue #1035: configurable tie fairness policy — default parity,
+// authorization boundary, DeterministicFirst reproducibility and queue bounds.
+mod tests_tie_fairness_policy;
