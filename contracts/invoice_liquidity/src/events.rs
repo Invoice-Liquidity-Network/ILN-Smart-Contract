@@ -757,3 +757,35 @@ pub struct QueueTieScoreMarginUpdated {
     pub new_margin: u32,
     pub updated_by: Address,
 }
+
+// ----------------------------------------------------------------
+// Issue #1036 / #1039: fund-queue structural verification verdicts
+// ----------------------------------------------------------------
+
+/// Emitted by `resolve_fund_queue` when the fail-closed structural
+/// verification of the persisted queue rejects it (Issue #1036), or when the
+/// equal-score candidate-group post-condition fires (Issue #1039). A
+/// resolution that emits this event did NOT persist a winner.
+///
+/// Published with topic `fund_queue_ordering_rejected`.
+///
+/// # Fields
+/// * `invoice_id` — the queue whose persisted state failed verification
+/// * `index`      — violation position: for a monotonicity violation the
+///   pair start `i`; for a duplicate the position of the later occurrence;
+///   for a length violation the sentinel `0`; for the #1039 post-condition
+///   the drawn `winner_index` that was not a member of the candidate group.
+/// * `observed`   — observed value: the offending entry's score (monotonicity),
+///   `2` (duplicate: the LP occurs twice), `queue.len()` (length), or `1`
+///   (#1039: the winner was drawn outside the candidate group).
+/// * `expected`   — expected value: the preceding entry's score
+///   (monotonicity), `1` (dedupe cap), `MAX_FUND_QUEUE_LEN` (length), or
+///   `0` (#1039 post-condition).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueOrderingRejected {
+    pub invoice_id: u64,
+    pub index: u32,
+    pub observed: u32,
+    pub expected: u32,
+}
