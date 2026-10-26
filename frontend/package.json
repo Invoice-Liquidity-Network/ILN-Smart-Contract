@@ -15,7 +15,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@storybook/addon-a11y": "^8.2.9",
+    "@storybook/addon-a11y": "^10.5.10",
     "@storybook/addon-essentials": "^8.2.9",
     "@storybook/addon-interactions": "^8.2.9",
     "@storybook/nextjs": "^8.2.9",
