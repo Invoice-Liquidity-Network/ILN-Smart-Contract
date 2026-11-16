@@ -513,8 +513,8 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                     && decay_config.decay_rate_bps > 0
                 {
                     // Calculate number of decay periods that have passed
-                    let periods_passed =
-                        u64::from(ledgers_since_activity).saturating_div(decay_config.decay_period_ledgers);
+                    let periods_passed = u64::from(ledgers_since_activity)
+                        .saturating_div(decay_config.decay_period_ledgers);
 
                     // Apply decay: score = score * (1 - decay_rate/10000)^periods
                     // Issue #601: periods_passed is unbounded (governance-
@@ -526,8 +526,9 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                         } else {
                             let mut decayed_score = rep.score as u64;
                             for _ in 0..periods_passed {
-                                let mut decay_amount =
-                                    decayed_score.saturating_mul(decay_config.decay_rate_bps as u64).saturating_div(10_000);
+                                let mut decay_amount = decayed_score
+                                    .saturating_mul(decay_config.decay_rate_bps as u64)
+                                    .saturating_div(10_000);
                                 if decay_amount == 0 && decayed_score > 0 {
                                     decay_amount = 1;
                                 }
@@ -535,7 +536,6 @@ pub fn get_payer_score(env: &Env, payer: &Address) -> u32 {
                             }
                             decayed_score
                         };
-
 
                     let new_score = (decayed_score.min(100)) as u32;
                     if new_score != rep.score {

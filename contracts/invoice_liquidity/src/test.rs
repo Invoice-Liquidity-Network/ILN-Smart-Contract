@@ -1464,7 +1464,10 @@ fn test_upgrade_emits_correct_event() {
         timestamp: t.env.ledger().timestamp(),
     };
 
-    assert!(events.events().len() > 0, "ContractUpgraded event should be emitted");
+    assert!(
+        events.events().len() > 0,
+        "ContractUpgraded event should be emitted"
+    );
 }
 
 #[test]

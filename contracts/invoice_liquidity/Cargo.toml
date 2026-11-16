@@ -9,12 +9,13 @@ publish = false
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-insurance_pool = { path = "../insurance_pool", version = "0.1.0" }
+insurance_pool = { path = "../insurance_pool", version = "0.1.0", default-features = false }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 ed25519-dalek = "2.2.0"
 iln_governance = { path = "../iln_governance" }
+insurance_pool = { path = "../insurance_pool", features = ["contract-impl"] }
 # Issue #706: the full-protocol-lifecycle test needs the real
 # iln_distribution and reputation_bonus contracts to genuinely exercise all
 # five contracts' cross-contract wiring, not mocks.

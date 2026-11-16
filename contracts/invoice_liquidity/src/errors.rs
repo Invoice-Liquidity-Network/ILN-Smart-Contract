@@ -85,4 +85,32 @@ pub enum ContractError {
     /// Issue #655: funding this amount would push the token's cumulative
     /// funded volume past the governance-configured staged-rollout cap.
     GlobalVolumeCapExceeded = 45,
+    /// Multisig admin was already bootstrapped; reconfiguration goes through
+    /// an `UpdateMultisig` proposal.
+    MultisigAlreadyConfigured = 46,
+    /// Signer list or threshold failed validation (empty, duplicates, or
+    /// threshold outside `1..=signers.len()`).
+    InvalidMultisigConfig = 47,
+    /// A multisig operation ran before `initialize_multisig_admin`.
+    MultisigNotConfigured = 48,
+    /// Caller is not in the configured multisig signer set.
+    NotAuthorizedSigner = 49,
+    /// A pending, unexpired proposal already exists for this admin action.
+    DuplicateProposal = 50,
+    /// No multisig proposal exists for the given id.
+    ProposalNotFound = 51,
+    /// The proposal was already executed.
+    ProposalAlreadyExecuted = 52,
+    /// The proposal's ledger window elapsed before it reached threshold.
+    ProposalExpired = 53,
+    /// This signer already approved the proposal.
+    AlreadySigned = 54,
+    /// Execution was requested before enough signers approved.
+    ThresholdNotReached = 55,
+    /// A signer rotation is already scheduled.
+    RotationAlreadyPending = 56,
+    /// No signer rotation is scheduled.
+    RotationNotFound = 57,
+    /// The scheduled rotation's timelock has not elapsed.
+    RotationTimelockNotExpired = 58,
 }

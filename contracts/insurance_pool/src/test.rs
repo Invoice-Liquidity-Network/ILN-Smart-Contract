@@ -408,14 +408,14 @@ fn premium_rate_change_does_not_retroactively_affect_enrolled_lp_coverage() {
     let lp = Address::generate(&s.env);
 
     // 1. LP deposits premium at the original base rate (default 500 bps = 5%)
-    let deposit_amount = COVERAGE / 3; // ~33% -> tier 4: 150% coverage
+    let deposit_amount = COVERAGE / 3; // ~33% sits in the 25–50% tier (100% coverage)
     s.token_admin.mint(&lp, &deposit_amount);
     s.client.deposit_premium(&lp, &deposit_amount);
     assert!(s.client.is_enrolled(&lp));
 
     // Record the tiered coverage before rate change
     let coverage_before = s.client.get_tiered_coverage(&lp);
-    assert_eq!(coverage_before, (COVERAGE * 150) / 100); // 150% tier for >25% deposit
+    assert_eq!(coverage_before, COVERAGE); // 100% tier for a 25–50% deposit
 
     // 2. Governance changes the base premium rate (double it)
     let new_rate = 1000; // 10% instead of 5%
@@ -953,7 +953,10 @@ fn coverage_change_cancel_resubmit_restarts_timelock() {
     // The new eta MUST be fresh from current time, not influenced by the first
     let current_time = s.env.ledger().timestamp();
     assert_eq!(eta2, current_time + TIMELOCK_DELAY_SECONDS);
-    assert_eq!(eta1, eta2, "timelock restart should produce the same eta when ledger time hasn't advanced");
+    assert_eq!(
+        eta1, eta2,
+        "timelock restart should produce the same eta when ledger time hasn't advanced"
+    );
 }
 
 #[test]
@@ -968,7 +971,8 @@ fn coverage_change_rapid_cancel_cycles_cannot_bypass_timelock() {
 
         assert_eq!(
             eta, expected_eta,
-            "cycle {} must have fresh timelock delay", cycle
+            "cycle {} must have fresh timelock delay",
+            cycle
         );
 
         // Always cancel before resubmitting
@@ -1017,7 +1021,10 @@ fn admin_transfer_cancel_resubmit_restarts_timelock() {
     // The new eta must be fresh
     let current_time = s.env.ledger().timestamp();
     assert_eq!(eta2, current_time + TIMELOCK_DELAY_SECONDS);
-    assert_eq!(eta1, eta2, "admin transfer timelock restart should produce the same eta");
+    assert_eq!(
+        eta1, eta2,
+        "admin transfer timelock restart should produce the same eta"
+    );
 }
 
 #[test]
@@ -1032,7 +1039,8 @@ fn admin_transfer_rapid_cancel_cycles_cannot_bypass_timelock() {
 
         assert_eq!(
             eta, expected_eta,
-            "admin transfer cycle {} must have fresh timelock delay", cycle
+            "admin transfer cycle {} must have fresh timelock delay",
+            cycle
         );
 
         // Always cancel before proposing the next admin
@@ -1066,11 +1074,17 @@ fn mixed_coverage_and_admin_cancel_cycles_are_independent() {
 
     // Re-propose coverage change — should get a fresh ETA
     let coverage_eta_new = s.client.propose_coverage_change(&new_coverage);
-    assert_eq!(coverage_eta_new, s.env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS);
+    assert_eq!(
+        coverage_eta_new,
+        s.env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS
+    );
 
     // The admin transfer ETA remains unchanged (it wasn't cancelled)
     let (pending_admin, stored_eta) = s.client.get_pending_admin().unwrap();
-    assert_eq!(stored_eta, admin_eta, "uncancelled admin transfer ETA must not change");
+    assert_eq!(
+        stored_eta, admin_eta,
+        "uncancelled admin transfer ETA must not change"
+    );
     assert_eq!(pending_admin, new_admin);
 
     // Advance to just before the original admin transfer ETA and verify
@@ -1105,8 +1119,6 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
     const NUM_DEFAULTS: usize = 50;
     const MINIMAL_PREMIUM: i128 = COVERAGE / 1000; // 0.1% per LP
 
-    // Initialize pool with a known balance
-    let initial_pool_balance = COVERAGE; // Start with 1B tokens
     s.env.ledger().set_timestamp(0);
 
     // Create and enroll 100 "latecomer" LPs with minimal premiums
@@ -1118,13 +1130,18 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
         latecomers.push(lp);
     }
 
-    // At this point, pool balance should be approximately:
-    // 1B (initial) + (100 * 0.1%) = 1B + 1M ≈ 1.001B
     let balance_after_enrollments = s.client.get_pool_balance();
-    assert!(
-        balance_after_enrollments > initial_pool_balance,
+    assert_eq!(
+        balance_after_enrollments,
+        (NUM_LATECOMERS as i128) * MINIMAL_PREMIUM,
         "pool balance should increase after premium deposits"
     );
+
+    // Fund the pool enough to pay the 50% tier on the following defaults.
+    let whale = Address::generate(&s.env);
+    let whale_deposit = COVERAGE * 30;
+    s.token_admin.mint(&whale, &whale_deposit);
+    s.client.deposit_premium(&whale, &whale_deposit);
 
     // Now simulate coordinated defaults from the first 50 LPs
     // Each claim will pay up to the tiered coverage (which is 50% for minimal premiums)
@@ -1150,7 +1167,8 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
     let balance_after_claims = s.client.get_pool_balance();
     assert!(
         balance_after_claims >= 0,
-        "pool balance must never go negative; got {}", balance_after_claims
+        "pool balance must never go negative; got {}",
+        balance_after_claims
     );
 
     // Verify pool degradation is bounded by the pro-rata capping
@@ -1175,7 +1193,7 @@ fn stress_test_insurance_pool_adverse_selection_scenario() {
 
     std::println!(
         "Adverse selection stress test results:\n  Initial balance: {}\n  After enrollments: {}\n  After {} claims: {}\n  Total paid out: {}\n  Remaining runway: {:?} months",
-        initial_pool_balance,
+        0,
         balance_after_enrollments,
         NUM_DEFAULTS,
         balance_after_claims,
@@ -1209,11 +1227,21 @@ fn insurance_pool_handles_sequential_mass_enrollment_and_claims() {
 
     // After all enrollments, verify pool health is still positive
     let health_before_claims = s.client.get_pool_health();
-    assert!(health_before_claims.balance > 0, "pool should be funded after enrollments");
+    assert!(
+        health_before_claims.balance > 0,
+        "pool should be funded after enrollments"
+    );
     assert!(
         health_before_claims.enrolled_lp_count > 0,
         "should have enrolled LPs"
     );
+
+    // One large deposit so the first claims can pay the 50% tier without
+    // draining the pool that the small wave deposits alone cannot cover.
+    let whale = Address::generate(&s.env);
+    let whale_deposit = COVERAGE * 2;
+    s.token_admin.mint(&whale, &whale_deposit);
+    s.client.deposit_premium(&whale, &whale_deposit);
 
     // Now trigger some claims (but not from all LPs simultaneously)
     // Note: In test mode with mock_all_auths, we can only test the success path

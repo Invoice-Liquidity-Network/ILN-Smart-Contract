@@ -410,7 +410,10 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::MinQuorumBps, &DEFAULT_MIN_QUORUM_BPS);
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &DEFAULT_MAX_DELEGATION_DEPTH);
+        env.storage().instance().set(
+            &StorageKey::MaxDelegationDepth,
+            &DEFAULT_MAX_DELEGATION_DEPTH,
+        );
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &0_u64);
@@ -448,15 +451,27 @@ impl GovContract {
     }
 
     pub fn get_max_delegation_depth(env: Env) -> u32 {
-        env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
     }
 
     pub fn set_max_delegation_depth(env: Env, max_depth: u32) -> Result<(), GovernanceError> {
-        let iln_contract: Address = env.storage().instance().get(&StorageKey::IlnContract).unwrap();
+        let iln_contract: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::IlnContract)
+            .unwrap();
         iln_contract.require_auth();
         let old_value: u32 = Self::get_max_delegation_depth(env.clone());
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &max_depth);
-        env.events().publish((Symbol::new(&env, "max_delegation_depth_updated"),), (old_value, max_depth));
+        env.storage()
+            .instance()
+            .set(&StorageKey::MaxDelegationDepth, &max_depth);
+        env.events().publish(
+            (Symbol::new(&env, "max_delegation_depth_updated"),),
+            (old_value, max_depth),
+        );
         Ok(())
     }
 
@@ -684,11 +699,7 @@ impl GovContract {
         let mut lo: i128 = 0;
         let mut hi: i128 = n;
         while lo < hi {
-            let mid = lo.saturating_add(
-                hi.saturating_sub(lo)
-                    .saturating_add(1)
-                    .saturating_div(2)
-            );
+            let mid = lo.saturating_add(hi.saturating_sub(lo).saturating_add(1).saturating_div(2));
             match mid.checked_mul(mid) {
                 Some(sq) if sq <= n => lo = mid,
                 _ => hi = mid.saturating_sub(1),
@@ -696,7 +707,6 @@ impl GovContract {
         }
         lo
     }
-
 
     /// Returns the configured minimum proposer balance.
     pub fn get_min_proposal_balance(env: Env) -> i128 {
@@ -1623,7 +1633,11 @@ impl GovContract {
 
     /// Walk forward pointers to find the terminal node (one with no further delegate).
     fn resolve_terminal(env: &Env, start: &Address) -> Address {
-        let max_depth = env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
+        let max_depth = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
         let mut current = start.clone();
         let mut depth = 0u32;
         loop {

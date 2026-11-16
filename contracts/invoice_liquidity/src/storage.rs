@@ -49,6 +49,10 @@ pub enum DataKey {
     /// Issue #645: ring-buffer slot for the admin action audit log, indexed
     /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
     AdminActionLog(u32),
+    /// Issue #645: monotonically increasing count of admin actions ever
+    /// recorded. Never decreases, even as older ring-buffer entries are
+    /// overwritten.
+    AdminActionCount,
 
     // Stats (Persistent)
     TotalInvoices,
