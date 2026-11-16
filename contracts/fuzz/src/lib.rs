@@ -148,9 +148,17 @@ mod tests {
             // Initialize gov contract
             let iln_contract = Address::generate(&env);
             let dist_contract = Address::generate(&env);
+            let rep_contract = Address::generate(&env);
             let admin = Address::generate(&env);
             let token = Address::generate(&env);
-            let _ = gov.try_initialize(&iln_contract, &dist_contract, &token, &admin, &10_000);
+            let _ = gov.try_initialize(
+                &iln_contract,
+                &dist_contract,
+                &rep_contract,
+                &token,
+                &admin,
+                &10_000,
+            );
 
             let voter_payload = if voter_is_contract {
                 AddressPayload::ContractIdHash(BytesN::from_array(&env, &voter_bytes))
@@ -175,9 +183,17 @@ mod tests {
             // Initialize gov contract
             let iln_contract = Address::generate(&env);
             let dist_contract = Address::generate(&env);
+            let rep_contract = Address::generate(&env);
             let admin = Address::generate(&env);
             let token = Address::generate(&env);
-            let _ = gov.try_initialize(&iln_contract, &dist_contract, &token, &admin, &10_000);
+            let _ = gov.try_initialize(
+                &iln_contract,
+                &dist_contract,
+                &rep_contract,
+                &token,
+                &admin,
+                &10_000,
+            );
 
             let delegator = AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&env, &delegator_bytes)).to_address(&env);
             let delegate = AddressPayload::AccountIdPublicKeyEd25519(BytesN::from_array(&env, &delegate_bytes)).to_address(&env);

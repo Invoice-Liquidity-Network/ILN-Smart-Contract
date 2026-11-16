@@ -360,7 +360,13 @@ impl InsurancePool {
         let threshold_50 = default_coverage.saturating_div(2);
 
         if premiums_paid >= threshold_50 {
-            default_coverage.saturating_mul(150).saturating_div(100) // 150% coverage
+            // Checked, not saturating: a coverage cap past i128::MAX / 150 must
+            // trap instead of wrapping the payout.
+            default_coverage
+                .checked_mul(150)
+                .unwrap()
+                .checked_div(100)
+                .unwrap()
         } else if premiums_paid >= threshold_25 {
             default_coverage // 100% coverage
         } else if premiums_paid >= threshold_10 {
@@ -369,7 +375,6 @@ impl InsurancePool {
             default_coverage.saturating_mul(50).saturating_div(100) // 50% coverage
         }
     }
-
 
     /// Returns `true` if a claim has already been processed for `invoice_id`.
     pub fn is_claimed(env: Env, invoice_id: u64) -> bool {

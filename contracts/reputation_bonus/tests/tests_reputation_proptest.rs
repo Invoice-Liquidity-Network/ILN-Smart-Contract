@@ -3,10 +3,7 @@
 use proptest::prelude::*;
 use reputation_bonus::config::Config;
 use reputation_bonus::{ReputationBonusContract, ReputationBonusContractClient};
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepBonusEvent {
@@ -23,7 +20,9 @@ fn rep_bonus_event_strategy() -> impl Strategy<Value = RepBonusEvent> {
     ]
 }
 
-fn setup_reputation_bonus_env(env: &Env) -> (ReputationBonusContractClient<'static>, Address, Address) {
+fn setup_reputation_bonus_env(
+    env: &Env,
+) -> (ReputationBonusContractClient<'static>, Address, Address) {
     env.mock_all_auths();
     let admin = Address::generate(env);
     let contract_id = env.register_contract(None, ReputationBonusContract);
@@ -58,29 +57,22 @@ proptest! {
         for event in events {
             match event {
                 RepBonusEvent::Submit => {
-                    let inv = client.submit_invoice(
+                    let invoice = client.submit_invoice(
                         &freelancer,
                         &payer,
                         &1000,
                         &1800000000,
                         &500,
                     );
-                    if let Ok(invoice) = inv {
-                        pending_invoices.push(invoice.id);
-                    }
+                    pending_invoices.push(invoice.id);
                 }
                 RepBonusEvent::Pay => {
                     let id = if let Some(invoice_id) = pending_invoices.pop() {
                         invoice_id
                     } else {
-                        let inv = client.submit_invoice(
-                            &freelancer,
-                            &payer,
-                            &1000,
-                            &1800000000,
-                            &500,
-                        ).unwrap();
-                        inv.id
+                        client
+                            .submit_invoice(&freelancer, &payer, &1000, &1800000000, &500)
+                            .id
                     };
                     let _ = client.mark_paid(&id);
                 }
@@ -88,14 +80,9 @@ proptest! {
                     let id = if let Some(invoice_id) = pending_invoices.pop() {
                         invoice_id
                     } else {
-                        let inv = client.submit_invoice(
-                            &freelancer,
-                            &payer,
-                            &1000,
-                            &1800000000,
-                            &500,
-                        ).unwrap();
-                        inv.id
+                        client
+                            .submit_invoice(&freelancer, &payer, &1000, &1800000000, &500)
+                            .id
                     };
                     let _ = client.handle_default(&id);
                 }

@@ -639,9 +639,9 @@ fn test_fund_invoice_paused_never_reaches_oracle_registry() {
     // fund_invoice must fail fast on the pause guard, before it ever
     // resolves or queries the oracle registry — even with oracle
     // verification requested and a healthy oracle registered.
-    let result =
-        t.contract
-            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
     assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
 
     // No health snapshot was ever recorded — proof the oracle was never
@@ -666,11 +666,8 @@ fn test_oracle_registry_mutations_unaffected_by_core_contract_pause() {
     // the core contract's operational pause and must go through unaffected.
     t.contract
         .register_oracle(&OracleFeedType::Identity, &default_oracle);
-    t.contract.register_token_oracle(
-        &OracleFeedType::Identity,
-        &t.token.address,
-        &token_oracle,
-    );
+    t.contract
+        .register_token_oracle(&OracleFeedType::Identity, &t.token.address, &token_oracle);
     assert_eq!(
         t.contract
             .get_oracle_for_token(&OracleFeedType::Identity, &t.token.address),
@@ -788,9 +785,9 @@ fn test_fund_invoice_rejects_when_circuit_open_with_no_fallback() {
         .is_oracle_circuit_tripped(&OracleFeedType::Identity, &t.token.address));
 
     let invoice_id = make_invoice(&t);
-    let result =
-        t.contract
-            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
     assert_eq!(
         result,
         Err(Ok(ContractError::OracleCircuitOpen)),
@@ -812,11 +809,8 @@ fn test_fund_invoice_falls_back_to_feed_type_default_when_override_tripped() {
 
     // ...and a per-token override (higher priority) that will go stale.
     let bad_oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
-    t.contract.register_token_oracle(
-        &OracleFeedType::Identity,
-        &t.token.address,
-        &bad_oracle,
-    );
+    t.contract
+        .register_token_oracle(&OracleFeedType::Identity, &t.token.address, &bad_oracle);
 
     // Advance the ledger so the override's timestamp reads as stale.
     let mut info = t.env.ledger().get();
@@ -844,9 +838,9 @@ fn test_fund_invoice_falls_back_to_feed_type_default_when_override_tripped() {
     // override and fall back to the healthy feed-type default, rather than
     // rejecting the funding.
     let invoice_id = make_invoice(&t);
-    let result =
-        t.contract
-            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
     assert!(
         result.is_ok(),
         "fund_invoice must fall back to the healthy feed-type default when the \
@@ -901,9 +895,9 @@ fn test_reset_oracle_circuit_clears_flag_and_restores_verification() {
     oracle_client.set_response(&true, &t.env.ledger().sequence());
 
     let invoice_id = make_invoice(&t);
-    let result =
-        t.contract
-            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
     assert!(
         result.is_ok(),
         "funding must resume against the original oracle once governance resets the circuit"
@@ -944,9 +938,9 @@ fn test_circuit_does_not_auto_recover_on_single_fresh_query() {
     // Oracle-gated funding is still rejected (no fallback registered) even
     // though the underlying oracle is, right now, reporting fresh data.
     let invoice_id = make_invoice(&t);
-    let result =
-        t.contract
-            .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    let result = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
     assert_eq!(result, Err(Ok(ContractError::OracleCircuitOpen)));
 }
 
