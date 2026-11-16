@@ -148,6 +148,7 @@ pub struct PoolHealth {
 #[contract]
 pub struct InsurancePool;
 
+#[cfg(feature = "contract-impl")]
 #[contractimpl]
 impl InsurancePool {
     /// Initialise the pool.
@@ -692,6 +693,7 @@ impl InsurancePool {
     }
 }
 
+#[cfg(feature = "contract-impl")]
 #[contractimpl]
 impl InsurancePoolInterface for InsurancePool {
     fn interface_version(_env: Env) -> u32 {

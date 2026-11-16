@@ -12,6 +12,14 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true }
 
+[features]
+default = ["contract-impl"]
+# invoice_liquidity links this crate for the interface client. Disable
+# contract-impl there so this contract's `initialize` is not linked into the
+# invoice WASM (the two `initialize` exports collide and the network rejects
+# the upload).
+contract-impl = []
+
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = { workspace = true }
