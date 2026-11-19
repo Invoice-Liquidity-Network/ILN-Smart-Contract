@@ -57,6 +57,10 @@ impl MockOracle {
     ///
     /// Matches `OracleInterface::get_verification`.
     /// Panics if `set_should_panic()` was armed, clearing the flag first.
+    pub fn interface_version(_env: Env) -> u32 {
+        1
+    }
+
     pub fn get_verification(env: Env, payer: Address) -> VerificationResult {
         if env
             .storage()
@@ -64,7 +68,9 @@ impl MockOracle {
             .get::<_, bool>(&MockOracleKey::ShouldPanic)
             .unwrap_or(false)
         {
-            env.storage().temporary().remove(&MockOracleKey::ShouldPanic);
+            env.storage()
+                .temporary()
+                .remove(&MockOracleKey::ShouldPanic);
             panic!("mock oracle: forced panic (set_should_panic was armed)");
         }
 
@@ -80,7 +86,10 @@ impl MockOracle {
             .get(&MockOracleKey::Timestamp)
             .unwrap_or(0u64);
 
-        VerificationResult { verified, timestamp }
+        VerificationResult {
+            verified,
+            timestamp,
+        }
     }
 
     /// Update verification status for `payer`.

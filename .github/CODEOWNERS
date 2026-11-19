@@ -13,3 +13,7 @@ scripts/                 @Keengfk/devops
 
 # Security policy — security lead required
 SECURITY.md              @Keengfk/security-lead
+
+# Mainnet admin/multisig signer mapping — must stay in sync with the
+# on-chain signer set (see scripts/verify-admin-signers.ts, Issue #647)
+.github/mainnet-admin-signers.json  @Keengfk/contracts-team @Keengfk/security-lead

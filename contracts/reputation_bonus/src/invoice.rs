@@ -1,5 +1,6 @@
 use crate::config::get_config;
 use crate::errors::ContractError;
+use crate::events::{emit_invoice_status_changed, emit_invoice_submitted};
 use crate::rate_logic::calculate_effective_rate;
 use crate::reputation::{read_reputation, write_reputation};
 use soroban_sdk::{contracttype, Address, Env};
@@ -88,6 +89,8 @@ pub fn submit_invoice(
     payer_rep.invoices_submitted = payer_rep.invoices_submitted.saturating_add(1);
     write_reputation(env, payer, payer_rep);
 
+    emit_invoice_submitted(env, &invoice);
+
     Ok(invoice)
 }
 
@@ -118,6 +121,8 @@ pub fn mark_paid(env: &Env, invoice_id: u64) -> Result<(), ContractError> {
     free_rep.invoices_paid = free_rep.invoices_paid.saturating_add(1);
     write_reputation(env, &invoice.freelancer, free_rep);
 
+    emit_invoice_status_changed(env, &invoice);
+
     Ok(())
 }
 
@@ -145,6 +150,8 @@ pub fn handle_default(env: &Env, invoice_id: u64) -> Result<(), ContractError> {
     let mut free_rep = read_reputation(env, &invoice.freelancer);
     free_rep.invoices_defaulted = free_rep.invoices_defaulted.saturating_add(1);
     write_reputation(env, &invoice.freelancer, free_rep);
+
+    emit_invoice_status_changed(env, &invoice);
 
     Ok(())
 }

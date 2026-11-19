@@ -1,0 +1,8 @@
+packages:
+  - 'sdk'
+  - 'cli'
+  - 'frontend'
+  - 'indexer'
+  - 'notifications'
+  - 'tests/e2e'
+  - 'packages/*'

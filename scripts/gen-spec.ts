@@ -23,13 +23,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SRC_DIR = path.join(__dirname, "../contracts/invoice_liquidity/src");
-const LIB = path.join(SRC_DIR, "lib.rs");
-const ERRORS = path.join(SRC_DIR, "errors.rs");
-const EVENTS = path.join(SRC_DIR, "events.rs");
 const OUTPUT = path.join(__dirname, "../docs/contract-spec.json");
 
-const CONTRACT_NAME = "InvoiceLiquidityContract";
+const INVOICE_LIQUIDITY_SRC_DIR = path.join(__dirname, "../contracts/invoice_liquidity/src");
+const INSURANCE_POOL_SRC_DIR = path.join(__dirname, "../contracts/insurance_pool/src");
 
 interface Param {
   name: string;
@@ -131,8 +128,8 @@ function extractFunctions(code: string): FnSpec[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function extractErrors(code: string): { name: string; code: number }[] {
-  const block = code.match(/enum\s+ContractError\s*\{([\s\S]*?)\n\}/);
+function extractErrors(code: string, enumName: string): { name: string; code: number }[] {
+  const block = code.match(new RegExp(`enum\\s+${enumName}\\s*\\{([\\s\\S]*?)\\n\\}`));
   if (!block) return [];
   const out: { name: string; code: number }[] = [];
   for (const line of block[1].split("\n")) {
@@ -165,20 +162,31 @@ function extractEvents(code: string): { name: string; topics: string[]; fields: 
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function main() {
-  const lib = fs.readFileSync(LIB, "utf8");
-  const functions = extractFunctions(lib);
-  const errors = fs.existsSync(ERRORS) ? extractErrors(fs.readFileSync(ERRORS, "utf8")) : [];
-  const events = fs.existsSync(EVENTS) ? extractEvents(fs.readFileSync(EVENTS, "utf8")) : [];
+/** Build a contract spec object by parsing its source directory. */
+function buildContractSpec(opts: {
+  contractName: string;
+  srcDir: string;
+  libRelativePath: string;
+  errorEnumName: string;
+  libFileName?: string;
+  errorsFileName?: string;
+  eventsFileName?: string;
+}) {
+  const libPath = path.join(opts.srcDir, opts.libFileName ?? "lib.rs");
+  const errorsPath = path.join(opts.srcDir, opts.errorsFileName ?? "errors.rs");
+  const eventsPath = path.join(opts.srcDir, opts.eventsFileName ?? "events.rs");
 
-  const spec = {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    contract: CONTRACT_NAME,
-    source: "contracts/invoice_liquidity/src/lib.rs",
-    generator: "scripts/gen-spec.ts",
-    note:
-      "Source-derived ABI spec. The canonical embedded spec is produced by " +
-      "`stellar contract inspect --wasm <wasm> --output json` against the built WASM.",
+  const lib = fs.readFileSync(libPath, "utf8");
+  const functions = extractFunctions(lib);
+  // Errors/events may live in lib.rs itself (no dedicated file) or in their own module.
+  const errorsSrc = fs.existsSync(errorsPath) ? fs.readFileSync(errorsPath, "utf8") : lib;
+  const eventsSrc = fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : lib;
+  const errors = extractErrors(errorsSrc, opts.errorEnumName);
+  const events = extractEvents(eventsSrc);
+
+  return {
+    contract: opts.contractName,
+    source: opts.libRelativePath,
     functionCount: functions.length,
     errorCount: errors.length,
     eventCount: events.length,
@@ -186,11 +194,66 @@ function main() {
     errors,
     events,
   };
+}
+
+/**
+ * The InvoiceLiquidityContract portion of the existing output is preserved
+ * as-is rather than regenerated: `extractEvents` only recognises the
+ * `#[contractevent]` struct pattern, and `events.rs` has since moved to
+ * plain `#[contracttype]` structs published ad hoc, so a fresh run under-
+ * reports events for that contract. Refreshing it is a separate, pre-
+ * existing concern from adding the insurance_pool spec here.
+ */
+function loadExistingInvoiceLiquiditySpec(): ReturnType<typeof buildContractSpec> | null {
+  if (!fs.existsSync(OUTPUT)) return null;
+  const existing = JSON.parse(fs.readFileSync(OUTPUT, "utf8"));
+  const { contract, source, functionCount, errorCount, eventCount, functions, errors, events } =
+    existing;
+  return { contract, source, functionCount, errorCount, eventCount, functions, errors, events };
+}
+
+function main() {
+  const invoiceLiquidity =
+    loadExistingInvoiceLiquiditySpec() ??
+    buildContractSpec({
+      contractName: "InvoiceLiquidityContract",
+      srcDir: INVOICE_LIQUIDITY_SRC_DIR,
+      libRelativePath: "contracts/invoice_liquidity/src/lib.rs",
+      errorEnumName: "ContractError",
+    });
+
+  // insurance_pool keeps its errors in lib.rs (no dedicated errors.rs/events.rs)
+  // and has no #[contractevent] structs — events are ad-hoc env.events().publish() calls.
+  const insurancePool = buildContractSpec({
+    contractName: "InsurancePool",
+    srcDir: INSURANCE_POOL_SRC_DIR,
+    libRelativePath: "contracts/insurance_pool/src/lib.rs",
+    errorEnumName: "InsuranceError",
+  });
+
+  const spec = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    // Top-level fields describe InvoiceLiquidityContract for backward compatibility
+    // with existing consumers (e.g. scripts/generate-sdk.ts). Other contracts are
+    // listed under `contracts` instead of being duplicated at the top level.
+    ...invoiceLiquidity,
+    generator: "scripts/gen-spec.ts",
+    note:
+      "Source-derived ABI spec. The canonical embedded spec is produced by " +
+      "`stellar contract inspect --wasm <wasm> --output json` against the built WASM. " +
+      "Top-level fields describe InvoiceLiquidityContract; see `contracts` for the rest.",
+    contracts: {
+      insurance_pool: insurancePool,
+    },
+  };
 
   fs.writeFileSync(OUTPUT, JSON.stringify(spec, null, 2) + "\n");
   console.log(
     `✅ contract spec written to docs/contract-spec.json ` +
-      `(${functions.length} functions, ${errors.length} errors, ${events.length} events)`
+      `(invoice_liquidity: ${invoiceLiquidity.functions.length} functions, ` +
+      `${invoiceLiquidity.errors.length} errors, ${invoiceLiquidity.events.length} events; ` +
+      `insurance_pool: ${insurancePool.functions.length} functions, ` +
+      `${insurancePool.errors.length} errors, ${insurancePool.events.length} events)`
   );
 }
 

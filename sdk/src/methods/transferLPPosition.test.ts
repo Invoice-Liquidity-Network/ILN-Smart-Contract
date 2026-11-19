@@ -1,34 +1,49 @@
+import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { transferLPPosition } from "./transferLPPosition.js";
 import { ILNError } from "../errors.js";
 import { Account, SorobanRpc } from "@stellar/stellar-sdk";
 
-const CURRENT_LP = "GA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ";
-const NEW_LP = "GB6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ";
-const CONTRACT = "CA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ";
+// Mock assembleTransaction — it's a non-writable module export so we must
+// mock the whole module at load time.
+vi.mock("@stellar/stellar-sdk", async () => {
+  const actual = await vi.importActual<typeof import("@stellar/stellar-sdk")>("@stellar/stellar-sdk");
+  return {
+    ...actual,
+    SorobanRpc: {
+      ...(actual.SorobanRpc as object),
+      Api: (actual.SorobanRpc as unknown).Api,
+      assembleTransaction: vi.fn(() => ({ build: () => ({}) })),
+    },
+  };
+});
+
+const CURRENT_LP = "GBR7RT4MZTLKK2JNZPOSWVY74VFDR4HVR24QZNH2WONHPQFJZPKHWOTP";
+const NEW_LP = "GCCGXKWWVKMVIM2DMFJUTYTHFXSVXSMS7U3LPGS5KUPYE3TN5GXY364G";
+const CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 const PASS = "Test SDF Network ; September 2015";
 
 describe("transferLPPosition", () => {
   const mockServer = {
-    simulateTransaction: jest.fn(),
-    sendTransaction: jest.fn(),
-    getTransaction: jest.fn(),
+    simulateTransaction: vi.fn(),
+    sendTransaction: vi.fn(),
+    getTransaction: vi.fn(),
   } as unknown as SorobanRpc.Server;
 
   const account = new Account(CURRENT_LP, "1");
-  const sign = jest.fn((tx) => tx);
+  const sign = vi.fn((tx) => tx);
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it("transfers the position successfully", async () => {
-    // @ts-ignore
+    // @ts-expect-error mock
     mockServer.simulateTransaction.mockResolvedValue({ result: { retval: {} } });
-    // @ts-ignore
-    SorobanRpc.assembleTransaction = jest.fn(() => ({ build: () => ({}) }));
-    // @ts-ignore
+    // @ts-expect-error mock
+
+    // @ts-expect-error mock
     mockServer.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "txABC" });
-    // @ts-ignore
+    // @ts-expect-error mock
     mockServer.getTransaction.mockResolvedValue({ status: SorobanRpc.Api.GetTransactionStatus.SUCCESS });
 
     const res = await transferLPPosition(mockServer, CONTRACT, 7n, NEW_LP, account, sign, PASS);

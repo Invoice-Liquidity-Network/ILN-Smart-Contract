@@ -49,6 +49,7 @@ declare -A CONTRACTS=(
   ["iln_governance"]="target/wasm32v1-none/release/iln_governance.wasm"
   ["iln_distribution"]="target/wasm32v1-none/release/iln_distribution.wasm"
   ["reputation_bonus"]="target/wasm32v1-none/release/reputation_bonus.wasm"
+  ["insurance_pool"]="target/wasm32v1-none/release/insurance_pool.wasm"
 )
 
 declare -A CONTRACT_IDS
@@ -119,6 +120,7 @@ INVOICE_LIQUIDITY_ID=${CONTRACT_IDS[invoice_liquidity]:-}
 ILN_GOVERNANCE_ID=${CONTRACT_IDS[iln_governance]:-}
 ILN_DISTRIBUTION_ID=${CONTRACT_IDS[iln_distribution]:-}
 REPUTATION_BONUS_ID=${CONTRACT_IDS[reputation_bonus]:-}
+INSURANCE_POOL_ID=${CONTRACT_IDS[insurance_pool]:-}
 NETWORK=$NETWORK
 SOURCE=$SOURCE
 EOF

@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Tests for `iln cancel` — happy path (#233).
  */
@@ -14,50 +15,50 @@ function makeCancelResult(id = "42"): CancelResult {
 
 describe("iln cancel — happy path", () => {
   it("cancels a Pending invoice when user confirms", async () => {
-    const fetcher = jest.fn().mockResolvedValue(pendingInvoice());
-    const executor = jest.fn().mockResolvedValue(makeCancelResult());
-    const confirm = jest.fn().mockResolvedValue(true);
+    const fetcher = vi.fn().mockResolvedValue(pendingInvoice());
+    const executor = vi.fn().mockResolvedValue(makeCancelResult());
+    const confirm = vi.fn().mockResolvedValue(true);
     const cmd = makeCancelCommand(fetcher, executor, confirm);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "42"], { from: "user" });
 
     expect(executor).toHaveBeenCalledWith("42");
     expect(logs.some((l) => l.includes("cancelled"))).toBe(true);
     expect(logs.some((l) => l.includes("TXCANCEL001"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("skips confirmation prompt with --yes flag", async () => {
-    const fetcher = jest.fn().mockResolvedValue(pendingInvoice());
-    const executor = jest.fn().mockResolvedValue(makeCancelResult());
-    const confirm = jest.fn();
+    const fetcher = vi.fn().mockResolvedValue(pendingInvoice());
+    const executor = vi.fn().mockResolvedValue(makeCancelResult());
+    const confirm = vi.fn();
     const cmd = makeCancelCommand(fetcher, executor, confirm);
 
-    jest.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
 
     await cmd.parseAsync(["--id", "42", "--yes"], { from: "user" });
 
     expect(confirm).not.toHaveBeenCalled();
     expect(executor).toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("aborts without cancelling when user declines confirmation", async () => {
-    const fetcher = jest.fn().mockResolvedValue(pendingInvoice());
-    const executor = jest.fn();
-    const confirm = jest.fn().mockResolvedValue(false);
+    const fetcher = vi.fn().mockResolvedValue(pendingInvoice());
+    const executor = vi.fn();
+    const confirm = vi.fn().mockResolvedValue(false);
     const cmd = makeCancelCommand(fetcher, executor, confirm);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "42"], { from: "user" });
 
     expect(executor).not.toHaveBeenCalled();
     expect(logs.some((l) => l.includes("no changes"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

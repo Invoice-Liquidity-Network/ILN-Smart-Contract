@@ -1,40 +1,41 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { submitInvoice } from '../src/methods/submitInvoice.js';
 import { ILNError } from '../src/errors.js';
 import { Account, SorobanRpc, Transaction } from '@stellar/stellar-sdk';
 
 describe('submitInvoice', () => {
   const mockServer = {
-    simulateTransaction: jest.fn(),
-    sendTransaction: jest.fn(),
-    getTransaction: jest.fn(),
+    simulateTransaction: vi.fn(),
+    sendTransaction: vi.fn(),
+    getTransaction: vi.fn(),
   } as unknown as SorobanRpc.Server;
 
-  const mockAccount = new Account('GA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ', '1');
-  const mockSignTransaction = jest.fn((tx) => tx);
-  const contractAddress = 'CA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ';
+  const mockAccount = new Account('GBR7RT4MZTLKK2JNZPOSWVY74VFDR4HVR24QZNH2WONHPQFJZPKHWOTP', '1');
+  const mockSignTransaction = vi.fn((tx) => tx);
+  const contractAddress = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
   const networkPassphrase = 'Test SDF Network ; September 2015';
   
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('throws InvalidAmount if amount is 0', async () => {
-    const params = { payer: 'G123', amount: 0n, token: 'USDC', discountRate: 100, dueDate: Date.now() + 86400 * 2000 };
+    const params = { payer: 'G123', amount: 0n, token: 'USDC', discountRate: 100, dueDate: Math.floor(Date.now() / 1000) + 86400 * 30 };
     await expect(submitInvoice(mockServer, contractAddress, params, mockAccount, mockSignTransaction, networkPassphrase)).rejects.toThrow(ILNError.InvalidAmount);
   });
 
   it('throws InvalidDiscountRate if out of bounds', async () => {
-    const params = { payer: 'G123', amount: 100n, token: 'USDC', discountRate: 0, dueDate: Date.now() + 86400 * 2000 };
+    const params = { payer: 'G123', amount: 100n, token: 'USDC', discountRate: 0, dueDate: Math.floor(Date.now() / 1000) + 86400 * 30 };
     await expect(submitInvoice(mockServer, contractAddress, params, mockAccount, mockSignTransaction, networkPassphrase)).rejects.toThrow(ILNError.InvalidDiscountRate);
   });
 
   it('throws DueDateTooSoon if less than 24h', async () => {
-    const params = { payer: 'G123', amount: 100n, token: 'USDC', discountRate: 100, dueDate: Date.now() + 1000 };
+    const params = { payer: 'G123', amount: 100n, token: 'USDC', discountRate: 100, dueDate: Math.floor(Date.now() / 1000) + 10 };
     await expect(submitInvoice(mockServer, contractAddress, params, mockAccount, mockSignTransaction, networkPassphrase)).rejects.toThrow(ILNError.DueDateTooSoon);
   });
 
   it('handles happy path', async () => {
-    const params = { payer: 'GA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ', amount: 100n, token: 'CA6V6P6Z7U2N4KHTD6Y3Y3V7H2P6XZY3H2P6XZY3H2P6XZY3H2P6XZ', discountRate: 100, dueDate: Date.now() + 86400 * 2000 };
+    const params = { payer: 'GBR7RT4MZTLKK2JNZPOSWVY74VFDR4HVR24QZNH2WONHPQFJZPKHWOTP', amount: 100n, token: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4', discountRate: 100, dueDate: Math.floor(Date.now() / 1000) + 86400 * 30 };
     
     // @ts-ignore
     mockServer.simulateTransaction.mockResolvedValue({
@@ -43,9 +44,7 @@ describe('submitInvoice', () => {
       minResourceFee: '100'
     });
 
-    // @ts-ignore
-    SorobanRpc.assembleTransaction = jest.fn(() => ({ build: () => ({}) }));
-    
+        
     // @ts-ignore
     mockServer.sendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'tx123' });
     

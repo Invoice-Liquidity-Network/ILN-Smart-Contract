@@ -57,7 +57,6 @@ export async function transferLPPosition(
   const op = contract.call(
     "transfer_lp_position",
     nativeToScVal(invoiceId, { type: "u64" }),
-    nativeToScVal(currentLP, { type: "address" }),
     nativeToScVal(newLP, { type: "address" })
   );
 
@@ -82,8 +81,8 @@ export async function transferLPPosition(
 
   // Submit
   const sendResult = await server.sendTransaction(signedTx);
-  if (sendResult.errorResultXdr) {
-    throw new Error(`Transaction failed: ${sendResult.errorResultXdr}`);
+  if (sendResult.errorResult) {
+    throw new Error(`Transaction failed: ${sendResult.errorResult}`);
   }
 
   // Wait for completion

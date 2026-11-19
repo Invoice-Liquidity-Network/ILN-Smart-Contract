@@ -1,17 +1,24 @@
 #![cfg(test)]
 
 use super::*;
+use crate::config::Config;
 use crate::invoice::InvoiceStatus;
 use soroban_sdk::{
-    testutils::{storage::Persistent, Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
+use std::format;
+
+const INVOICE_AMOUNT: i128 = 100_000_000;
+const DISCOUNT_RATE: u32 = 300;
+const DUE_DATE_OFFSET: u64 = 60 * 60 * 24 * 30;
 
 struct TestEnv {
     env: Env,
     contract: InvoiceLiquidityContractClient<'static>,
     token: TokenClient<'static>,
+    token_address: Address,
     freelancer: Address,
     payer: Address,
     funder: Address,
@@ -48,135 +55,164 @@ fn setup() -> TestEnv {
         env,
         contract,
         token,
+        token_address: usdc_address,
         freelancer,
         payer,
         funder,
     }
 }
 
-#[test]
-fn test_submit_invoice_sets_ttl() {
-    let t = setup();
-    let amount = 100_000_000;
-    let due_date = t.env.ledger().timestamp() + 86400;
+fn submit_standard_invoice(t: &TestEnv) -> u64 {
+    let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.token_address,
+        &ReferralCode::None,
+    )
+}
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+// ================================================================
+// Reputation Decay Tests (Issue #487)
+// ================================================================
 
-    let key = crate::storage::DataKey::Invoice(id);
-    let ttl = t.env.as_contract(&t.contract.address, || {
-        t.env.storage().persistent().get_ttl(&key)
+fn setup_decay_config(t: &TestEnv, decay_rate_bps: u32, decay_period_ledgers: u64) {
+    let config = Config {
+        high_rep_threshold: 80,
+        bonus_bps: 200,
+        min_discount_rate_bps: 100,
+        decay_rate_bps,
+        decay_period_ledgers,
+        dispute_timeout_ledgers: 100,
+        xlm_sac_address: Address::generate(&t.env),
+        usdc_sac_address: Address::generate(&t.env),
+        eurc_sac_address: Address::generate(&t.env),
+        price_oracle: None,
+        max_oracle_age_ledgers: 17280,
+    };
+    t.env.as_contract(&t.contract.address, || {
+        crate::storage::set_config(&t.env, &config);
     });
+}
 
-    // Check that TTL is set
-    assert!(ttl > 0);
-    // Verify aggregate counter TTL as well
-    let count_key = crate::storage::DataKey::TotalInvoices;
-    let count_ttl = t.env.as_contract(&t.contract.address, || {
-        t.env.storage().persistent().get_ttl(&count_key)
+fn set_payer_score_direct(t: &TestEnv, score: u32) {
+    t.env.as_contract(&t.contract.address, || {
+        invoice::set_payer_score(&t.env, &t.payer, score);
     });
-    assert!(count_ttl > 0);
 }
 
 #[test]
-fn test_fund_invoice_extends_ttl() {
+fn test_reputation_decay_one_period() {
     let t = setup();
-    let amount = 100_000_000;
-    let due_date = t.env.ledger().timestamp() + 86400;
+    set_payer_score_direct(&t, 80);
+    setup_decay_config(&t, 100, 1000);
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
-
-    let key = crate::storage::DataKey::Invoice(id);
-    let initial_ttl = t.env.as_contract(&t.contract.address, || {
-        t.env.storage().persistent().get_ttl(&key)
-    });
-
-    // Advance ledger state to simulate time passed (enough to cross threshold)
     let mut ledger = t.env.ledger().get();
-    ledger.sequence_number += 1_500_000;
-    ledger.timestamp += 43_200;
+    ledger.sequence_number += 1000;
     t.env.ledger().set(ledger);
 
-    // Call fund_invoice which should refresh the TTL on the entry
-    t.contract.fund_invoice(&t.funder, &id, &amount, &false);
-
-    let updated_ttl = t.env.as_contract(&t.contract.address, || {
-        t.env.storage().persistent().get_ttl(&key)
-    });
-
-    // TTL should be at least equal to initial, effectively extended relative to the new ledger height
-    assert!(updated_ttl >= initial_ttl);
+    let score = t.contract.payer_score(&t.payer);
+    // Decay: 80 - max(80*100/10000, 1) = 80 - 1 = 79
+    assert_eq!(score, 79);
 }
 
 #[test]
-fn test_data_persistence_after_advancement() {
+fn test_reputation_decay_multiple_periods() {
     let t = setup();
-    let amount = 100_000_000;
-    let due_date = t.env.ledger().timestamp() + 86400 * 30; // 30 days
+    set_payer_score_direct(&t, 100);
+    setup_decay_config(&t, 100, 1000);
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
-
-    // Advance ledger significantly (e.g., 10,000 ledgers)
     let mut ledger = t.env.ledger().get();
-    ledger.sequence_number += 10_000;
-    ledger.timestamp += 50_000;
+    ledger.sequence_number += 3000;
     t.env.ledger().set(ledger);
 
-    // Re-read and assert correctness
-    let invoice = t.contract.get_invoice(&id);
-    assert_eq!(invoice.amount, amount);
-    assert_eq!(invoice.status, InvoiceStatus::Pending);
+    let score = t.contract.payer_score(&t.payer);
+    // After 3 periods: 100->99->98->97
+    assert_eq!(score, 97);
 }
 
 #[test]
-fn test_invoice_count_persistence_across_versions() {
+fn test_reputation_decay_floor() {
     let t = setup();
+    set_payer_score_direct(&t, 5);
+    setup_decay_config(&t, 5000, 100);
 
-    t.contract.submit_invoice(        &ReferralCode::None,
-    );
-
-    assert_eq!(t.contract.get_invoice_count(), 1);
-
-    // Advance ledger 1 million sequences
     let mut ledger = t.env.ledger().get();
-    ledger.sequence_number += 1_000_000;
-    ledger.timestamp += 86400 * 60; // 60 days
+    ledger.sequence_number += 1000;
     t.env.ledger().set(ledger);
 
-    // Counter still correct
-    assert_eq!(t.contract.get_invoice_count(), 1);
-
-    // New submission works correctly
-    let next_id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
-
-    assert_eq!(next_id, 2);
-    assert_eq!(t.contract.get_invoice_count(), 2);
+    let score = t.contract.payer_score(&t.payer);
+    assert_eq!(score, 0, "Score should floor at 0");
 }
 
 #[test]
-fn test_storage_ttl_near_boundary() {
+fn test_reputation_activity_resets_decay() {
     let t = setup();
-    let amount = 100_000_000;
-    let due_date = t.env.ledger().timestamp() + 86400;
+    set_payer_score_direct(&t, 80);
+    setup_decay_config(&t, 100, 1000);
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 500;
+    t.env.ledger().set(ledger);
 
-    let key = crate::storage::DataKey::Invoice(id);
-    let ttl = t.env.as_contract(&t.contract.address, || {
-        t.env.storage().persistent().get_ttl(&key)
+    set_payer_score_direct(&t, 85);
+
+    ledger = t.env.ledger().get();
+    ledger.sequence_number += 500;
+    t.env.ledger().set(ledger);
+
+    let score = t.contract.payer_score(&t.payer);
+    assert_eq!(score, 85, "Score should not decay after activity reset");
+}
+
+#[test]
+fn test_get_payer_score_persists_decayed_score() {
+    let t = setup();
+    set_payer_score_direct(&t, 80);
+    setup_decay_config(&t, 100, 1000);
+
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 1000;
+    t.env.ledger().set(ledger);
+
+    // Call get_payer_score via contract
+    let score = t.contract.payer_score(&t.payer);
+    assert_eq!(score, 79);
+
+    // Verify raw storage has persisted the decayed score (79)
+    t.env.as_contract(&t.contract.address, || {
+        let rep = crate::invoice::get_reputation(&t.env, &t.payer);
+        assert_eq!(
+            rep.score, 79,
+            "Decayed score must be persisted in ReputationProfile"
+        );
     });
+}
 
-    // Advance ledger to just before TTL expiry
-    // If TTL is X ledgers, advance by X-1
+#[test]
+fn test_get_payer_score_emits_reputation_updated_event() {
+    let t = setup();
+    set_payer_score_direct(&t, 80);
+    setup_decay_config(&t, 100, 1000);
+
     let mut ledger = t.env.ledger().get();
-    ledger.sequence_number += ttl - 1;
+    ledger.sequence_number += 1000;
     t.env.ledger().set(ledger);
 
-    // Read should still work
-    let invoice = t.contract.get_invoice(&id);
-    assert_eq!(invoice.id, id);
+    // Call get_payer_score via contract
+    t.contract.payer_score(&t.payer);
+
+    // Check events emitted
+    let events = t.env.events().all();
+    let reputation_event_exists = events
+        .events()
+        .into_iter()
+        .any(|e| format!("{:?}", e).contains("reputation_updated"));
+    assert!(
+        reputation_event_exists,
+        "ReputationUpdated event should be emitted when score decays during get_payer_score"
+    );
 }

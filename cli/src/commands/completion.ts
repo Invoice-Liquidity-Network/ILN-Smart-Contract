@@ -23,10 +23,10 @@ _iln_completion() {
   local commands="${Object.keys(COMMANDS).join(" ")}"
   local flags="${GLOBAL_FLAGS.join(" ")}"
 
-  if [[ "\$prev" == "wallet" ]]; then
-    COMPREPLY=( $(compgen -W "${COMMANDS.wallet.join(" ")}" -- "\$cur") )
+  if [[ "$prev" == "wallet" ]]; then
+    COMPREPLY=( $(compgen -W "${COMMANDS.wallet.join(" ")}" -- "$cur") )
   else
-    COMPREPLY=( $(compgen -W "\$commands \$flags" -- "\$cur") )
+    COMPREPLY=( $(compgen -W "$commands $flags" -- "$cur") )
   fi
 }
 complete -F _iln_completion iln

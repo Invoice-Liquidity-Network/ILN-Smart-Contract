@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
-import { createApp } from '../src/app.js';
-import { initializeSchema } from '../src/database/schema.js';
+import { createApp, type CreateAppOptions } from '../src/app.js';
+import { initializeSchema } from '../src/db/schema.js';
 
 export function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -187,6 +187,6 @@ export function seedStatsHistory(
   return defaults;
 }
 
-export function createTestApp(db: Database.Database) {
-  return createApp(db);
+export function createTestApp(db: Database.Database, options?: CreateAppOptions) {
+  return createApp(db, options);
 }

@@ -1,20 +1,17 @@
 {
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2020",
     "module": "commonjs",
-    "lib": ["ES2020"],
+    "moduleResolution": "node",
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false,
     "outDir": "dist",
-    "strict": true,
-    "esModuleInterop": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@iln/sdk": ["../sdk/src/index.ts"]
+      "@iln/sdk": ["./src/@iln-sdk.d.ts"]
     }
   },
-
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests"]
 }

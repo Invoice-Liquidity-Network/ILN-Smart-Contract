@@ -3,6 +3,15 @@
 
 set -euo pipefail
 
+# Load .env if present (ignores comments and lines with invalid bash identifiers)
+if [[ -f .env ]]; then
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    export "$key"="$value"
+  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env)
+fi
+
 NETWORK="testnet"
 SOURCE="deployer"
 SUMMARY_FILE="deploy-summary.json"
@@ -15,18 +24,49 @@ fi
 
 # Ensure network config exists.
 if ! stellar network ls | grep -q "^${NETWORK}$"; then
-  stellar network add --global ${NETWORK} \
+  stellar network add ${NETWORK} \
     --rpc-url https://soroban-testnet.stellar.org \
     --network-passphrase "Test SDF Network ; September 2015"
 fi
 
 # Ensure deployer key exists.
 if ! stellar keys address "${SOURCE}" &> /dev/null; then
-  stellar keys add --global "${SOURCE}" --secret-key "${STELLAR_TESTNET_DEPLOYER_SECRET}"
+  stellar keys add "${SOURCE}" --secret-key <<< "${STELLAR_TESTNET_DEPLOYER_SECRET}"
 fi
 
 # Build optimized WASM.
 cargo build --target wasm32v1-none --release
+
+# Strip the contractspecv0 custom section from WASM files that exceed
+# the Stellar on-chain limit (128 KB). The spec is only needed for
+# off-chain client generation.
+strip_spec() {
+  python3 -c "
+import sys
+with open(sys.argv[1], 'rb') as f:
+    data = bytearray(f.read())
+i = 8
+out = data[:i]
+while i < len(data):
+    sec_id = data[i]; j = i + 1
+    size = 0; shift = 0
+    while j < len(data):
+        byte = data[j]; size |= (byte & 0x7F) << shift; j += 1; shift += 7
+        if byte < 0x80: break
+    sec_end = j + size
+    if sec_id == 0:
+        k = j; name_len = 0; shift = 0
+        while k < sec_end:
+            byte = data[k]; name_len |= (byte & 0x7F) << shift; k += 1; shift += 7
+            if byte < 0x80: break
+        name = data[k:k+name_len].decode('utf-8', errors='replace')
+        if name == 'contractspecv0':
+            print(f'  Stripped {name} ({sec_end - i} bytes)')
+            i = sec_end; continue
+    out.extend(data[i:sec_end]); i = sec_end
+with open(sys.argv[1], 'wb') as f: f.write(out)
+" "$1"
+}
 
 CONTRACT_NAMES=(
   invoice_liquidity
@@ -52,12 +92,26 @@ for contract_name in "${CONTRACT_NAMES[@]}"; do
     exit 1
   fi
 
+  wasm_size=$(wc -c < "${wasm_path}")
+  if [[ "${wasm_size}" -gt 131072 ]]; then
+    echo "${contract_name}: ${wasm_size} bytes exceeds 128 KB limit, stripping spec..."
+    strip_spec "${wasm_path}"
+    wasm_size=$(wc -c < "${wasm_path}")
+  fi
+  if [[ "${wasm_size}" -gt 131072 ]]; then
+    echo "${contract_name}: still ${wasm_size} bytes, running wasm-opt..."
+    wasm-opt -Oz --strip-debug --strip-producers --strip-target-features \
+      --strip-toolchain-annotations --zero-filled-memory \
+      -o "${wasm_path}.tmp" "${wasm_path}"
+    mv "${wasm_path}.tmp" "${wasm_path}"
+  fi
+
   upload_output=$(stellar contract upload \
     --network "${NETWORK}" \
     --source "${SOURCE}" \
     --wasm "${wasm_path}" 2>&1)
 
-  wasm_hash=$(echo "${upload_output}" | grep -oP 'WASM hash: \K[a-f0-9]+' || true)
+  wasm_hash=$(echo "${upload_output}" | grep -oP '\b[a-f0-9]{64}\b' | head -1 || true)
   if [[ -z "${wasm_hash}" ]]; then
     echo "Failed to upload WASM for ${contract_name}" >&2
     echo "${upload_output}" >&2
@@ -69,7 +123,7 @@ for contract_name in "${CONTRACT_NAMES[@]}"; do
     --source "${SOURCE}" \
     --wasm-hash "${wasm_hash}" 2>&1)
 
-  contract_id=$(echo "${deploy_output}" | grep -oP 'Contract ID: \K[A-Z0-9]+' || true)
+  contract_id=$(echo "${deploy_output}" | grep -oP '[A-Z0-9]{56}' | tail -1 || true)
   if [[ -z "${contract_id}" ]]; then
     echo "Failed to deploy ${contract_name}" >&2
     echo "${deploy_output}" >&2

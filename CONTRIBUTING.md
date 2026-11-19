@@ -7,6 +7,75 @@ This guide covers everything you need to go from a fresh machine to an accepted 
 
 ## Table of Contents
 
+- [Monorepo & Cross-Repo Workflow](#-monorepo--cross-repo-workflow)
+- [Commit Messages](#-commit-messages)
+- [Changesets & Releases](#-changesets--releases)
+- [PR Size Guidelines](#-pr-size-guidelines)
+- [Issue Assignment & Wave Participation](#-issue-assignment--wave-participation)
+- [Formatting](#-formatting)
+- [Code Owners](#-code-owners)
+- Smart-contract workflow:
+  [Environment Setup](#1-environment-setup) ·
+  [Building](#2-building-the-contracts) ·
+  [Testing](#3-running-tests) ·
+  [Code Style](#4-code-style) ·
+  [PR Requirements](#5-pr-requirements) ·
+  [Review Process](#6-review-process) ·
+  [Soroban Gotchas](#7-soroban-specific-gotchas)
+
+---
+
+## 🗂️ Monorepo & Cross-Repo Workflow
+
+ILN is developed across a small set of repositories. Most contributors touch
+only one, but anything user-facing usually spans two.
+
+| Repository | What lives there |
+|------------|------------------|
+| `ILN-Smart-Contract` (this repo) | Rust/Soroban contracts, the `@iln/sdk` TypeScript package, the indexer, the notifications service, scripts, and docs |
+| `ILN-Frontend` | The web app that consumes `@iln/sdk` |
+
+### TypeScript package development
+
+The TypeScript packages in this repo (`sdk/`, `indexer/`, `notifications/`,
+`tests/e2e/`) are independent npm packages. The `frontend/` directory is a
+Storybook workspace for the ILN component library. They are intended to be driven
+through the root [`Makefile`](Makefile), which prefers `pnpm` when available and
+falls back to `npm`:
+
+```bash
+make install      # install dependencies across all TS packages
+make build        # build the contracts (cargo) + the @iln/sdk package
+make test         # cargo test (Rust workspace)
+make test-insurance  # cargo test -p insurance_pool (insurance pool contract)
+make test-e2e     # end-to-end suite in tests/e2e
+make lint         # cargo fmt --check + clippy
+make docs         # regenerate the SDK API docs
+make help         # list every target
+```
+
+> If you have Turborepo or a pnpm workspace configured at the org root, the
+> equivalent commands are `pnpm install`, `pnpm turbo build`, and
+> `pnpm turbo test` — they fan the same scripts out across packages.
+
+### Making a cross-repo change
+
+When an SDK change requires a matching frontend update (e.g. a new method or a
+changed signature), keep them releasable together:
+
+1. **Land the SDK change first** in this repo behind a new version. Add a
+   changeset (see below) describing the public API change.
+2. **Publish** `@iln/sdk` (handled by the release workflow on merge to `main`).
+3. **Bump the dependency** in `ILN-Frontend` to the new SDK version and make the
+   matching UI change in a separate PR there.
+4. **Link the two PRs** to each other in their descriptions so reviewers can see
+   the full change set.
+
+Never make a breaking SDK change and rely on an unpublished local build in the
+frontend — every PR must build against published, versioned packages.
+
+---
+
 ## 📝 Commit Messages
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/) so that the changelog can be generated automatically with `make changelog`.
@@ -21,23 +90,107 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/) s
 | `perf` | Performance improvement |
 | `test` | Adding or updating tests |
 | `docs` | Documentation only changes |
-| `chore` | Build process, tooling, or dependency updates |
+| `build` | Build system or external dependency changes |
+| `ci` | CI configuration and workflow changes |
+| `chore` | Tooling or housekeeping that doesn't touch `src` |
+
+### Scopes per package
+
+The optional scope tells readers (and the changelog) which package changed. Use
+the package directory name:
+
+| Scope | Area |
+|-------|------|
+| `contracts` *(or a crate name: `invoice_liquidity`, `iln_governance`, `iln_distribution`, `reputation_bonus`, `insurance_pool`)* | Soroban contract code |
+| `sdk` | The `@iln/sdk` TypeScript package |
+| `indexer` | The event indexer service |
+| `notifications` | The notification service |
+| `scripts` | Operational / deployment scripts |
+| `docs` | Documentation |
+| `ci` | Workflows and pipeline config |
 
 **Examples:**
 ```
 feat(governance): add quorum requirement for proposal passing
-fix: resolve discount rate validation overflow
-docs: add architecture decision records
-test: add fuzz suite for submit_invoice
-chore: add CHANGELOG and git-cliff changelog automation
+fix(sdk): handle missing allowance in fundInvoice
+docs(sdk): write comprehensive integration guide
+test(indexer): add reputation endpoint coverage
+chore(scripts): add contract health check monitoring script
 ```
 
 Breaking changes must include `BREAKING CHANGE:` in the commit footer:
 ```
-feat!: rename fund_invoice to fund
+feat(sdk)!: rename fund_invoice to fund
 
 BREAKING CHANGE: fund_invoice has been renamed to fund in the invoice_liquidity contract.
 ```
+
+---
+
+## 🔖 Changesets & Releases
+
+Version management for the published TypeScript packages uses
+[Changesets](https://github.com/changesets/changesets). Any PR that changes the
+public surface of a published package (today that's `@iln/sdk`, and soon `@iln/cli`)
+must include a changeset so the version bump and changelog entry are generated
+automatically.
+
+```bash
+# From the repo root, after staging your code change:
+npm run changeset
+```
+
+The wizard asks which packages changed and whether the bump is **patch**
+(bug fix), **minor** (backwards-compatible feature), or **major** (breaking
+change), then writes a markdown file under `.changeset/`. Commit that file with
+your change.
+
+Example commit message:
+`feat: add Changesets for coordinated SDK and CLI version management`
+
+- A PR with no changeset is fine for changes that don't affect a published
+  package (contract-only work, docs, CI).
+- On merge to `main`, the release workflow consumes pending changesets, bumps
+  versions, updates `CHANGELOG.md`, and publishes.
+
+Rust crate versions and the contract changelog continue to be managed with
+`make changelog` (git-cliff) — see the [Commit Messages](#-commit-messages)
+section.
+
+---
+
+## 📏 PR Size Guidelines
+
+Prefer **small, focused PRs** — they get reviewed faster and merged sooner.
+
+- Aim for **under ~400 lines of diff** (excluding generated files, lockfiles,
+  and snapshots). Larger changes are fine when they're mechanical, but flag them
+  in the description.
+- **One logical change per PR.** Don't mix a refactor with a feature, or a
+  contract change with an unrelated docs cleanup.
+- Split large efforts into a reviewable sequence: scaffolding → core logic →
+  tests → docs, each as its own PR where practical.
+- If a PR *must* be large (e.g. a new contract), call it out up front and add a
+  reviewer guide in the description ("start with `X`, then `Y`").
+
+---
+
+## 🌊 Issue Assignment & Wave Participation
+
+Contributions are organised into **Waves** — time-boxed batches of issues.
+
+1. **Find an issue.** Browse open issues; those tagged for the current Wave are
+   labelled accordingly. Good first issues are labelled `good first issue`.
+2. **Get assigned before you start.** Comment on the issue to request it and wait
+   for a maintainer to assign you, so two people don't build the same thing. One
+   active issue per contributor at a time unless told otherwise.
+3. **Reference the issue** in your branch, commits, and PR. Close it from the PR
+   with a `Closes #<n>` footer.
+4. **Stay responsive.** If an assigned issue goes quiet for several days a
+   maintainer may unassign it so someone else can pick it up.
+5. **Ask early.** Use a [GitHub Discussion](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/discussions)
+   or the issue thread if scope is unclear — clarifying before coding saves a
+   round of review.
 
 
 ## 🎨 Formatting
@@ -66,7 +219,10 @@ This repo uses a [CODEOWNERS](.github/CODEOWNERS) file to automatically request 
 CODEOWNER approval is required before merging (enforced via branch protection on `main`). To enable this on a new repo, go to **Settings → Branches → Branch protection rules** and check **Require review from Code Owners**.
 
 
-## 🧪 Testing
+## 🔧 Smart-Contract Workflow
+
+The sections below cover the Rust/Soroban contribution loop end to end:
+
 1. [Environment Setup](#1-environment-setup)
 2. [Building the Contracts](#2-building-the-contracts)
 3. [Running Tests](#3-running-tests)
@@ -99,7 +255,7 @@ rustup component add rustfmt clippy
 ### Stellar CLI
 
 ```bash
-cargo install --locked stellar-cli --features opt
+cargo install --locked stellar-cli
 stellar --version
 ```
 
@@ -154,6 +310,7 @@ cargo test -p invoice_liquidity
 cargo test -p iln_governance
 cargo test -p iln_distribution
 cargo test -p reputation_bonus
+cargo test -p insurance_pool
 
 # Useful flags
 cargo test -p invoice_liquidity -- --nocapture   # show stdout
@@ -262,6 +419,7 @@ Closes #101
 - [ ] `cargo clippy --all-targets -- -D warnings` — zero warnings
 - [ ] `cargo test` — all tests pass
 - [ ] `cargo test -p iln_fuzz` — fuzz suite passes
+- [ ] `cargo test -p insurance_pool` — insurance pool tests pass (if `insurance_pool` was modified)
 - [ ] Coverage ≥ 95 % if `invoice_liquidity` was modified
 - [ ] New behaviour is covered by tests
 - [ ] `cargo build-wasm` succeeds (required for any contract change)
@@ -320,9 +478,9 @@ CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC
 ### Benchmark regression guard
 
 The `scripts/check_benchmark_regression.sh` script compares instruction counts
-against stored baselines.  CI runs it as a warning-only step, but a large
-regression in `invoice_liquidity` will be flagged during review.  Run it
-locally after performance-sensitive changes:
+against stored baselines for `invoice_liquidity` and `iln_governance`.  CI
+runs it as a warning-only step, but a large regression will be flagged during
+review.  Run it locally after performance-sensitive changes:
 
 ```bash
 bash scripts/check_benchmark_regression.sh
@@ -334,3 +492,5 @@ bash scripts/check_benchmark_regression.sh
 
 Open a [GitHub Discussion](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/discussions)
 or comment on the relevant issue.
+## Dependabot
+Dependabot is configured to automatically submit PRs to update dependencies. Maintainers should review and merge them as appropriate.

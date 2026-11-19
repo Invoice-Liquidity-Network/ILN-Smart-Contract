@@ -9,27 +9,8 @@
 // Event type literals
 // ---------------------------------------------------------------------------
 
-export type ILNEventType =
-  | "submitted"
-  | "funded"
-  | "paid"
-  | "partially_paid"
-  | "defaulted"
-  | "appealed"
-  | "appeal_resolved"
-  | "disputed"
-  | "dispute_resolved"
-  | "token_added"
-  | "token_removed"
-  | "parameter_updated"
-  | "transferred"
-  | "cancelled"
-  | "paused"
-  | "unpaused"
-  | "upgraded"
-  | "admin_changed"
-  | "fund_requested"
-  | "fund_queue_resolved";
+
+import type { ILNEventType, ILNEvent } from "@invoice-liquidity/types";
 
 // ---------------------------------------------------------------------------
 // Per-event payload types  (mirror the Rust #[contractevent] structs)
@@ -209,11 +190,31 @@ export interface FundQueueResolvedEvent {
   score: number;
 }
 
+export interface InsurancePoolEnrolledEvent {
+  type: "insurance_pool_enrolled";
+  lp: string;
+  timestamp: bigint;
+}
+
+export interface InsurancePremiumDepositedEvent {
+  type: "insurance_premium_deposited";
+  lp: string;
+  amount: bigint;
+  timestamp: bigint;
+}
+
+export interface InsuranceClaimProcessedEvent {
+  type: "insurance_claim_processed";
+  invoiceId: bigint;
+  payout: bigint;
+  timestamp: bigint;
+}
+
 // ---------------------------------------------------------------------------
 // Discriminated union
 // ---------------------------------------------------------------------------
 
-export type ILNEvent =
+export type ContractEvent =
   | InvoiceSubmittedEvent
   | InvoiceFundedEvent
   | InvoicePaidEvent
@@ -233,7 +234,10 @@ export type ILNEvent =
   | ContractUpgradedEvent
   | AdminChangedEvent
   | FundRequestedEvent
-  | FundQueueResolvedEvent;
+  | FundQueueResolvedEvent
+  | InsurancePoolEnrolledEvent
+  | InsurancePremiumDepositedEvent
+  | InsuranceClaimProcessedEvent;
 
 // ---------------------------------------------------------------------------
 // Filter
@@ -253,7 +257,14 @@ export interface EventFilter {
    * (freelancer, payer, LP, admin, token …).
    */
   address?: string;
+  /**
+   * The starting ledger sequence for historical event replay.
+   */
+  fromLedger?: number;
 }
 
 /** Call to stop the subscription and close the underlying stream. */
 export type Unsubscribe = () => void;
+
+export type { ILNEventType, ILNEvent };
+export { ContractEvent };

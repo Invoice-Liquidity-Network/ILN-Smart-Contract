@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Tests for `iln marketplace` — listing (#230).
  */
@@ -12,30 +13,30 @@ const LISTINGS: MarketplaceListing[] = [
 
 describe("iln marketplace — list", () => {
   it("prints a table when listings are returned", async () => {
-    const fetcher = jest.fn().mockResolvedValue(LISTINGS);
+    const fetcher = vi.fn().mockResolvedValue(LISTINGS);
     const cmd = makeMarketplaceCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync([], { from: "user" });
 
     expect(fetcher).toHaveBeenCalled();
     expect(logs.some((l) => l.includes("INV-A"))).toBe(true);
     expect(logs.some((l) => l.includes("INV-B"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("prints no-results message when list is empty", async () => {
-    const fetcher = jest.fn().mockResolvedValue([]);
+    const fetcher = vi.fn().mockResolvedValue([]);
     const cmd = makeMarketplaceCommand(fetcher);
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync([], { from: "user" });
 
     expect(logs.some((l) => l.toLowerCase().includes("no pending"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });
 

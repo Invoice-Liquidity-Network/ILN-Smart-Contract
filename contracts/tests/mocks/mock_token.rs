@@ -135,10 +135,7 @@ impl MockToken {
             .persistent()
             .get(&MockTokenKey::Balance(from.clone()))
             .unwrap_or(0);
-        assert!(
-            bal >= amount,
-            "mock token: insufficient balance for burn"
-        );
+        assert!(bal >= amount, "mock token: insufficient balance for burn");
         env.storage()
             .persistent()
             .set(&MockTokenKey::Balance(from), &(bal - amount));

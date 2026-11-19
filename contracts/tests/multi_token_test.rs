@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 mod test_context;
-use invoice_liquidity::{InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus, ContractError};
+use invoice_liquidity::{
+    ContractError, InvoiceLiquidityContract, InvoiceLiquidityContractClient, InvoiceStatus,
+    ReferralCode,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::Client as TokenClient,
@@ -33,7 +36,14 @@ fn assert_lifecycle_for_token(
     amount: i128,
 ) {
     // 1. Submit
-    let invoice_id = ctx.contract.submit_invoice(        &ReferralCode::None,
+    let invoice_id = ctx.contract.submit_invoice(
+        &ctx.submitter,
+        &ctx.payer,
+        &amount,
+        &due_date(ctx),
+        &DISCOUNT_RATE,
+        &token.address,
+        &ReferralCode::None,
     );
 
     let invoice = ctx.contract.get_invoice(&invoice_id);
@@ -48,7 +58,8 @@ fn assert_lifecycle_for_token(
     let payer_before = token.balance(&ctx.payer);
 
     // 2. Fund
-    ctx.contract.fund_invoice(&ctx.lp, &invoice_id, &amount, &false);
+    ctx.contract
+        .fund_invoice(&ctx.lp, &invoice_id, &amount, &false);
 
     let discount = expected_discount(amount);
     let expected_payout = amount - discount;
@@ -109,12 +120,17 @@ fn test_integration_lifecycle_xlm() {
 fn test_integration_submit_unapproved_token_fails() {
     let ctx = setup();
     let unapproved_admin = Address::generate(&ctx.env);
-    let unapproved_id = ctx
-        .env
-        .register_stellar_asset_contract_v2(unapproved_admin);
-    let unapproved_address = unapproved_id.address();
+    let unapproved_id = ctx.env.register_stellar_asset_contract_v2(unapproved_admin);
+    let token_address = unapproved_id.address();
 
-    let result = ctx.contract.try_submit_invoice(try_        &ReferralCode::None,
+    let result = ctx.contract.try_submit_invoice(
+        &ctx.submitter,
+        &ctx.payer,
+        &INVOICE_AMOUNT,
+        &due_date(&ctx),
+        &100,
+        &token_address,
+        &ReferralCode::None,
     );
 
     assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
@@ -125,13 +141,33 @@ fn test_integration_fund_removed_token_fails() {
     let ctx = setup();
 
     // Submit invoice with EURC (currently approved)
-    let invoice_id = ctx.contract.submit_invoice(        &ReferralCode::None,
+    let invoice_id = ctx.contract.submit_invoice(
+        &ctx.submitter,
+        &ctx.payer,
+        &INVOICE_AMOUNT,
+        &due_date(&ctx),
+        &100,
+        &ctx.eurc.address,
+        &ReferralCode::None,
     );
 
-    // Admin removes EURC from approved list
+    // Admin removes EURC from approved list. Advance the ledger past
+    // remove_token's rate-limit cooldown first: the last-call ledger for a
+    // rate-limited function defaults to 0 when never called, and
+    // TestContext::new() starts the ledger at sequence 100 (below the
+    // 120-ledger cooldown), so calling remove_token() immediately after
+    // setup() incorrectly trips the cooldown on its very first-ever call.
+    // See tests_oracle_registry.rs's `advance_past_rate_limit_cooldown` for
+    // the same workaround applied elsewhere in the ILN contract's own test
+    // suite.
+    let mut ledger_info = ctx.env.ledger().get();
+    ledger_info.sequence_number += invoice_liquidity::constants::DEFAULT_RATE_LIMIT_LEDGERS as u32;
+    ctx.env.ledger().set(ledger_info);
     ctx.contract.remove_token(&ctx.eurc.address);
 
     // LP tries to fund it - should fail with Unauthorized
-    let result = ctx.contract.try_fund_invoice(&ctx.lp, &invoice_id, &INVOICE_AMOUNT);
+    let result = ctx
+        .contract
+        .try_fund_invoice(&ctx.lp, &invoice_id, &INVOICE_AMOUNT, &false);
     assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
 }

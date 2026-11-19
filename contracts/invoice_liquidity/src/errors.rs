@@ -55,4 +55,37 @@ pub enum ContractError {
     OracleDataStale = 35,
     /// Invoice amount is below the configurable minimum threshold.
     AmountTooSmall = 36,
+    /// Reentrant call detected — the function was called while already executing (Issue #535).
+    Reentrancy = 37,
+    /// Rate-limited function called before the cooldown period elapsed (Issue #541).
+    RateLimited = 38,
+    /// resolve_fund_queue called before the minimum queue maturity delay has
+    /// elapsed since the first LP joined the queue.  Prevents MEV/front-running
+    /// attacks where an attacker races to resolve the queue immediately after a
+    /// high-reputation LP joins (Issue #MEV-1).
+    QueueNotMature = 39,
+    /// Cross-contract dependency reported an incompatible interface version
+    /// (or the version query failed) during configuration.
+    IncompatibleInterfaceVersion = 40,
+    /// Issue #circuit-breaker: every oracle in the priority chain for this
+    /// feed type + token is circuit-tripped (or absent after excluding a
+    /// tripped one) — oracle-gated funding must be rejected rather than
+    /// silently proceeding as if no oracle were configured.
+    OracleCircuitOpen = 41,
+    /// Issue #price-deviation: no price source is registered for the
+    /// requested feed type, or every registered source failed to respond.
+    NoPriceSource = 42,
+    /// Issue #price-deviation: every registered price source's report
+    /// deviated beyond the configured threshold from every other — no
+    /// source survived to produce a validated price.
+    AllPriceSourcesRejected = 43,
+    /// Issue #655: invoice `amount` exceeds the governance-configured
+    /// staged-rollout per-invoice cap.
+    MaxInvoiceAmountExceeded = 44,
+    /// Issue #655: funding this amount would push the token's cumulative
+    /// funded volume past the governance-configured staged-rollout cap.
+    GlobalVolumeCapExceeded = 45,
+    /// Issue #817: requested TWAP window is outside the governance-bounded
+    /// `[MIN_TWAP_WINDOW_LEDGERS, MAX_TWAP_WINDOW_LEDGERS]` range.
+    InvalidTwapWindow = 46,
 }

@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach} from 'vitest';
 import {
   getAllowance,
   buildApproveTransaction,
@@ -10,17 +11,17 @@ import { SorobanRpc, Networks, Account } from "@stellar/stellar-sdk";
 // ---------------------------------------------------------------------------
 
 const mockServer = {
-  simulateTransaction: jest.fn(),
-  getLatestLedger: jest.fn(),
-  prepareTransaction: jest.fn(),
+  simulateTransaction: vi.fn(),
+  getLatestLedger: vi.fn(),
+  prepareTransaction: vi.fn(),
 } as unknown as SorobanRpc.Server;
 
 const MOCK_ACCOUNT = new Account(
-  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+  "GBR7RT4MZTLKK2JNZPOSWVY74VFDR4HVR24QZNH2WONHPQFJZPKHWOTP",
   "0"
 );
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => vi.clearAllMocks());
 
 // ---------------------------------------------------------------------------
 // getAllowance
@@ -28,16 +29,13 @@ beforeEach(() => jest.clearAllMocks());
 
 describe("getAllowance", () => {
   const params = {
-    tokenAddress: "CDTOKEN000",
-    owner: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-    spender: "CBCONTRACT00",
+    tokenAddress: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    owner: "GBR7RT4MZTLKK2JNZPOSWVY74VFDR4HVR24QZNH2WONHPQFJZPKHWOTP",
+    spender: "CAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDQF",
   };
 
   it("returns amount and expirationLedger from struct retval", async () => {
-    const mockScVal = {
-      toXDR: () => Buffer.alloc(0),
-    };
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: {
         retval: {
           switch: () => ({ name: "scvMap" }),
@@ -48,11 +46,11 @@ describe("getAllowance", () => {
     });
 
     // We need to test the actual parsing logic, so we mock scValToNative
-    jest.mock("@stellar/stellar-sdk", () => {
-      const actual = jest.requireActual("@stellar/stellar-sdk");
+    vi.mock("@stellar/stellar-sdk", async () => {
+      const actual = await vi.importActual("@stellar/stellar-sdk");
       return {
         ...actual,
-        scValToNative: jest.fn().mockReturnValue({
+        scValToNative: vi.fn().mockReturnValue({
           amount: "5000000",
           expiration_ledger: 1000,
         }),
@@ -64,7 +62,7 @@ describe("getAllowance", () => {
   });
 
   it("returns zero allowance when simulation returns no retval", async () => {
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       result: { retval: null },
     });
 
@@ -77,7 +75,7 @@ describe("getAllowance", () => {
   });
 
   it("throws when simulation returns an error", async () => {
-    (mockServer.simulateTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.simulateTransaction as vi.Mock).mockResolvedValue({
       error: "contract trap",
       _parsed: true,
     });
@@ -138,24 +136,24 @@ describe("isAllowanceSufficient", () => {
 
 describe("buildApproveTransaction", () => {
   it("returns a base64 XDR string", async () => {
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 100,
     });
 
     const mockPreparedTx = {
       toEnvelope: () => ({
-        toXDR: (_fmt: string) => "AAAABASE64XDR",
+        toXDR: () => "AAAABASE64XDR",
       }),
     };
-    (mockServer.prepareTransaction as jest.Mock).mockResolvedValue(
+    (mockServer.prepareTransaction as vi.Mock).mockResolvedValue(
       mockPreparedTx
     );
 
     const result = await buildApproveTransaction(
       mockServer,
-      "CDTOKEN000",
+      "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
       MOCK_ACCOUNT,
-      "CBCONTRACT00",
+      "CAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDQF",
       1_000_000n,
       Networks.TESTNET
     );
@@ -165,27 +163,26 @@ describe("buildApproveTransaction", () => {
   });
 
   it("uses expiration ledger = currentLedger + 720", async () => {
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 500,
     });
-    (mockServer.prepareTransaction as jest.Mock).mockResolvedValue({
+    (mockServer.prepareTransaction as vi.Mock).mockResolvedValue({
       toEnvelope: () => ({ toXDR: () => "xdr" }),
     });
 
     // Capture what prepareTransaction received to verify expiry ledger
-    let capturedTx: any;
-    (mockServer.prepareTransaction as jest.Mock).mockImplementation(
-      async (tx) => {
-        capturedTx = tx;
+
+    (mockServer.prepareTransaction as vi.Mock).mockImplementation(
+      async () => {
         return { toEnvelope: () => ({ toXDR: () => "xdr" }) };
       }
     );
 
     await buildApproveTransaction(
       mockServer,
-      "CDTOKEN000",
+      "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
       MOCK_ACCOUNT,
-      "CBCONTRACT00",
+      "CAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDQF",
       500n,
       Networks.TESTNET
     );
@@ -195,19 +192,19 @@ describe("buildApproveTransaction", () => {
   });
 
   it("throws when prepareTransaction fails", async () => {
-    (mockServer.getLatestLedger as jest.Mock).mockResolvedValue({
+    (mockServer.getLatestLedger as vi.Mock).mockResolvedValue({
       sequence: 100,
     });
-    (mockServer.prepareTransaction as jest.Mock).mockRejectedValue(
+    (mockServer.prepareTransaction as vi.Mock).mockRejectedValue(
       new Error("network error")
     );
 
     await expect(
       buildApproveTransaction(
         mockServer,
-        "CDTOKEN000",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
         MOCK_ACCOUNT,
-        "CBCONTRACT00",
+        "CAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABDQF",
         1n,
         Networks.TESTNET
       )

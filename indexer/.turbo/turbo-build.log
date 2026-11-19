@@ -1,0 +1,10 @@
+
+> @iln/indexer@0.1.0 build /Users/0xblackadam/Downloads/ILN-Smart-Contract/indexer
+> tsc
+
+error TS5083: Cannot read file '/Users/0xblackadam/Downloads/tsconfig.base.json'.
+src/database/schema.ts(1,10): error TS2323: Cannot redeclare exported variable 'initializeSchema'.
+src/database/schema.ts(1,10): error TS2484: Export declaration conflicts with exported declaration of 'initializeSchema'.
+src/database/schema.ts(4,17): error TS2323: Cannot redeclare exported variable 'initializeSchema'.
+../node_modules/.pnpm/@types+eslint@7.29.0/node_modules/@types/eslint/lib/rules/index.d.ts(8,14): error TS2865: Import 'Rule' conflicts with local value, so must be declared with a type-only import when 'isolatedModules' is enabled.
+ ELIFECYCLE  Command failed with exit code 2.

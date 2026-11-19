@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Tests for `iln status --json` flag (#231).
  */
@@ -21,26 +22,26 @@ function mockInvoice(): InvoiceDetail {
 
 describe("iln status --json", () => {
   it("outputs valid JSON", async () => {
-    const fetcher = jest.fn().mockResolvedValue(mockInvoice());
+    const fetcher = vi.fn().mockResolvedValue(mockInvoice());
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-600", "--json"], { from: "user" });
 
     const output = logs.join("\n");
     expect(() => JSON.parse(output)).not.toThrow();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("JSON output contains all invoice fields", async () => {
     const inv = mockInvoice();
-    const fetcher = jest.fn().mockResolvedValue(inv);
+    const fetcher = vi.fn().mockResolvedValue(inv);
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-600", "--json"], { from: "user" });
 
@@ -49,19 +50,19 @@ describe("iln status --json", () => {
     expect(parsed.state).toBe("Paid");
     expect(parsed.amount).toBe("300");
     expect(parsed.token).toBe("USDC");
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("does not print the rich-format table in --json mode", async () => {
-    const fetcher = jest.fn().mockResolvedValue(mockInvoice());
+    const fetcher = vi.fn().mockResolvedValue(mockInvoice());
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-600", "--json"], { from: "user" });
 
     expect(logs.some((l) => l.includes("Timeline"))).toBe(false);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

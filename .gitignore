@@ -11,4 +11,16 @@ target
 node_modules/
 sdk/node_modules/
 
+# Turborepo
+.turbo
+.turbo-cache
+
+# Build outputs
+sdk/dist/
+cli/dist/
+
+# Test coverage
+sdk/coverage/
+cli/coverage/
+
 fix.md

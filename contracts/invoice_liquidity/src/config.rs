@@ -76,7 +76,11 @@ pub fn update_config(
     let emit = |param_name: &str, old_value: i128, new_value: i128| {
         let pn = Symbol::new(env, param_name);
         env.events().publish(
-            (Symbol::new(env, "parameter_updated"), pn, caller.clone()),
+            (
+                Symbol::new(env, "parameter_updated"),
+                pn.clone(),
+                caller.clone(),
+            ),
             ParameterUpdated {
                 param_name: pn,
                 old_value,

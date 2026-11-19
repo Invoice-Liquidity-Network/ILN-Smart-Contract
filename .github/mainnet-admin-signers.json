@@ -1,0 +1,5 @@
+{
+  "_comment": "Maps each Stellar public key authorized as a signer on the mainnet admin/multisig account to the GitHub identity that controls it. Kept in sync with .github/CODEOWNERS by scripts/verify-admin-signers.ts. Update this file whenever a signer key is added, rotated, or removed.",
+  "codeownersTeam": "@Keengfk/contracts-team",
+  "signers": []
+}

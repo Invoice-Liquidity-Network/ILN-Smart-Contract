@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { initializeSchema } from './schema.js';
+import { initializeSchema } from '../db/schema.js';
 
 let db: Database.Database | null = null;
 

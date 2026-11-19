@@ -7,9 +7,11 @@ import {
   nativeToScVal,
   Account,
 } from "@stellar/stellar-sdk";
-import type { Invoice } from "../types/invoice.js";
+import type { Invoice, InvoiceState } from "@invoice-liquidity/types";
 import { ILNError } from "../errors.js";
-import { computeEffectiveYieldBps } from "./fundInvoice.js";
+import { decodeInvoice } from "../utils/xdrDecoder.js";
+import { retry } from "../utils/retry.js";
+import { validateGAddress } from "../utils/validate.js";
 
 /**
  * Fetch a single invoice by its ID.
@@ -48,7 +50,7 @@ export async function getInvoice(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     if (String(sim.error).includes("NotFound") || String(sim.error).includes("Error(Contract, 1)")) {
@@ -61,26 +63,8 @@ export async function getInvoice(
   }
 
   const raw = scValToNative(sim.result.retval) as Record<string, unknown>;
-  const dueDate = Number(raw["due_date"]);
-  const discountRate = Number(raw["discount_rate"]);
+  return decodeInvoice(raw);
 
-  return {
-    id: BigInt(String(raw["id"])),
-    freelancer: String(raw["freelancer"]),
-    payer: String(raw["payer"]),
-    token: String(raw["token"]),
-    amount: BigInt(String(raw["amount"])),
-    dueDate,
-    discountRate,
-    status: (raw["status"] as any)?.tag || String(raw["status"]) as any, // handle scval enum
-    funder: raw["funder"] ? String(raw["funder"]) : undefined,
-    fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-    amountFunded: BigInt(String(raw["amount_funded"])),
-    amountPaid: BigInt(String(raw["amount_paid"])),
-    referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-    submitterReputation: Number(raw["submitter_reputation"]),
-    effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-  };
 }
 
 /**
@@ -124,7 +108,7 @@ export async function listInvoicesBySubmitter(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
@@ -134,27 +118,62 @@ export async function listInvoicesBySubmitter(
   }
 
   const rawArr = scValToNative(sim.result.retval) as Record<string, unknown>[];
-  return rawArr.map(raw => {
-    const dueDate = Number(raw["due_date"]);
-    const discountRate = Number(raw["discount_rate"]);
-    return {
-      id: BigInt(String(raw["id"])),
-      freelancer: String(raw["freelancer"]),
-      payer: String(raw["payer"]),
-      token: String(raw["token"]),
-      amount: BigInt(String(raw["amount"])),
-      dueDate,
-      discountRate,
-      status: (raw["status"] as any)?.tag || String(raw["status"]) as any,
-      funder: raw["funder"] ? String(raw["funder"]) : undefined,
-      fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-      amountFunded: BigInt(String(raw["amount_funded"])),
-      amountPaid: BigInt(String(raw["amount_paid"])),
-      referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-      submitterReputation: Number(raw["submitter_reputation"]),
-      effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-    };
-  });
+  return rawArr.map(raw => decodeInvoice(raw as Record<string, unknown>));
+
+}
+
+/**
+ * Get invoices submitted by a specific submitter address with pagination.
+ * @param server Soroban RPC server instance
+ * @param contractAddress The contract's address
+ * @param submitter The submitter's address
+ * @param sourceAccount Account used for simulation
+ * @param networkPassphrase The network passphrase
+ * @param page The page number (0-indexed)
+ * @param pageSize The number of items per page
+ * @returns Array of invoices
+ * @throws {ILNError} On simulation errors
+ * @example
+ * ```ts
+ * const invoices = await getSubmitterInvoices(server, contractAddress, "G...", sourceAccount, Networks.TESTNET, 0, 10);
+ * ```
+ */
+export async function getSubmitterInvoices(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  submitter: string,
+  sourceAccount: Account,
+  networkPassphrase: string,
+  page: number = 0,
+  pageSize: number = 50
+): Promise<Invoice[]> {
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "list_invoices_by_submitter",
+    nativeToScVal(submitter, { type: "address" }),
+    nativeToScVal(page, { type: "u32" }),
+    nativeToScVal(pageSize, { type: "u32" })
+  );
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw ILNError.fromError(sim.error);
+  }
+  if (!sim.result?.retval) {
+    return [];
+  }
+
+  const rawArr = scValToNative(sim.result.retval) as Record<string, unknown>[];
+  return rawArr.map(raw => decodeInvoice(raw as Record<string, unknown>));
 }
 
 /**
@@ -198,7 +217,7 @@ export async function listInvoicesByLP(
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await retry(() => server.simulateTransaction(tx));
 
   if (SorobanRpc.Api.isSimulationError(sim)) {
     throw ILNError.fromError(sim.error);
@@ -208,25 +227,58 @@ export async function listInvoicesByLP(
   }
 
   const rawArr = scValToNative(sim.result.retval) as Record<string, unknown>[];
-  return rawArr.map(raw => {
-    const dueDate = Number(raw["due_date"]);
-    const discountRate = Number(raw["discount_rate"]);
-    return {
-      id: BigInt(String(raw["id"])),
-      freelancer: String(raw["freelancer"]),
-      payer: String(raw["payer"]),
-      token: String(raw["token"]),
-      amount: BigInt(String(raw["amount"])),
-      dueDate,
-      discountRate,
-      status: (raw["status"] as any)?.tag || String(raw["status"]) as any,
-      funder: raw["funder"] ? String(raw["funder"]) : undefined,
-      fundedAt: raw["funded_at"] ? Number(raw["funded_at"]) : undefined,
-      amountFunded: BigInt(String(raw["amount_funded"])),
-      amountPaid: BigInt(String(raw["amount_paid"])),
-      referralCode: raw["referral_code"] ? Buffer.from(raw["referral_code"] as any).toString('hex') : undefined,
-      submitterReputation: Number(raw["submitter_reputation"]),
-      effectiveYieldBps: computeEffectiveYieldBps(discountRate, dueDate),
-    };
-  });
+  return rawArr.map(raw => decodeInvoice(raw as Record<string, unknown>));
+}
+
+/**
+ * Get a payer's reputation score (0-100, default 50).
+ *
+ * Wraps the `payer_score(payer)` view function. Performs a read-only
+ * simulation — no on-chain mutation, no transaction fees.
+ * @param server Soroban RPC server instance
+ * @param contractAddress The contract's address
+ * @param payer The payer's Stellar G... address
+ * @param sourceAccount Account used for simulation (does not consume sequence or fees)
+ * @param networkPassphrase The network passphrase
+ * @returns The payer's reputation score
+ * @throws {ILNError.InvalidAddress} If payer is not a valid Stellar address
+ * @throws {ILNError} On other simulation errors
+ * @example
+ * ```ts
+ * const score = await getPayerScore(server, contractAddress, "G...", sourceAccount, Networks.TESTNET);
+ * ```
+ */
+export async function getPayerScore(
+  server: SorobanRpc.Server,
+  contractAddress: string,
+  payer: string,
+  sourceAccount: Account,
+  networkPassphrase: string
+): Promise<number> {
+  validateGAddress(payer);
+
+  const contract = new Contract(contractAddress);
+  const op = contract.call(
+    "payer_score",
+    nativeToScVal(payer, { type: "address" })
+  );
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const sim = await retry(() => server.simulateTransaction(tx));
+
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    throw ILNError.fromError(sim.error);
+  }
+  if (!sim.result?.retval) {
+    return 0;
+  }
+
+  return scValToNative(sim.result.retval) as number;
 }

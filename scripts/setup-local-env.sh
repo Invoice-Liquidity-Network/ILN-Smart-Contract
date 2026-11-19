@@ -53,7 +53,7 @@ echo -e "${GREEN}✓${NC} ($RUST_VERSION)"
 echo -n "Checking Stellar CLI... "
 if ! command -v stellar &> /dev/null; then
   echo -e "${YELLOW}Installing${NC}"
-  cargo install --locked stellar-cli --features opt
+  cargo install --locked stellar-cli
 else
   STELLAR_VERSION=$(stellar --version | awk '{print $2}')
   echo -e "${GREEN}✓${NC} ($STELLAR_VERSION)"

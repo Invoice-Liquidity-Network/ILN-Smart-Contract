@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  stellar:
+    image: stellar/stellar-quickstart:latest
+    container_name: iln-stellar-e2e
+    ports:
+      - "8000:8000"
+      - "11626:11626"
+    environment:
+      - NETWORK_MODE=standalone
+      - STELLAR_NETWORK_ID=local
+      - FAST_START=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ledger"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    volumes:
+      - stellar-e2e-data:/opt/stellar
+
+  # Opt-in: builds and deploys insurance_pool against the e2e Stellar node
+  # for tests that exercise it. See docker-compose.yml for the local-dev
+  # equivalent and scripts/deploy-insurance-pool.sh for configuration.
+  #
+  # Usage: docker compose -f docker-compose.test.yml --profile insurance up insurance-pool-deploy
+  insurance-pool-deploy:
+    image: rust:1-slim
+    container_name: iln-insurance-pool-deploy-e2e
+    profiles: ["insurance"]
+    depends_on:
+      stellar:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - insurance-pool-cargo-cache-e2e:/usr/local/cargo/registry
+    environment:
+      - INSURANCE_POOL_ADMIN=${INSURANCE_POOL_ADMIN:-}
+      - INSURANCE_POOL_COVERAGE=${INSURANCE_POOL_COVERAGE:-1000000000}
+    command: >
+      bash -c "
+        set -e &&
+        rustup target add wasm32v1-none &&
+        command -v stellar >/dev/null 2>&1 || cargo install --locked stellar-cli &&
+        stellar network add --global local --rpc-url http://stellar:8000 --network-passphrase 'Standalone Network ; February 2021' --override || true &&
+        stellar keys generate --global alice || true &&
+        stellar account fund alice --network local || true &&
+        bash scripts/deploy-insurance-pool.sh local alice
+      "
+    restart: "no"
+
+volumes:
+  stellar-e2e-data:
+    driver: local
+  insurance-pool-cargo-cache-e2e:
+    driver: local

@@ -1,23 +1,43 @@
 # Security Policy
 
-## Supported Versions
+ILN spans Soroban smart contracts, a TypeScript SDK, a CLI, an indexer, and a notifications service. ILN is in experimental/testnet phase — do not use current deployments as mainnet-secure infrastructure until the mainnet checklist, audits, and maintainer sign-off are complete.
 
-Currently, the Invoice Liquidity Network (ILN) is in experimental/testnet phase. There are no formally supported "secure" versions for mainnet use yet. 
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+For the full policy — including component-specific vulnerability classes, detailed severity definitions, response timelines, reporting instructions, safe harbor, and maintainer handling procedures — see [docs/security.md](docs/security.md).
 
 ## Responsible Disclosure
 
-If you discover a potential vulnerability in the ILN smart contracts, SDK, or indexer, please do not disclose it publicly.
+Please do not disclose suspected vulnerabilities publicly before maintainers have had time to investigate and remediate them.
 
-Please report any security issues to **security@invoice-liquidity-network.local** (or open a confidential GitHub Security Advisory in the repository). 
-We aim to acknowledge receipt of vulnerability reports within 48 hours and provide a timeline for resolution.
+Report issues by either:
 
-## Indexer Security Architecture
+- Emailing `security@invoice-liquidity-network.local`
+- Opening a private GitHub Security Advisory for this repository
 
-The ILN Indexer is designed to be **read-only from the network**. It strictly polls the Stellar/Soroban blockchain for state changes and persists them locally. 
+## Severity Levels
 
-By design, **the indexer does not expose any authenticated or unauthenticated write/state-change API routes** (`POST`, `PUT`, `DELETE`). All state changes must occur on-chain via the Soroban smart contract. Therefore, API keys or JWTs are not required for the indexer API.
+| Severity | Description |
+|----------|-------------|
+| Critical | Direct loss or theft of user funds, permanent protocol insolvency, or unauthenticated upgrade/admin takeover |
+| High | Material fund risk, broad data integrity failure, secret exposure, or reliable service compromise |
+| Medium | Limited financial or operational impact, denial of service with recovery path, or scoped data exposure |
+| Low | Defense-in-depth issue, documentation security gap, low-impact information exposure |
+| Informational | No immediate exploit path but useful for hardening |
+
+## Response Commitments
+
+| Stage | Timeline |
+|-------|----------|
+| Acknowledgment | Within 48 hours |
+| Initial severity assessment | Within 5 business days |
+| Critical fix | Begin mitigation immediately; target patch within 7 days |
+| High fix | Target patch within 14 days |
+| Medium fix | Target patch within 30 days |
+
+See [docs/security.md](docs/security.md) for full details including safe harbor, maintainer handling procedures, and the security checklist for releases.
+
+## Supported Versions
+
+| Version | Supported |
+|---------|-----------|
+| Experimental/testnet | Best-effort security fixes |
+| Mainnet | Not yet launched |

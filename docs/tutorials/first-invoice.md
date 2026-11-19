@@ -13,7 +13,7 @@ Stellar CLI and TypeScript SDK.
 
 ## Prerequisites
 
-- Stellar CLI installed (`cargo install --locked stellar-cli --features opt`)
+- Stellar CLI installed (`cargo install --locked stellar-cli`)
 - Node.js ≥ 18 and `npm` (for the SDK path)
 - `curl` for Friendbot
 

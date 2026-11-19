@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Tests for `iln status` — rich formatted output (#231).
  */
@@ -23,11 +24,11 @@ function mockInvoice(overrides: Partial<InvoiceDetail> = {}): InvoiceDetail {
 
 describe("iln status — rich output", () => {
   it("prints invoice ID, state, amount and due date", async () => {
-    const fetcher = jest.fn().mockResolvedValue(mockInvoice());
+    const fetcher = vi.fn().mockResolvedValue(mockInvoice());
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-500"], { from: "user" });
 
@@ -36,44 +37,44 @@ describe("iln status — rich output", () => {
     expect(output).toContain("FUNDED");
     expect(output).toContain("750 USDC");
     expect(output).toContain("2026-06-30");
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("prints timeline section", async () => {
-    const fetcher = jest.fn().mockResolvedValue(mockInvoice({ state: "Pending" }));
+    const fetcher = vi.fn().mockResolvedValue(mockInvoice({ state: "Pending" }));
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-500"], { from: "user" });
 
     expect(logs.some((l) => l.includes("Timeline"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("shows LP field when invoice is Funded", async () => {
-    const fetcher = jest.fn().mockResolvedValue(mockInvoice());
+    const fetcher = vi.fn().mockResolvedValue(mockInvoice());
     const cmd = makeStatusCommand(fetcher);
 
     const logs: string[] = [];
-    jest.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
+    vi.spyOn(console, "log").mockImplementation((...a) => logs.push(a.join(" ")));
 
     await cmd.parseAsync(["--id", "INV-500"], { from: "user" });
 
     expect(logs.some((l) => l.includes("LP"))).toBe(true);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error when fetcher throws", async () => {
-    const fetcher = jest.fn().mockRejectedValue(new Error("Invoice not found"));
+    const fetcher = vi.fn().mockRejectedValue(new Error("Invoice not found"));
     const cmd = makeStatusCommand(fetcher);
-    const exit = jest.spyOn(process, "exit").mockImplementation((() => {}) as never);
-    jest.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     await cmd.parseAsync(["--id", "MISSING"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

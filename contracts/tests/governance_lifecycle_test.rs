@@ -235,7 +235,7 @@ fn full_lifecycle_updates_parameter_and_emits_events() {
     ledger.timestamp = proposal.voting_end + 1;
     t.env.ledger().set(ledger);
 
-    t.governance.execute_proposal(&proposal_id, &20_000);
+    t.governance.execute_proposal(&proposal_id);
     let exec_events = t
         .env
         .events()
@@ -272,7 +272,7 @@ fn quorum_not_met_rejects_proposal_without_executing_update() {
     t.env.ledger().set(ledger);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        t.governance.execute_proposal(&proposal_id, &20_000);
+        t.governance.execute_proposal(&proposal_id);
     }));
     assert!(
         result.is_err(),
@@ -295,7 +295,7 @@ fn execution_before_voting_window_ends_is_rejected() {
     t.governance.cast_vote(&t.proposer, &proposal_id, &true);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        t.governance.execute_proposal(&proposal_id, &20_000);
+        t.governance.execute_proposal(&proposal_id);
     }));
     assert!(
         result.is_err(),

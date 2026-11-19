@@ -1,0 +1,7 @@
+{
+  "benchmarks": {
+    "create_proposal": { "cpu": 220773, "mem": 33354 },
+    "cast_vote": { "cpu": 252321, "mem": 41057 },
+    "delegate_votes": { "cpu": 182897, "mem": 28102 }
+  }
+}

@@ -2,6 +2,18 @@
 
 <!-- Brief description of what this PR does -->
 
+## Package Affected
+
+<!-- Check all that apply -->
+- [ ] SDK (@iln/sdk)
+- [ ] CLI (@iln/cli)
+- [ ] Indexer (@iln/indexer)
+- [ ] Notifications
+- [ ] Smart Contracts (invoice_liquidity, iln_governance, iln_distribution, reputation_bonus)
+- [ ] E2E Tests
+- [ ] Documentation
+- [ ] CI/CD
+
 ## Related Issue
 
 Closes #
@@ -19,7 +31,13 @@ Closes #
 - 
 - 
 
-## Test Coverage
+## Changeset Included
+
+<!-- Did you add a changeset for versioning? -->
+- [ ] Yes
+- [ ] No (not needed for this change)
+
+## Test Evidence
 
 <!-- Paste test output showing new/updated tests pass -->
 
@@ -39,6 +57,15 @@ Closes #
 
 </details>
 
+## Breaking Change
+
+<!-- Does this PR introduce breaking changes? -->
+- [ ] Yes (migration notes below)
+- [ ] No
+
+### Migration Notes
+<!-- If breaking change, describe how users should migrate -->
+
 ## Security Considerations
 
 <!-- Any security implications? Access control changes? New attack vectors? State "N/A" if not applicable -->
@@ -51,3 +78,4 @@ Closes #
 - [ ] Commit message follows [Conventional Commits](https://www.conventionalcommits.org/)
 - [ ] No secrets or sensitive data in code
 - [ ] Breaking changes documented (if applicable)
+- [ ] Changeset added (if needed for release)

@@ -2,6 +2,8 @@
 
 The Invoice Liquidity Network (ILN) CLI allows developers and freelancers to manage their identity, track reputation, and interact with the liquidity network directly from the terminal.
 
+> 📋 **Release History:** See [CHANGELOG.md](./CHANGELOG.md) for version history and breaking changes.
+
 ## Installation
 
 ### Global Install

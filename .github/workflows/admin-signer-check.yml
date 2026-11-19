@@ -1,0 +1,29 @@
+name: Admin Signer / CODEOWNERS Check
+
+on:
+  pull_request:
+    paths:
+      - ".github/CODEOWNERS"
+      - ".github/mainnet-admin-signers.json"
+      - ".contracts-mainnet.env"
+      - "scripts/verify-admin-signers.ts"
+  schedule:
+    # Catches drift that happens without a PR, e.g. a signer key rotated
+    # directly on-chain, or someone removed from the GitHub team.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  verify-admin-signers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify on-chain signers match CODEOWNERS
+        env:
+          GITHUB_TOKEN: ${{ secrets.MAINNET_SIGNERS_READ_TOKEN }}
+        run: npx tsx scripts/verify-admin-signers.ts

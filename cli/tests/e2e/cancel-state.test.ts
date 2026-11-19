@@ -1,3 +1,4 @@
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 /**
  * Tests for `iln cancel` — state guard and error paths (#233).
  */
@@ -43,30 +44,30 @@ describe("formatConfirmMessage helper", () => {
 
 describe("iln cancel — non-Pending state errors", () => {
   it("exits with error when invoice is Funded", async () => {
-    const fetcher = jest.fn().mockResolvedValue(invoice("Funded"));
-    const executor = jest.fn();
-    const confirm = jest.fn();
+    const fetcher = vi.fn().mockResolvedValue(invoice("Funded"));
+    const executor = vi.fn();
+    const confirm = vi.fn();
     const cmd = makeCancelCommand(fetcher, executor, confirm);
-    const exit = jest.spyOn(process, "exit").mockImplementation((() => {}) as never);
-    jest.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     await cmd.parseAsync(["--id", "99"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(executor).not.toHaveBeenCalled();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("exits with error when fetcher throws", async () => {
-    const fetcher = jest.fn().mockRejectedValue(new Error("Network error"));
-    const executor = jest.fn();
-    const cmd = makeCancelCommand(fetcher, executor, jest.fn());
-    const exit = jest.spyOn(process, "exit").mockImplementation((() => {}) as never);
-    jest.spyOn(console, "error").mockImplementation(() => {});
+    const fetcher = vi.fn().mockRejectedValue(new Error("Network error"));
+    const executor = vi.fn();
+    const cmd = makeCancelCommand(fetcher, executor, vi.fn());
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     await cmd.parseAsync(["--id", "99"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(1);
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

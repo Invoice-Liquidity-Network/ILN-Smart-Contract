@@ -21,10 +21,16 @@ Competing concerns:
   malicious or erroneous proposal.
 - **Agility** — a shorter delay lets the protocol respond quickly to market
   conditions (e.g. adjusting fee rates during a crisis).
-- **Admin veto as substitute** — the governance contract already has an admin
+- **Admin veto as substitute** — the governance contract already has an
   emergency veto (`veto_proposal`) that can block any `Active` or `Passed`
   proposal before execution. This provides a safety net that partially
-  substitutes for a timelock during the early protocol phase.
+  substitutes for a timelock during the early protocol phase. **Update
+  (Issue #642):** veto authority is now multisig-gated — `veto_proposal`
+  requires a configurable threshold of `VetoSigners` to approve (via
+  `configure_veto_multisig`) rather than a single admin key, closing the
+  "admin single point of failure" finding from the threat model. The rest of
+  this ADR's reasoning (veto as timelock substitute, disable-before-mainnet
+  plan) is otherwise unchanged.
 - **Protocol maturity** — at launch, the governance token distribution is
   concentrated; a long timelock would slow down necessary parameter tuning
   without providing meaningful decentralisation benefits.

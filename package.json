@@ -1,0 +1,31 @@
+{
+  "name": "iln-smart-contract",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Invoice Liquidity Network Smart Contracts",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test:coverage": "turbo run test:coverage",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.9",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "workspaces": [
+    "sdk",
+    "cli"
+  ]
+}

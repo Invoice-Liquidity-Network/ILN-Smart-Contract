@@ -2,6 +2,10 @@
 # Usage: docker compose up -d stellar
 # Check health: docker compose logs -f stellar | grep "ready"
 # Stop: docker compose down
+#
+# Insurance pool testing (opt-in "insurance" profile — builds and deploys
+# the insurance_pool contract against the local Stellar node):
+#   docker compose --profile insurance up insurance-pool-deploy
 
 version: '3.8'
 
@@ -28,8 +32,119 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  notifications-db:
+    image: postgres:16-alpine
+    container_name: iln-notifications-db
+    environment:
+      - POSTGRES_USER=notifications
+      - POSTGRES_PASSWORD=notifications
+      - POSTGRES_DB=notifications
+    ports:
+      - "5433:5432"
+    volumes:
+      - notifications-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    image: iln/indexer:latest
+    container_name: iln-indexer
+    depends_on:
+      stellar:
+        condition: service_healthy
+    environment:
+      - PORT=3000
+      - HORIZON_URL=http://stellar:8000
+      - DB_PATH=/app/data/indexer.db
+      # Contract ID from `insurance-pool-deploy` (see the "insurance" profile
+      # below) or scripts/deploy-insurance-pool.sh. Empty until deployed.
+      - INSURANCE_POOL_CONTRACT_ID=${INSURANCE_POOL_CONTRACT_ID:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - indexer-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  notifications:
+    build:
+      context: ./notifications
+      dockerfile: Dockerfile
+    image: iln/notifications:latest
+    container_name: iln-notifications
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgres://notifications:notifications@notifications-db:5432/notifications
+      # Contract ID from `insurance-pool-deploy` (see the "insurance" profile
+      # below) or scripts/deploy-insurance-pool.sh. Empty until deployed.
+      - INSURANCE_POOL_CONTRACT_ID=${INSURANCE_POOL_CONTRACT_ID:-}
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Builds and deploys the insurance_pool contract to the local Stellar node,
+  # then calls initialize(). Opt-in only — it is not part of the default
+  # `docker compose up` since it installs the Stellar CLI via `cargo install`
+  # on first run, which can take several minutes.
+  #
+  # Usage: docker compose --profile insurance up insurance-pool-deploy
+  insurance-pool-deploy:
+    image: rust:1-slim
+    container_name: iln-insurance-pool-deploy
+    profiles: ["insurance"]
+    depends_on:
+      stellar:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - insurance-pool-cargo-cache:/usr/local/cargo/registry
+    environment:
+      # Passed through to insurance_pool's initialize(admin, coverage).
+      # See scripts/deploy-insurance-pool.sh for defaults.
+      - INSURANCE_POOL_ADMIN=${INSURANCE_POOL_ADMIN:-}
+      - INSURANCE_POOL_COVERAGE=${INSURANCE_POOL_COVERAGE:-1000000000}
+    command: >
+      bash -c "
+        set -e &&
+        rustup target add wasm32v1-none &&
+        command -v stellar >/dev/null 2>&1 || cargo install --locked stellar-cli &&
+        stellar network add --global local --rpc-url http://stellar:8000 --network-passphrase 'Standalone Network ; February 2021' --override || true &&
+        stellar keys generate --global alice || true &&
+        stellar account fund alice --network local || true &&
+        bash scripts/deploy-insurance-pool.sh local alice
+      "
+    restart: "no"
+
 volumes:
   stellar-data:
+    driver: local
+  indexer-data:
+    driver: local
+  notifications-db-data:
+    driver: local
+  insurance-pool-cargo-cache:
     driver: local
 
 networks:

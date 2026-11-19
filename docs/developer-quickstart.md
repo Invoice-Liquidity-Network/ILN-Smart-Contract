@@ -47,7 +47,7 @@ rustup target list --installed | grep wasm32v1
 The Stellar CLI is required for deploying and invoking contracts on-chain.
 
 ```bash
-cargo install --locked stellar-cli --features opt
+cargo install --locked stellar-cli
 stellar --version
 ```
 

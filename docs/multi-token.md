@@ -1,149 +1,281 @@
-# Multi-Token Support (USDC, EURC, XLM)
+# Multi-Token Integration Guide
 
-## Overview
-
-The Invoice Liquidity Network supports multi-token invoicing to enable global payments across different currencies on Stellar.
-
-Instead of limiting invoices to a single asset, users can select a settlement token at the time of invoice creation.
-
-This improves:
-- Cross-border payment flexibility
-- Stablecoin liquidity access
-- Global freelancer payment experience
+Complete reference for submitting, funding, and settling invoices in USDC, EURC, and XLM on the Invoice Liquidity Network.
 
 ---
 
-## Why Multi-Token Support Exists
+## Token Reference
 
-In real-world freelance and invoice financing:
+| Token | Symbol | Decimals | Min Amount | Testnet Address | Mainnet Address |
+|-------|--------|----------|------------|-----------------|-----------------|
+| USD Coin | USDC | 6 | 0.01 USDC (10,000 stroops) | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIUZQFKUUL` | `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75` |
+| Euro Coin | EURC | 6 | 0.01 EURC (10,000 stroops) | `CAQCFVLOBK5GIULPNZVXBPDRDZSS5DN3LRGFGMFQRVXWWF2JNBTJWWGB` | `CDTKPWPLOURQA3WMLYKR3IMAXC5T3EYBWS7GWWLBZ5Z6GS4XRTXTZVYX` |
+| Stellar Lumens | XLM | 7 | 0.0000001 XLM (1 stroop) | Native (no contract) | Native (no contract) |
 
-- Users operate in different currencies and regions
-- Stablecoin availability varies by market
-- Single-token systems create friction for global payments
-
-This system solves this by supporting multiple Stellar-native and issued assets while keeping settlement rules strict and predictable.
-
----
-
-## Supported Tokens
-
-The system currently supports the following tokens:
-
-| Token | Symbol | Type | Network |
-|------|--------|------|---------|
-| USD Coin | USDC | Stablecoin | Stellar |
-| Euro Coin | EURC | Stablecoin | Stellar |
-| Stellar Lumens | XLM | Native asset | Stellar |
-
-> Note: USDC and EURC are issued assets on Stellar. XLM is the native network token and does not require an issuer.
+> **Key difference**: USDC and EURC use **6 decimal places**. XLM uses **7 decimal places**. Always convert human-readable amounts to stroops before calling the contract.
 
 ---
 
-## Important Token Rules
+## Decimal Precision Guide
 
-### 1. Token is locked at invoice creation
+### Converting amounts
 
-Once an invoice is created with a selected token:
-- The token cannot be changed
-- All payments must use the same token
+```
+stroops = human_amount × 10^decimals
+```
+
+### Worked examples
+
+**USDC (6 decimals)**:
+- 100.00 USDC = 100 × 10^6 = 100,000,000 stroops
+- 0.01 USDC = 0.01 × 10^6 = 10,000 stroops (minimum)
+- 1,500.50 USDC = 1,500.50 × 10^6 = 1,500,500,000 stroops
+
+**XLM (7 decimals)**:
+- 100.00 XLM = 100 × 10^7 = 1,000,000,000 stroops
+- 0.0000001 XLM = 1 stroop (minimum)
+- 1,500.50 XLM = 1,500.50 × 10^7 = 15,005,000,000 stroops
+
+**Common mistake**: Using 6 decimals for XLM (off by 10×).
+
+### SDK helper
+
+```typescript
+import { formatTokenAmount, parseTokenAmount } from "@iln/sdk";
+
+// Parse human-readable to stroops
+const usdcStroops = parseTokenAmount("100.00", "USDC"); // 100000000n
+const xlmStroops = parseTokenAmount("100.00", "XLM");   // 1000000000n
+
+// Format stroops to human-readable
+formatTokenAmount(100000000n, "USDC"); // "100.00"
+formatTokenAmount(1000000000n, "XLM"); // "100.00"
+```
 
 ---
 
-### 2. No cross-token payments
+## Submitting an Invoice
 
-Examples:
-- USDC invoice ❌ cannot be paid in EURC
-- EURC invoice ❌ cannot be paid in XLM
+### SDK (TypeScript)
 
-This ensures:
-- predictable settlement
-- no exchange-rate ambiguity
-- simpler contract logic
+```typescript
+import { ILNClient, Token } from "@iln/sdk";
 
----
+const client = new ILNClient({ network: "testnet" });
 
-### 3. Decimal handling
+// Submit invoice in USDC
+const invoice = await client.submitInvoice({
+  freelancer: freelancerKeypair,
+  payer: payerAddress,
+  amount: parseTokenAmount("500.00", "USDC"),
+  token: Token.USDC,
+  dueDate: Math.floor(Date.now() / 1000) + 86400 * 30, // 30 days
+  discountRate: 500, // 5% annualized
+});
 
-Different tokens use different decimal precision:
+console.log(`Invoice ${invoice.id} created for 500.00 USDC`);
+```
 
-| Token | Decimals |
-|------|----------|
-| USDC | 6 |
-| EURC | 6 |
-| XLM | 7 |
-
-All UI values should be normalized before display.
-
----
-
-## Developer Guide
-
-### Invoice creation (Soroban contract call)
-
-Invoices are created by calling the contract with a selected token.
-
-Example (Stellar CLI):
+### CLI (Stellar CLI)
 
 ```bash
+# USDC invoice
 soroban contract invoke \
-  --id <CONTRACT_ID> \
+  --id $INVOICE_LIQUIDITY_ID \
   --network testnet \
+  --source $FREELANCER_SECRET \
   -- submit_invoice \
-  --freelancer <FREELANCER_ADDRESS> \
-  --payer <PAYER_ADDRESS> \
-  --amount 100 \
-  --due_date <UNIX_TIMESTAMP> \
+  --freelancer $FREELANCER_ADDRESS \
+  --payer $PAYER_ADDRESS \
+  --amount 500000000 \
+  --token $USDC_TESTNET_ADDRESS \
+  --due_date 1735689600 \
+  --discount_rate 500
+
+# XLM invoice (note: 7 decimals, native token uses SAC address)
+soroban contract invoke \
+  --id $INVOICE_LIQUIDITY_ID \
+  --network testnet \
+  --source $FREELANCER_SECRET \
+  -- submit_invoice \
+  --freelancer $FREELANCER_ADDRESS \
+  --payer $PAYER_ADDRESS \
+  --amount 1000000000 \
+  --token $NATIVE_XLM_SAC \
+  --due_date 1735689600 \
   --discount_rate 500
 ```
-> The token selection is handled at contract level based on supported asset configuration.
 
-## How Token Integration Works
-On Stellar:
-- Tokens are represented as assets
-- Each asset is identified by:
-  - Code (e.g., USDC)
-  - Issuer (for non-native tokens)
+---
 
-The contract logic enforces:
-- validation of supported tokens
-- correct settlement routing
-- strict invoice-token binding
+## Funding an Invoice
 
-## Adding a New Token
-To introduce a new supported token:
+LPs fund invoices in the same token the invoice was created with.
 
-### 1. Update contract token enum
-Add the token to the contract’s supported token list.
+```typescript
+// Fund an invoice (token must match invoice's token)
+const funded = await client.fundInvoice({
+  lp: lpKeypair,
+  invoiceId: invoice.id,
+  amount: parseTokenAmount("475.00", "USDC"), // discounted amount
+});
+```
 
-### 2. Configure asset validation
-Define how the token is validated in invoice creation logic.
+---
 
-### 3. Update frontend selection UI
-Add token option in invoice creation form.
+## Event Payloads
 
-### 4. Test on testnet
-Ensure:
-- invoice creation works
-- funding works
-- settlement behaves correctly
+The contract emits events for each multi-token operation. Indexers should parse these for token-specific tracking.
+
+### InvoiceCreated
+
+```
+Topics: ["invoice_created", invoice_id]
+Data: { freelancer, payer, amount, token, due_date, discount_rate }
+```
+
+### InvoiceFunded
+
+```
+Topics: ["invoice_funded", invoice_id]
+Data: { lp_address, amount, token, funded_at }
+```
+
+### InvoiceSettled
+
+```
+Topics: ["invoice_settled", invoice_id]
+Data: { payer, lp, amount, token, settled_at }
+```
+
+---
+
+## Error Codes
+
+| Code | Error | Cause | Fix |
+|------|-------|-------|-----|
+| 100 | `InvalidToken` | Token address not in supported list | Use a supported token address |
+| 101 | `TokenMismatch` | Payment token differs from invoice token | Pay using the same token as the invoice |
+| 102 | `AmountBelowMinimum` | Amount less than token's minimum | Increase amount above minimum threshold |
+| 103 | `DecimalPrecisionError` | Amount has wrong decimal precision | Check token decimals (6 for USDC/EURC, 7 for XLM) |
+| 104 | `TokenNotWhitelisted` | Token not approved via governance | Submit governance proposal to add token |
+
+---
+
+## Token Registry (SDK)
+
+The SDK's `TokenRegistry` provides token metadata and formatting helpers.
+
+```typescript
+import { TokenRegistry } from "@iln/sdk";
+
+const registry = new TokenRegistry("testnet");
+
+// Get token info
+const usdc = registry.getToken("USDC");
+console.log(usdc.decimals);      // 6
+console.log(usdc.minAmount);     // 10000n (0.01 USDC)
+console.log(usdc.contractAddress); // "CBIELTK..."
+
+// List all supported tokens
+const tokens = registry.listTokens();
+// [{ symbol: "USDC", decimals: 6, ... }, { symbol: "EURC", ... }, { symbol: "XLM", ... }]
+
+// Validate an amount
+registry.validateAmount("USDC", parseTokenAmount("0.001", "USDC"));
+// throws AmountBelowMinimumError
+
+// Format for display
+registry.format("USDC", 500000000n); // "500.00"
+registry.format("XLM", 5000000000n); // "500.00"
+```
+
+---
+
+## Adding a New Token via Governance
+
+New tokens require a governance proposal and community vote.
+
+### Steps
+
+1. **Submit proposal** — call `iln_governance.submit_proposal` with:
+   - Proposal type: `AddToken`
+   - Parameters: `{ code: "NEW_TOKEN", issuer: "G...", min_amount: 10000, decimals: 7 }`
+
+2. **Vote period** — LPs vote during the voting window (default: 7 days)
+
+3. **Execution** — if passed, the contract automatically adds the token to the registry
+
+4. **Verify** — call `get_supported_tokens` to confirm the new token appears
+
+See [governance.md](./governance.md) for full governance documentation.
+
+---
+
+## Storage Layout
+
+Token registry data is stored in the contract's persistent storage:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `TokenRegistry` | `Map<Address, TokenInfo>` | All supported tokens and metadata |
+| `SupportedTokens` | `Vec<Address>` | Ordered list of supported token addresses |
+| `TokenDecimals` | `Map<Address, u32>` | Decimal precision per token |
+
+---
+
+## Testing Multi-Token Scenarios
+
+```typescript
+// tests/multiToken.test.ts
+import { ILNClient, Token, parseTokenAmount } from "@iln/sdk";
+
+describe("multi-token invoices", () => {
+  it("creates invoice in each supported token", async () => {
+    for (const token of [Token.USDC, Token.EURC, Token.XLM]) {
+      const invoice = await client.submitInvoice({
+        freelancer: freelancerKeypair,
+        payer: payerAddress,
+        amount: parseTokenAmount("100.00", token),
+        token,
+        dueDate: futureTimestamp,
+        discountRate: 500,
+      });
+      expect(invoice.token).toBe(token);
+    }
+  });
+
+  it("rejects cross-token payment", async () => {
+    const invoice = await createInvoice(Token.USDC);
+    await expect(
+      client.fundInvoice({ lp: lpKeypair, invoiceId: invoice.id, amount: 100n, token: Token.EURC })
+    ).rejects.toThrow("TokenMismatch");
+  });
+
+  it("handles decimal precision correctly", async () => {
+    const usdc = parseTokenAmount("100.00", "USDC"); // 100000000n
+    const xlm = parseTokenAmount("100.00", "XLM");   // 1000000000n
+    expect(usdc.toString()).toBe("100000000");
+    expect(xlm.toString()).toBe("1000000000");
+  });
+});
+```
+
+---
 
 ## FAQ
-#### Can I pay a USDC invoice using EURC?
-No.
-Each invoice is locked to a single token at creation time to ensure predictable settlement.
 
-#### Can I change token after invoice creation?
-No. You must create a new invoice with the desired token.
+**Can I pay a USDC invoice in EURC?**
+No. Each invoice is locked to a single token at creation.
 
-#### Why not auto-convert tokens?
-Automatic conversion introduces:
-- oracle dependency risk
-- inconsistent pricing
-- added contract complexity
+**Can I change the token after invoice creation?**
+No. Create a new invoice with the desired token.
 
-This system prioritizes deterministic settlement over automatic FX conversion.
+**Why not auto-convert tokens?**
+Auto-conversion introduces oracle dependency risk, inconsistent pricing, and added contract complexity. The system prioritizes deterministic settlement.
 
-## Summary
-Multi-token support in this system enables global invoice financing while maintaining strict settlement guarantees.
+**What happens if I send the wrong token?**
+The transaction will fail with `TokenMismatch` (error 101). Your funds are not lost — the transaction simply does not execute.
 
-Each invoice is token-locked at creation, ensuring clarity, auditability, and predictable liquidity behavior across the Stellar network.
+**How do I get testnet USDC/EURC?**
+Use the Stellar Laboratory or the official Circle testnet faucet to mint test tokens.

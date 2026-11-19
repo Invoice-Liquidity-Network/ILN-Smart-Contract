@@ -1,10 +1,12 @@
 # Smart Contract Benchmarks
 
-*Date:* 2026-05-30
+*Date:* 2026-05-30 (invoice_liquidity), 2026-07-25 (iln_governance)
 
-These values are baseline metrics for core contract execution: CPU instructions and memory bytes consumed via Soroban's cost meter (`env.cost_estimate()`). CI compares each run against `contracts/invoice_liquidity/benchmarks/baseline.json` and emits a **warning** (not a failure) when either metric regresses by more than 10%.
+These values are baseline metrics for core contract execution: CPU instructions and memory bytes consumed via Soroban's cost meter (`env.budget()`). CI compares each run against the contract's `benchmarks/baseline.json` and emits a **warning** (not a failure) when either metric regresses by more than 10%.
 
 ## Baseline Execution Results
+
+### `contracts/invoice_liquidity`
 
 | Function       | CPU Instructions | Memory (bytes) |
 | -------------- | ---------------- | -------------- |
@@ -12,10 +14,18 @@ These values are baseline metrics for core contract execution: CPU instructions 
 | fund_invoice   |          1041920 |          38190 |
 | mark_paid      |           948123 |          35480 |
 
+### `contracts/iln_governance`
+
+| Function        | CPU Instructions | Memory (bytes) |
+| ---------------- | ---------------- | -------------- |
+| create_proposal  |            220773 |          33354 |
+| cast_vote        |            252321 |          41057 |
+| delegate_votes   |            182897 |          28102 |
+
 ## Re-Running Locally
 
 ```bash
-cd contracts/invoice_liquidity
+cd contracts/invoice_liquidity   # or contracts/iln_governance
 cargo test --target x86_64-unknown-linux-gnu benchmark -- --nocapture
 ```
 
@@ -28,15 +38,16 @@ BENCHMARK submit_invoice cpu=859421 mem=26485
 ## CI Regression Check
 
 ```bash
-bash scripts/check_benchmark_regression.sh
+bash scripts/check_benchmark_regression.sh                   # checks every contract listed below
+bash scripts/check_benchmark_regression.sh contracts/iln_governance:contracts/iln_governance/benchmarks/baseline.json  # checks one
 ```
 
-The script always exits 0. Regressions above the threshold are reported as `::warning::` annotations in GitHub Actions.
+The script always exits 0. Regressions above the threshold are reported as `::warning::` annotations in GitHub Actions. It checks `contracts/invoice_liquidity` and `contracts/iln_governance` by default.
 
 ## Updating Baselines
 
 After an intentional optimisation or contract change:
 
 1. Run the benchmark suite locally with `--nocapture`.
-2. Update `contracts/invoice_liquidity/benchmarks/baseline.json`.
+2. Update `contracts/<contract>/benchmarks/baseline.json`.
 3. Update the table in this document.

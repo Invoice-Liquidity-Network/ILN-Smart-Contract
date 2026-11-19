@@ -9,6 +9,7 @@ pub mod reputation;
 
 use crate::config::{get_config, set_admin, set_config, update_config, Config};
 use crate::errors::ContractError;
+use crate::events::{emit_config_set, emit_initialized};
 use crate::invoice::{handle_default, mark_paid, submit_invoice, Invoice};
 use crate::reputation::{read_reputation, ReputationScore};
 use soroban_sdk::{contract, contractimpl, Address, Env};
@@ -20,10 +21,18 @@ pub struct ReputationBonusContract;
 impl ReputationBonusContract {
     pub fn init(env: Env, admin: Address) {
         set_admin(&env, &admin);
+        emit_initialized(&env, &admin);
     }
 
     pub fn set_config(env: Env, config: Config) -> Result<(), ContractError> {
-        set_config(&env, &config).map_err(|_| ContractError::ConfigErrorUnauthorized)
+        set_config(&env, &config).map_err(|_| ContractError::ConfigErrorUnauthorized)?;
+        emit_config_set(
+            &env,
+            config.high_rep_threshold,
+            config.bonus_bps,
+            config.min_discount_rate_bps,
+        );
+        Ok(())
     }
 
     pub fn get_config(env: Env) -> Result<Config, ContractError> {

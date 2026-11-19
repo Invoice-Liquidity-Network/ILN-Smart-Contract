@@ -88,10 +88,10 @@ fn setup_appeal() -> AppealTestEnv {
 fn make_defaulted_invoice(t: &AppealTestEnv) -> u64 {
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
-    t.contract.fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
 
     // Advance time past due_date.
     let mut ledger = t.env.ledger().get();
@@ -139,6 +139,27 @@ fn test_appeal_default_emits_event() {
     // We check the invoice is in Appealed state as a proxy.
     let invoice = t.contract.get_invoice(&id);
     assert_eq!(invoice.status, InvoiceStatus::Appealed);
+}
+
+#[test]
+fn test_payer_score_saved_before_default() {
+    let t = setup_appeal();
+    
+    let initial_score = t.contract.payer_score(&t.payer);
+    
+    let id = make_defaulted_invoice(&t);
+    
+    // The invoice is now defaulted. The current score should be reduced.
+    let score_after_default = t.contract.payer_score(&t.payer);
+    assert!(score_after_default < initial_score);
+
+    // If we appeal and it's upheld, the score should return to the original initial_score, 
+    // proving the original score was saved before the penalty was applied.
+    t.contract.appeal_default(&id, &evidence_hash(&t.env));
+    t.contract.resolve_appeal(&id, &true);
+
+    let score_after_upheld = t.contract.payer_score(&t.payer);
+    assert_eq!(score_after_upheld, initial_score);
 }
 
 // ── Resolve: upheld ───────────────────────────────────────────────────────────
@@ -213,8 +234,7 @@ fn test_appeal_non_defaulted_invoice_fails() {
     let t = setup_appeal();
     let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
 
-    let id = t.contract.submit_invoice(        &ReferralCode::None,
-    );
+    let id = t.contract.submit_invoice(&ReferralCode::None);
 
     // Invoice is still Pending — cannot appeal.
     let result = t.contract.try_appeal_default(&id, &evidence_hash(&t.env));

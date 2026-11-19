@@ -2,8 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "contract": "InvoiceLiquidityContract",
   "source": "contracts/invoice_liquidity/src/lib.rs",
-  "generator": "scripts/gen-spec.ts",
-  "note": "Source-derived ABI spec. The canonical embedded spec is produced by `stellar contract inspect --wasm <wasm> --output json` against the built WASM.",
   "functionCount": 60,
   "errorCount": 50,
   "eventCount": 28,
@@ -1813,5 +1811,150 @@
         }
       ]
     }
-  ]
+  ],
+  "generator": "scripts/gen-spec.ts",
+  "note": "Source-derived ABI spec. The canonical embedded spec is produced by `stellar contract inspect --wasm <wasm> --output json` against the built WASM. Top-level fields describe InvoiceLiquidityContract; see `contracts` for the rest.",
+  "contracts": {
+    "insurance_pool": {
+      "contract": "InsurancePool",
+      "source": "contracts/insurance_pool/src/lib.rs",
+      "functionCount": 12,
+      "errorCount": 7,
+      "eventCount": 0,
+      "functions": [
+        {
+          "name": "cancel_admin_transfer",
+          "doc": "Cancel a pending admin transfer proposal. Requires current admin auth.",
+          "parameters": [],
+          "returns": "Result<(), InsuranceError>"
+        },
+        {
+          "name": "cancel_coverage_change",
+          "doc": "Cancel a pending coverage change proposal. Requires current admin auth.",
+          "parameters": [],
+          "returns": "Result<(), InsuranceError>"
+        },
+        {
+          "name": "execute_admin_transfer",
+          "doc": "Execute a previously proposed admin transfer once its timelock has expired. Callable by anyone once the delay has elapsed.",
+          "parameters": [],
+          "returns": "Result<(), InsuranceError>"
+        },
+        {
+          "name": "execute_coverage_change",
+          "doc": "Execute a previously proposed coverage change once its timelock has expired. Callable by anyone once the delay has elapsed.",
+          "parameters": [],
+          "returns": "Result<(), InsuranceError>"
+        },
+        {
+          "name": "get_coverage",
+          "doc": "The configured flat per-claim coverage cap.",
+          "parameters": [],
+          "returns": "i128"
+        },
+        {
+          "name": "get_pending_admin",
+          "doc": "Returns the pending admin transfer proposal (new admin, eta), if any.",
+          "parameters": [],
+          "returns": "Option<(Address, u64)>"
+        },
+        {
+          "name": "get_pending_coverage",
+          "doc": "Returns the pending coverage proposal (new cap, eta), if any.",
+          "parameters": [],
+          "returns": "Option<(i128, u64)>"
+        },
+        {
+          "name": "get_premiums_paid",
+          "doc": "Total premium an LP has contributed over the pool's lifetime.",
+          "parameters": [
+            {
+              "name": "lp",
+              "type": "Address"
+            }
+          ],
+          "returns": "i128"
+        },
+        {
+          "name": "initialize",
+          "doc": "Initialise the pool.  * `admin` — authorised to file claims (in production, the liquidity   contract address acting on a confirmed default). * `coverage` — flat per-claim compensation cap (in token stroops).",
+          "parameters": [
+            {
+              "name": "admin",
+              "type": "Address"
+            },
+            {
+              "name": "coverage",
+              "type": "i128"
+            }
+          ],
+          "returns": "Result<(), InsuranceError>"
+        },
+        {
+          "name": "is_claimed",
+          "doc": "Returns `true` if a claim has already been processed for `invoice_id`.",
+          "parameters": [
+            {
+              "name": "invoice_id",
+              "type": "u64"
+            }
+          ],
+          "returns": "bool"
+        },
+        {
+          "name": "propose_admin_transfer",
+          "doc": "Propose an admin transfer. Requires current admin auth. Overwrites any previously pending admin proposal.",
+          "parameters": [
+            {
+              "name": "new_admin",
+              "type": "Address"
+            }
+          ],
+          "returns": "Result<u64, InsuranceError>"
+        },
+        {
+          "name": "propose_coverage_change",
+          "doc": "Propose a new coverage cap. Requires current admin auth. Overwrites any previously pending coverage proposal.",
+          "parameters": [
+            {
+              "name": "new_coverage",
+              "type": "i128"
+            }
+          ],
+          "returns": "Result<u64, InsuranceError>"
+        }
+      ],
+      "errors": [
+        {
+          "name": "NotInitialized",
+          "code": 1
+        },
+        {
+          "name": "AlreadyClaimed",
+          "code": 2
+        },
+        {
+          "name": "InvalidAmount",
+          "code": 3
+        },
+        {
+          "name": "PoolEmpty",
+          "code": 4
+        },
+        {
+          "name": "AlreadyInitialized",
+          "code": 5
+        },
+        {
+          "name": "NoPendingProposal",
+          "code": 6
+        },
+        {
+          "name": "TimelockNotExpired",
+          "code": 7
+        }
+      ],
+      "events": []
+    }
+  }
 }

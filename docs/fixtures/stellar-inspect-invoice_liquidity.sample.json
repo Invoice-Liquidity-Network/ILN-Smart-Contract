@@ -1,0 +1,50 @@
+[
+  {
+    "doc": "Returns the invoice with the given invoice_id. Access: Anyone",
+    "name": "get_invoice",
+    "inputs": [
+      { "doc": "", "name": "invoice_id", "type": "u64" }
+    ],
+    "outputs": [
+      { "type": { "result": { "ok": "Invoice", "error": "ContractError" } } }
+    ]
+  },
+  {
+    "doc": "Access: Submitter only",
+    "name": "cancel_invoice",
+    "inputs": [
+      { "doc": "", "name": "invoice_id", "type": "u64" }
+    ],
+    "outputs": [
+      { "type": { "result": { "ok": "void", "error": "ContractError" } } }
+    ]
+  },
+  {
+    "doc": "Access: Payer only",
+    "name": "mark_paid",
+    "inputs": [
+      { "doc": "", "name": "invoice_id", "type": "u64" },
+      { "doc": "", "name": "amount", "type": "i128" }
+    ],
+    "outputs": [
+      { "type": { "result": { "ok": "void", "error": "ContractError" } } }
+    ]
+  },
+  {
+    "doc": "Access: Submitter only",
+    "name": "submit_invoice",
+    "inputs": [
+      { "doc": "", "name": "freelancer", "type": "Address" },
+      { "doc": "", "name": "payer", "type": "Address" },
+      { "doc": "", "name": "amount", "type": "i128" },
+      { "doc": "", "name": "due_date", "type": "u64" },
+      { "doc": "", "name": "discount_rate", "type": "u32" },
+      { "doc": "", "name": "token", "type": "Address" },
+      { "doc": "", "name": "referral_code", "type": { "option": "BytesN<32>" } },
+      { "doc": "", "name": "allowed_lps", "type": { "option": { "vec": "Address" } } }
+    ],
+    "outputs": [
+      { "type": { "result": { "ok": "u64", "error": "ContractError" } } }
+    ]
+  }
+]

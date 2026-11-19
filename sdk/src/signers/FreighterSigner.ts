@@ -229,15 +229,14 @@ export class FreighterSigner implements ISigner {
     // Step 1: simulate to get the footprint
     const preparedTx = await server.prepareTransaction(tx);
 
-    if (SorobanRpc.Api.isSimulationError(preparedTx as any)) {
+    if (SorobanRpc.Api.isSimulationError(preparedTx as unknown as SorobanRpc.Api.SimulateTransactionResponse)) {
       throw new Error(
-        `Soroban simulation failed: ${(preparedTx as any).error}`
+        `Soroban simulation failed: ${(preparedTx as unknown as { error: string }).error}`
       );
     }
 
     // Step 2: serialise to base-64 XDR
-    const envelopeXdr = (preparedTx as any)
-      .toEnvelope()
+    const envelopeXdr = (preparedTx as unknown as { toEnvelope: () => { toXDR: (f: string) => string } }).toEnvelope()
       .toXDR("base64") as string;
 
     // Step 3: ask Freighter to sign
@@ -296,7 +295,7 @@ export class FreighterSigner implements ISigner {
   private _api(): FreighterApi {
     this._ensureInstalled();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion
-    return (globalThis as any).window.freighterApi!;
+    return (globalThis as unknown as { window: any }).window.freighterApi!;
   }
 
   /**

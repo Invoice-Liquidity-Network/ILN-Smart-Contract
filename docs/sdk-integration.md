@@ -1,547 +1,638 @@
 # SDK Integration Guide
 
-Practical TypeScript examples for every major interaction with the ILN contract on Stellar.
-All examples target the **testnet** deployment and use the
-[`@stellar/stellar-sdk`](https://www.npmjs.com/package/@stellar/stellar-sdk) package.
+A single, end-to-end integration guide for third-party builders working with the
+Invoice Liquidity Network (ILN) on Stellar/Soroban. Every flow below uses the
+official [`@iln/sdk`](../sdk/README.md) package and is exercised against the
+**testnet** deployment.
+
+- [Quick Start](#quick-start)
+  - [Node.js (Keypair)](#nodejs-keypair)
+  - [Browser (Freighter)](#browser-freighter)
+- [Freelancer Flow](#freelancer-flow) — submit, cancel
+- [LP Flow](#lp-flow) — browse marketplace, fund, transfer
+- [Payer Flow](#payer-flow) — pay, dispute
+- [Governance](#governance) — propose, vote, execute
+- [Analytics](#analytics) — reputation, stats, event stream
+- [Error Handling](#error-handling)
+- [Testing Against Testnet](#testing-against-testnet)
+
+> **Conventions.** All amounts are `bigint` values in the token's smallest unit
+> (USDC and XLM use 7 decimals on Stellar, so `10_000000n` = 10.0). Discount and
+> yield rates are expressed in basis points (`300` = 3.00 %). Invoice IDs are
+> `bigint`.
 
 ---
 
-## Prerequisites
+## Quick Start
+
+### Install
 
 ```bash
-npm install @stellar/stellar-sdk
+npm install @iln/sdk @stellar/stellar-sdk
+# browser wallet integration also needs:
+npm install @stellar/freighter-api
 ```
+
+### Testnet constants
+
+```ts
+import { Networks } from "@stellar/stellar-sdk";
+
+export const RPC_URL = "https://soroban-testnet.stellar.org";
+export const NETWORK_PASSPHRASE = Networks.TESTNET;
+// Primary invoice_liquidity contract (see project README → Testnet deployment).
+export const CONTRACT_ID = "CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC";
+// Testnet USDC issued as a Stellar Asset Contract (SAC).
+export const USDC_TOKEN = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+```
+
+The SDK ships two environments out of the box. Read-only calls work without a
+signer; state-changing calls need one.
+
+### Node.js (Keypair)
+
+Use a `KeypairSigner` for scripts, bots, and backends. **Never hard-code secret
+keys** — read them from the environment.
+
+```ts
+import { SorobanRpc, Keypair, type Transaction } from "@stellar/stellar-sdk";
+import { ILNClient, KeypairSigner } from "@iln/sdk";
+import { RPC_URL, CONTRACT_ID, NETWORK_PASSPHRASE } from "./config";
+
+const server = new SorobanRpc.Server(RPC_URL);
+const keypair = Keypair.fromSecret(process.env.ILN_SECRET_KEY!);
+const signer = new KeypairSigner(keypair);
+
+// ILNClient is the easiest entry point for read methods.
+const client = ILNClient.testnet(signer, { contractId: CONTRACT_ID });
+
+const stats = await client.getContractStats();
+console.log(`Total invoices: ${stats.totalInvoices}`);
+// → Total invoices: 128
+```
+
+Many write helpers are exported as free functions and take an explicit
+`signTransaction` callback. For a keypair that callback is simply:
+
+```ts
+const signTx = (tx: Transaction) => {
+  tx.sign(keypair);
+  return tx;
+};
+```
+
+### Browser (Freighter)
+
+In the browser, delegate signing to the user's Freighter wallet so private keys
+never leave it.
 
 ```ts
 import {
-  Contract,
-  Keypair,
-  Networks,
   SorobanRpc,
   TransactionBuilder,
-  nativeToScVal,
-  scValToNative,
-  xdr,
-  Address,
+  type Transaction,
 } from "@stellar/stellar-sdk";
-
-// ── Testnet constants ────────────────────────────────────────────────────────
-const RPC_URL        = "https://soroban-testnet.stellar.org";
-const CONTRACT_ID    = "CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC";
-const USDC_TOKEN     = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"; // testnet USDC SAC
-const NETWORK_PHRASE = Networks.TESTNET;
-const BASE_FEE       = "100";
+import {
+  isConnected,
+  requestAccess,
+  getAddress,
+  signTransaction as freighterSign,
+} from "@stellar/freighter-api";
+import { ILNClient, FreighterSigner } from "@iln/sdk";
+import { RPC_URL, CONTRACT_ID, NETWORK_PASSPHRASE } from "./config";
 
 const server = new SorobanRpc.Server(RPC_URL);
 
-// Helper: sign, simulate, and submit a transaction
-async function invoke(
-  caller: Keypair,
-  method: string,
-  args: xdr.ScVal[]
-): Promise<xdr.ScVal> {
-  const account  = await server.getAccount(caller.publicKey());
-  const contract = new Contract(CONTRACT_ID);
+if (!(await isConnected())) throw new Error("Freighter not installed");
+await requestAccess();
+const { address: publicKey } = await getAddress();
 
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PHRASE,
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(30)
-    .build();
+// signTransaction callback for the free-function helpers.
+const signTx = async (tx: Transaction) => {
+  const { signedTxXdr } = await freighterSign(tx.toXDR(), {
+    networkPassphrase: NETWORK_PASSPHRASE,
+    address: publicKey,
+  });
+  return TransactionBuilder.fromXDR(signedTxXdr, NETWORK_PASSPHRASE) as Transaction;
+};
 
-  // Simulate to get the footprint and resource fee
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(`Simulation failed: ${sim.error}`);
-  }
-
-  const prepared = SorobanRpc.assembleTransaction(tx, sim).build();
-  prepared.sign(caller);
-
-  const response = await server.sendTransaction(prepared);
-  if (response.status === "ERROR") {
-    throw new Error(`Submit failed: ${JSON.stringify(response.errorResult)}`);
-  }
-
-  // Poll until confirmed
-  let result = await server.getTransaction(response.hash);
-  while (result.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    result = await server.getTransaction(response.hash);
-  }
-
-  if (result.status !== "SUCCESS") {
-    throw new Error(`Transaction failed: ${result.status}`);
-  }
-
-  return result.returnValue ?? xdr.ScVal.scvVoid();
-}
+// Read-only client (no signer required for queries):
+const client = ILNClient.testnet(new FreighterSigner(), { contractId: CONTRACT_ID });
+const rep = await client.getReputation(publicKey);
+console.log(`Reputation score: ${rep.score}`);
 ```
+
+> In every flow below, `server`, `account`, and `signTx` refer to the values
+> created in this section. `account` is fetched per transaction with
+> `await server.getAccount(publicKey)` so the sequence number is fresh.
 
 ---
 
-## 1. Submit an invoice
+## Freelancer Flow
 
-Called by the **freelancer** to register an unpaid invoice on-chain.
+Freelancers tokenize an unpaid invoice so a liquidity provider can fund it early.
+
+### Submit an invoice
+
+`submitInvoice` validates inputs locally before building the transaction, then
+returns the new on-chain invoice ID.
 
 ```ts
-/**
- * submit_invoice(freelancer, payer, amount, due_date, discount_rate, token)
- *
- * @param freelancer    - Keypair of the invoice submitter
- * @param payerAddress  - Stellar address of the payer (client)
- * @param amountUsdc    - Invoice value in USDC (e.g. 500.00 → pass 500_000_000 stroops)
- * @param dueDateUnix   - Unix timestamp of the payment due date
- * @param discountBps   - Discount rate in basis points (e.g. 300 = 3 %)
- * @returns             - The new invoice ID (u64)
- */
-async function submitInvoice(
-  freelancer: Keypair,
-  payerAddress: string,
-  amountUsdc: bigint,
-  dueDateUnix: number,
-  discountBps: number
-): Promise<bigint> {
-  const args = [
-    new Address(freelancer.publicKey()).toScVal(),   // freelancer
-    new Address(payerAddress).toScVal(),             // payer
-    nativeToScVal(amountUsdc, { type: "i128" }),     // amount (stroops)
-    nativeToScVal(dueDateUnix, { type: "u64" }),     // due_date
-    nativeToScVal(discountBps, { type: "u32" }),     // discount_rate
-    new Address(USDC_TOKEN).toScVal(),               // token
-  ];
+import { submitInvoice } from "@iln/sdk";
+import { CONTRACT_ID, NETWORK_PASSPHRASE, USDC_TOKEN } from "./config";
 
-  const result = await invoke(freelancer, "submit_invoice", args);
-  return scValToNative(result) as bigint;
-}
+const account = await server.getAccount(freelancerPublicKey);
 
-// Usage
-const freelancer = Keypair.fromSecret("S...");
-const invoiceId  = await submitInvoice(
-  freelancer,
-  "GPAYER...",
-  500_000_000n,                          // 500 USDC (6 decimals)
-  Math.floor(Date.now() / 1000) + 86400, // due in 24 h
-  300                                    // 3 % discount
+const { invoiceId, txHash } = await submitInvoice(
+  server,
+  CONTRACT_ID,
+  {
+    payer: payerPublicKey,           // G… address expected to pay
+    amount: 1_000_0000000n,          // 1,000 USDC (7 decimals)
+    dueDate: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30, // +30 days
+    discountRate: 300,               // 3.00 % — the LP's reward
+    token: USDC_TOKEN,
+  },
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
 );
-console.log("Invoice ID:", invoiceId);
+
+console.log(`Invoice #${invoiceId} submitted in tx ${txHash}`);
+// → Invoice #129 submitted in tx 9f3c…
 ```
 
-**Key constraints**
-- `amount` must be ≥ 1 000 000 (1 USDC minimum).
-- `due_date` must be at least 24 hours in the future and no more than 365 days out.
-- `discount_rate` must be between 1 and the contract's `MaxDiscountRate` (default 5 000 bps).
-- `token` must be on the contract's approved token list.
+**Returns:** `{ invoiceId: bigint, txHash: string }`.
+
+**Errors:** throws `ILNError` with code `InvalidAmount` (amount ≤ 0),
+`InvalidDiscountRate` (outside 1–5000 bps), `DueDateTooSoon` (< 24h),
+or `DueDateTooFar` (> 365 days). See [Error Handling](#error-handling).
+
+### Cancel an invoice
+
+Only the submitter can cancel, and only while the invoice is still `Pending`
+(unfunded).
+
+```ts
+import { cancelInvoice } from "@iln/sdk";
+
+const account = await server.getAccount(freelancerPublicKey);
+
+const { txHash } = await cancelInvoice(
+  server,
+  CONTRACT_ID,
+  129n,            // invoiceId
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+
+console.log(`Invoice cancelled: ${txHash}`);
+```
+
+**Returns:** `{ txHash: string }`.
+
+**Errors:** `ILNError` `NotAuthorized` (caller is not the submitter) or
+`InvalidStatus` (already funded/paid).
 
 ---
 
-## 2. Fund an invoice
+## LP Flow
 
-Called by a **liquidity provider** to advance capital against a pending invoice.
-The LP pays `amount − discount` and the freelancer receives that amount immediately.
+Liquidity providers (LPs) browse open invoices, fund the ones they like, and can
+transfer a funded position to another LP on a secondary market.
+
+### Browse the marketplace
+
+For discovery, query the **indexer API** (fast, paginated, off-chain). For
+authoritative on-chain reads, use the SDK query helpers.
 
 ```ts
-/**
- * fund_invoice(funder, invoice_id, fund_amount)
- *
- * @param lp          - Keypair of the liquidity provider
- * @param invoiceId   - ID returned by submit_invoice
- * @param fundAmount  - Amount to fund in stroops (must equal invoice.amount for full funding)
- */
-async function fundInvoice(
-  lp: Keypair,
-  invoiceId: bigint,
-  fundAmount: bigint
-): Promise<void> {
-  const args = [
-    new Address(lp.publicKey()).toScVal(),       // funder
-    nativeToScVal(invoiceId, { type: "u64" }),   // invoice_id
-    nativeToScVal(fundAmount, { type: "i128" }), // fund_amount
-  ];
-
-  await invoke(lp, "fund_invoice", args);
-  console.log(`Invoice ${invoiceId} funded with ${fundAmount} stroops`);
-}
-
-// Usage — fund the full invoice amount
-const lp = Keypair.fromSecret("S...");
-await fundInvoice(lp, invoiceId, 500_000_000n);
+// Off-chain marketplace listing via the indexer REST API.
+const res = await fetch(
+  "https://indexer.testnet.iln.network/invoices?status=pending&page=1&pageSize=20"
+);
+const { invoices, total } = await res.json();
+console.log(`${total} open invoices; first id = ${invoices[0]?.id}`);
 ```
 
-**What happens on-chain**
-1. LP transfers `amount × (1 − discount_rate / 10 000)` to the contract.
-2. Contract immediately forwards that amount to the freelancer.
-3. Invoice status transitions `Pending → Funded`.
+```ts
+// On-chain reads via the SDK.
+import { getInvoice, listInvoicesBySubmitter, listInvoicesByLP } from "@iln/sdk";
 
-> **Partial funding** is supported. Call `fund_invoice` multiple times with smaller
-> amounts until `amount_funded == amount`. Status will be `PartiallyFunded` until full.
+const account = await server.getAccount(lpPublicKey);
+
+const invoice = await getInvoice(server, CONTRACT_ID, 129n, account, NETWORK_PASSPHRASE);
+console.log(invoice.status, invoice.amount, invoice.discountRate);
+
+const submitted = await listInvoicesBySubmitter(
+  server,
+  CONTRACT_ID,
+  freelancerPublicKey,
+  account,
+  NETWORK_PASSPHRASE,
+  0,    // page
+  50    // pageSize
+);
+
+const myPositions = await listInvoicesByLP(
+  server,
+  CONTRACT_ID,
+  lpPublicKey,
+  account,
+  NETWORK_PASSPHRASE
+);
+```
+
+**Returns:** `getInvoice` → a full `Invoice`; `listInvoicesBySubmitter` /
+`listInvoicesByLP` → `Invoice[]`.
+
+### Fund an invoice
+
+`fundInvoice` handles the SEP-41 token allowance automatically — it checks the
+LP's current allowance, submits an approval if needed, then funds. Lifecycle
+callbacks let you surface progress in a UI.
+
+```ts
+import { fundInvoice } from "@iln/sdk";
+
+const result = await fundInvoice(
+  server,
+  CONTRACT_ID,
+  lpKeypair,        // Keypair (Node.js); funding requires a real signer
+  129n,             // invoiceId
+  {
+    onApprovalRequired: ({ requiredAmount, currentAllowance }) =>
+      console.log(`Approving ${requiredAmount} (have ${currentAllowance})`),
+    onApprovalSent: ({ approveTxHash }) =>
+      console.log(`Approval tx: ${approveTxHash}`),
+    onFunded: ({ effectiveYieldBps, invoiceId }) =>
+      console.log(`Funded #${invoiceId} @ ${effectiveYieldBps} bps`),
+  },
+  NETWORK_PASSPHRASE
+);
+
+console.log(`Funded in ${result.txHash}, yield ${result.effectiveYieldBps} bps`);
+```
+
+**Returns:** `{ txHash: string, effectiveYieldBps: number }` — the annualised
+yield derived from the discount rate and remaining days to maturity.
+
+**Errors:** `ILNError` `InsufficientAllowance`, `InvalidStatus` (already funded),
+or `OracleStale` when `requireOracleVerification: true`.
+
+### Transfer an LP position
+
+A funded position can be reassigned to another LP (secondary market / OTC sale).
+Only the current LP may transfer.
+
+```ts
+import { transferLPPosition } from "@iln/sdk";
+
+const account = await server.getAccount(lpPublicKey);
+
+const { txHash } = await transferLPPosition(
+  server,
+  CONTRACT_ID,
+  129n,                 // invoiceId
+  newLpPublicKey,       // G… address of the buyer
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+```
+
+**Returns:** `{ txHash: string }`.
+
+**Errors:** `ILNError` `NotAuthorized` (caller is not the current LP) or
+`InvalidGAddress` (malformed destination address).
 
 ---
 
-## 3. Mark an invoice paid
+## Payer Flow
 
-Called by the **payer** to settle the invoice. The contract releases funds to the LP.
+The payer settles the invoice (paying the LP, or the freelancer if unfunded) or
+disputes it.
+
+### Pay an invoice
+
+`markPaid` settles the outstanding balance. Pass `undefined` for the amount to
+settle in full, or a `bigint` for a partial payment.
 
 ```ts
-/**
- * mark_paid(payer, invoice_id, amount)
- *
- * @param payer      - Keypair of the payer (must match invoice.payer)
- * @param invoiceId  - Invoice to settle
- * @param amount     - Amount being paid now in stroops (can be partial)
- */
-async function markPaid(
-  payer: Keypair,
-  invoiceId: bigint,
-  amount: bigint
-): Promise<void> {
-  const args = [
-    nativeToScVal(invoiceId, { type: "u64" }),  // invoice_id
-    nativeToScVal(amount, { type: "i128" }),    // amount
-  ];
+import { markPaid } from "@iln/sdk";
 
-  await invoke(payer, "mark_paid", args);
-  console.log(`Invoice ${invoiceId} marked paid`);
-}
+const account = await server.getAccount(payerPublicKey);
 
-// Usage — full settlement
-const payer = Keypair.fromSecret("S...");
-await markPaid(payer, invoiceId, 500_000_000n);
+const result = await markPaid(
+  server,
+  CONTRACT_ID,
+  129n,             // invoiceId
+  undefined,        // pay the full outstanding balance
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+
+console.log(`Paid ${result.amountPaid}; status now ${result.status}`);
 ```
 
-**What happens on-chain**
-1. Payer transfers `amount` to the contract.
-2. Contract distributes proportionally to all funders (principal + discount yield).
-3. Invoice status transitions `Funded → Paid`.
-4. Payer's on-chain reputation score increments by 1.
+**Returns:** `MarkPaidResult` — `{ txHash, amountPaid, status }`.
 
-> Partial payments are accepted. The invoice stays `Funded` until `amount_paid == amount`.
+**Errors:** `ILNError` `InvalidStatus` (already paid/cancelled) or
+`InsufficientAllowance` (token approval missing).
 
----
+### Dispute an invoice
 
-## 4. Query an invoice
-
-Read-only — no signing required.
+The SDK hashes your human-readable evidence with SHA-256 and submits only the
+digest on-chain — the raw text never leaves the client.
 
 ```ts
-/**
- * get_invoice(invoice_id) → Invoice
- *
- * Returns the full invoice struct including status, amounts, and parties.
- */
-async function getInvoice(invoiceId: bigint): Promise<Record<string, unknown>> {
-  const account  = await server.getAccount(Keypair.random().publicKey()); // throwaway
-  const contract = new Contract(CONTRACT_ID);
+import { disputeInvoice, KeypairSigner } from "@iln/sdk";
 
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PHRASE,
-  })
-    .addOperation(
-      contract.call(
-        "get_invoice",
-        nativeToScVal(invoiceId, { type: "u64" })
-      )
-    )
-    .setTimeout(30)
-    .build();
+const result = await disputeInvoice({
+  rpc: server,
+  contractAddress: CONTRACT_ID,
+  signer: new KeypairSigner(payerKeypair),
+  invoiceId: 129n,
+  evidence: "Goods never delivered — see support ticket #8842",
+});
 
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(`Simulation failed: ${sim.error}`);
+console.log(`Dispute tx: ${result.txHash}`);
+console.log(`Evidence hash: ${result.evidenceHash}`);
+```
+
+**Returns:** `{ txHash: string, evidenceHash: string }`.
+
+**Errors:** `ILNError` `NotAuthorized` (caller is not the payer) or
+`InvalidStatus` (invoice not in a disputable state).
+
+### Appeal a dispute ruling
+
+If a dispute ruling is unfavourable, the losing party can file an appeal within
+the appeal window.
+
+```ts
+import { appealInvoice, KeypairSigner } from "@iln/sdk";
+
+const appeal = await appealInvoice({
+  rpc: server,
+  contractAddress: CONTRACT_ID,
+  signer: new KeypairSigner(payerKeypair),
+  invoiceId: 129n,
+  reason: "Ruling ignored submitted evidence — see ticket #8842",
+});
+
+console.log(`Appeal tx: ${appeal.txHash}`);
+```
+
+**Returns:** `AppealInvoiceResult` — `{ txHash: string }`.
+
+**Errors:** `ILNError` `NotAuthorized`, `InvalidStatus` (no ruling to appeal),
+or `AppealWindowClosed` (appeal period has expired).
+
+### Listen for dispute and appeal events
+
+Subscribe to real-time dispute and appeal events to update UIs or trigger
+notifications without polling.
+
+```ts
+import { subscribe } from "@iln/sdk";
+
+const unsubscribe = subscribe(
+  server,
+  CONTRACT_ID,
+  { types: ["invoice_disputed", "dispute_resolved", "invoice_appealed", "appeal_resolved"] },
+  (event) => {
+    console.log(event.type, event.invoiceId, event.ledger);
   }
+);
 
-  return scValToNative(sim.result!.retval) as Record<string, unknown>;
-}
-
-// Usage
-const invoice = await getInvoice(invoiceId);
-console.log(invoice);
-/*
-{
-  id:                 1n,
-  freelancer:         "GFREELANCER...",
-  payer:              "GPAYER...",
-  token:              "CUSDC...",
-  amount:             500000000n,
-  due_date:           1748700000n,
-  discount_rate:      300,
-  status:             { tag: "Funded" },
-  funder:             { tag: "Some", values: ["GLP..."] },
-  funded_at:          { tag: "Some", values: [1748613600n] },
-  amount_funded:      500000000n,
-  amount_paid:        0n,
-  submitter_reputation: 0
-}
-*/
+// Stop listening when done.
+unsubscribe();
 ```
 
-**Invoice status values:** `Pending` · `PartiallyFunded` · `Funded` · `Paid` · `Defaulted` · `Appealed` · `Disputed` · `Expired` · `Cancelled`
+For historical dispute/appeal events, query the indexer's `/events` endpoint
+with a `type` filter; see [docs/events.md](events.md) for the full catalogue.
 
 ---
 
-## 5. Query contract stats
+## Governance
 
-Returns aggregate protocol metrics — no signing required.
+Protocol parameters (e.g. max discount rate, insurance fee) are adjusted through
+on-chain proposals. The lifecycle is **create → vote → execute**.
 
 ```ts
-/**
- * get_contract_stats() → ContractStats
- *
- * Returns total invoices, total funded, total paid, and volume by token.
- */
-async function getContractStats(): Promise<Record<string, unknown>> {
-  const account  = await server.getAccount(Keypair.random().publicKey());
-  const contract = new Contract(CONTRACT_ID);
+import {
+  createProposal,
+  castVote,
+  executeProposal,
+  getProposal,
+  listProposals,
+  ProposalAction,
+  ProposalStatus,
+} from "@iln/sdk";
 
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PHRASE,
-  })
-    .addOperation(contract.call("get_contract_stats"))
-    .setTimeout(30)
-    .build();
+const account = await server.getAccount(memberPublicKey);
 
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(`Simulation failed: ${sim.error}`);
+// 1. Create a proposal (descriptionHash is a 32-byte hex digest of the rationale).
+const { proposalId, txHash } = await createProposal(
+  server,
+  CONTRACT_ID,
+  ProposalAction.UpdateMaxDiscountRate,
+  500n,                 // proposed value (e.g. new max = 5.00 %)
+  descriptionHash,      // hex string, 32 bytes
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+
+// 2. Cast a vote.
+await castVote(server, CONTRACT_ID, proposalId, true /* support */, account, signTx, NETWORK_PASSPHRASE);
+
+// 3. Inspect and, once passed, execute.
+const proposal = await getProposal(server, CONTRACT_ID, proposalId, account, NETWORK_PASSPHRASE);
+if (proposal.status === ProposalStatus.Passed) {
+  await executeProposal(server, CONTRACT_ID, proposalId, account, signTx, NETWORK_PASSPHRASE);
+}
+
+// List with an optional status filter.
+const active = await listProposals(server, CONTRACT_ID, account, NETWORK_PASSPHRASE, {
+  status: ProposalStatus.Active,
+});
+```
+
+**Returns:** `createProposal` → `{ proposalId, txHash }`; `castVote` /
+`executeProposal` → `{ txHash }`; `getProposal` → `Proposal`; `listProposals`
+→ `Proposal[]`.
+
+**Errors:** `ILNError` `NotAuthorized`, `AlreadyVoted`, `ProposalNotActive`, or
+`QuorumNotReached` (on execute). See [docs/governance.md](governance.md) for the
+full state machine.
+
+### Delegate votes
+
+Token holders can delegate their voting power to another address, or undelegate
+to reclaim it.
+
+```ts
+import { delegateVotes, undelegateVotes } from "@iln/sdk";
+
+const account = await server.getAccount(memberPublicKey);
+
+// Delegate voting power to a trusted representative.
+const { txHash: delegateTx } = await delegateVotes(
+  server,
+  CONTRACT_ID,
+  delegatePublicKey,
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+console.log(`Delegated votes in tx ${delegateTx}`);
+
+// Reclaim voting power at any time.
+const { txHash: undelegateTx } = await undelegateVotes(
+  server,
+  CONTRACT_ID,
+  account,
+  signTx,
+  NETWORK_PASSPHRASE
+);
+console.log(`Undelegated votes in tx ${undelegateTx}`);
+```
+
+**Returns:** `{ txHash: string }` for both.
+
+**Errors:** `ILNError` `NotAuthorized` (no active delegation to undo) or
+`InvalidGAddress` (malformed delegate address).
+
+### Listen for governance events
+
+```ts
+import { subscribe } from "@iln/sdk";
+
+const unsubscribe = subscribe(
+  server,
+  CONTRACT_ID,
+  { types: ["proposal_created", "vote_cast", "proposal_executed"] },
+  (event) => {
+    console.log(event.type, event.ledger);
   }
+);
 
-  return scValToNative(sim.result!.retval) as Record<string, unknown>;
-}
-
-// Usage
-const stats = await getContractStats();
-console.log(stats);
-/*
-{
-  total_invoices: 42n,
-  total_funded:   38n,
-  total_paid:     31n,
-  volume:         [ ["CUSDC...", 19500000000n] ]
-}
-*/
+// Stop listening when done.
+unsubscribe();
 ```
 
 ---
 
-## 6. Query reputation
+## Analytics
+
+Read-only data for dashboards and reputation displays. None of these require a
+signer.
+
+### Reputation
 
 ```ts
-/**
- * get_reputation(address) → ReputationProfile
- *
- * Returns the detailed on-chain reputation profile for any address.
- */
-async function getReputation(address: string): Promise<Record<string, unknown>> {
-  const account  = await server.getAccount(Keypair.random().publicKey());
-  const contract = new Contract(CONTRACT_ID);
+import { getReputation } from "@iln/sdk";
 
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PHRASE,
-  })
-    .addOperation(
-      contract.call("get_reputation", new Address(address).toScVal())
-    )
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(`Simulation failed: ${sim.error}`);
-  }
-
-  return scValToNative(sim.result!.retval) as Record<string, unknown>;
-}
-
-// Usage
-const profile = await getReputation("GPAYER...");
-console.log(profile);
-/*
-{
-  address:              "GPAYER...",
-  score:                12,
-  invoices_submitted:   0,
-  invoices_paid:        12,
-  invoices_defaulted:   1
-}
-*/
+const rep = await getReputation(server, CONTRACT_ID, freelancerPublicKey, NETWORK_PASSPHRASE);
+console.log(rep.score, rep.invoicesSubmitted, rep.invoicesPaid, rep.invoicesDefaulted);
+// Unknown addresses return a zeroed profile rather than throwing.
 ```
 
-You can also fetch the raw numeric score or the suggested discount rate for a payer:
+**Returns:** `ReputationProfile`.
+
+### Protocol stats
 
 ```ts
-// payer_score(payer) → u32
-async function payerScore(address: string): Promise<number> {
-  const account  = await server.getAccount(Keypair.random().publicKey());
-  const contract = new Contract(CONTRACT_ID);
-  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: NETWORK_PHRASE })
-    .addOperation(contract.call("payer_score", new Address(address).toScVal()))
-    .setTimeout(30)
-    .build();
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) throw new Error(sim.error);
-  return scValToNative(sim.result!.retval) as number;
-}
+import { getContractStats } from "@iln/sdk";
 
-// suggested_discount_rate(payer) → u32  (basis points)
-async function suggestedDiscountRate(address: string): Promise<number> {
-  const account  = await server.getAccount(Keypair.random().publicKey());
-  const contract = new Contract(CONTRACT_ID);
-  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: NETWORK_PHRASE })
-    .addOperation(contract.call("suggested_discount_rate", new Address(address).toScVal()))
-    .setTimeout(30)
-    .build();
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) throw new Error(sim.error);
-  return scValToNative(sim.result!.retval) as number;
-}
+const stats = await getContractStats(server, CONTRACT_ID, NETWORK_PASSPHRASE);
+console.log(stats.totalInvoices, stats.totalFunded, stats.totalVolume);
 ```
+
+**Returns:** `ContractStats`.
+
+### Live event stream
+
+Subscribe to contract events to update UIs in real time.
+
+```ts
+import { subscribe } from "@iln/sdk";
+
+const unsubscribe = subscribe(
+  server,
+  CONTRACT_ID,
+  { types: ["invoice_funded", "invoice_paid"] },
+  (event) => console.log(event.type, event.invoiceId, event.ledger)
+);
+
+// later…
+unsubscribe();
+```
+
+For historical, paginated event data prefer the indexer's `/events` endpoint;
+see [docs/events.md](events.md) for the full event catalogue.
 
 ---
 
-## 7. List invoices by submitter (paginated)
+## Error Handling
+
+Every state-changing helper throws a typed `ILNError`. Switch on `ILNErrorCode`
+to give users actionable messages.
 
 ```ts
-/**
- * list_invoices_by_submitter(submitter, page, page_size) → Invoice[]
- *
- * page_size is capped at 50 by the contract.
- */
-async function listInvoicesBySubmitter(
-  address: string,
-  page = 0,
-  pageSize = 10
-): Promise<unknown[]> {
-  const account  = await server.getAccount(Keypair.random().publicKey());
-  const contract = new Contract(CONTRACT_ID);
+import { submitInvoice, ILNError, ILNErrorCode } from "@iln/sdk";
 
-  const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: NETWORK_PHRASE })
-    .addOperation(
-      contract.call(
-        "list_invoices_by_submitter",
-        new Address(address).toScVal(),
-        nativeToScVal(page, { type: "u32" }),
-        nativeToScVal(pageSize, { type: "u32" })
-      )
-    )
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) throw new Error(sim.error);
-  return scValToNative(sim.result!.retval) as unknown[];
-}
-```
-
----
-
-## Amount conventions
-
-| Token | Decimals | 1 unit in stroops |
-|-------|----------|-------------------|
-| USDC  | 6        | `1_000_000`       |
-| XLM   | 7        | `10_000_000`      |
-
-All amounts passed to and returned from the contract are in **stroops** (the token's smallest unit). Never pass floating-point values.
-
-```ts
-// Convert human-readable USDC to stroops
-const toUsdcStroops = (usdc: number): bigint => BigInt(Math.round(usdc * 1_000_000));
-
-// Convert stroops back to USDC
-const fromUsdcStroops = (stroops: bigint): number => Number(stroops) / 1_000_000;
-```
-
----
-
-## Error handling
-
-The contract returns typed errors. After `scValToNative` they surface as objects with a `tag` field:
-
-```ts
-// Wrap invoke() to surface contract errors cleanly
-async function safeInvoke(caller: Keypair, method: string, args: xdr.ScVal[]) {
-  try {
-    return await invoke(caller, method, args);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Soroban encodes contract errors as "Error(contract, N)"
-    const match = msg.match(/Error\(contract, (\d+)\)/);
-    if (match) {
-      const code = parseInt(match[1], 10);
-      const CONTRACT_ERRORS: Record<number, string> = {
-        1:  "AlreadyInitialized",
-        2:  "InvoiceNotFound",
-        3:  "AlreadyFunded",
-        4:  "AlreadyPaid",
-        5:  "NotFunded",
-        6:  "NotYetDefaulted",
-        7:  "Unauthorized",
-        8:  "InvalidAmount",
-        9:  "InvalidDiscountRate",
-        10: "InvalidDueDate",
-        11: "OverfundingRejected",
-        12: "OverpaymentRejected",
-        13: "InvoiceDefaulted",
-        14: "ContractPaused",
-        15: "SelfInvoice",
-        16: "DueDateTooSoon",
-        17: "DueDateTooFar",
-        18: "PayerReputationTooLow",
-        19: "NotApprovedFunder",
-        20: "AlreadyInQueue",
-        21: "BatchTooLarge",
-      };
-      throw new Error(`Contract error ${code}: ${CONTRACT_ERRORS[code] ?? "Unknown"}`);
+try {
+  await submitInvoice(server, CONTRACT_ID, params, account, signTx, NETWORK_PASSPHRASE);
+} catch (e) {
+  if (e instanceof ILNError) {
+    switch (e.code) {
+      case ILNErrorCode.InvalidDiscountRate:
+        console.error("Discount rate must be between 1 and 5000 bps");
+        break;
+      case ILNErrorCode.DueDateTooSoon:
+        console.error("Due date must be at least 24 hours out");
+        break;
+      default:
+        console.error(`ILN error (${e.code}): ${e.message}`);
     }
-    throw err;
+  } else {
+    throw e; // network / RPC failure — retry with backoff
   }
 }
 ```
 
+A complete list of on-chain error codes is in
+[docs/error-codes.md](error-codes.md).
+
 ---
 
-## Testing against testnet
+## Testing Against Testnet
 
-Fund your testnet accounts with Friendbot before running any examples:
+Fund a fresh account from Friendbot, then run any flow above:
 
 ```bash
-# Fund an account on testnet
-curl "https://friendbot.stellar.org?addr=<YOUR_PUBLIC_KEY>"
+# Create + fund a testnet account
+curl "https://friendbot.stellar.org/?addr=$(stellar keys address my-key)"
 ```
-
-You also need testnet USDC. Mint it from the testnet USDC SAC admin or use the
-[Stellar Laboratory](https://laboratory.stellar.org) to set a trustline and receive tokens.
 
 ```ts
-// Quick smoke test — submit → fund → pay → verify
-async function smokeTest() {
-  const freelancer = Keypair.random();
-  const lp         = Keypair.random();
-  const payer      = Keypair.random();
+import { Keypair } from "@stellar/stellar-sdk";
 
-  // Fund accounts via Friendbot
-  for (const kp of [freelancer, lp, payer]) {
-    await fetch(`https://friendbot.stellar.org?addr=${kp.publicKey()}`);
-  }
-
-  const due = Math.floor(Date.now() / 1000) + 2 * 86400; // 2 days out
-
-  const id = await submitInvoice(freelancer, payer.publicKey(), 10_000_000n, due, 300);
-  console.log("Submitted:", id);
-
-  await fundInvoice(lp, id, 10_000_000n);
-  console.log("Funded");
-
-  await markPaid(payer, id, 10_000_000n);
-  console.log("Paid");
-
-  const inv = await getInvoice(id);
-  console.assert((inv.status as { tag: string }).tag === "Paid", "Expected Paid status");
-  console.log("Smoke test passed ✓");
-}
+const kp = Keypair.random();
+await fetch(`https://friendbot.stellar.org/?addr=${kp.publicKey()}`);
+// kp is now funded on testnet and ready to sign ILN transactions.
 ```
+
+The repository also ships runnable references you can copy from:
+
+- [`scripts/smoke-test.ts`](../scripts/smoke-test.ts) — full submit → fund → pay
+  cycle against testnet.
+- [`scripts/seed.ts`](../scripts/seed.ts) — seed the deployment with sample data.
+- [`sdk/tests`](../sdk/tests) — unit and integration tests for every method.
+
+See the [SDK package README](../sdk/README.md) for the full method reference.
