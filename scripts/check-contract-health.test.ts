@@ -15,6 +15,7 @@ import {
   checkIndexer,
   checkLedgerLag,
   checkNotifications,
+  checkInvoiceLiquidityState,
   runHealthChecks,
   alertSlack,
   loadConfig,
@@ -111,6 +112,45 @@ test("checkNotifications failure does not fail the overall run", async () => {
   const r = await checkNotifications(cfg, deps);
   assert.equal(r.status, "fail");
   assert.equal(r.critical, false);
+});
+
+test("checkInvoiceLiquidityState fails clearly when required state is absent", async () => {
+  const deps = depsWith({
+    "invoice.example": () => ({ json: async () => ({ result: { entries: [] } }) }),
+  });
+  const r = await checkInvoiceLiquidityState(
+    {
+      ...cfg,
+      invoiceLiquidityId: "CINVOICE",
+      invoiceLiquidityRpcUrl: "https://invoice.example",
+    },
+    deps
+  );
+  assert.equal(r.status, "fail");
+  assert.equal(r.critical, true);
+  assert.deepEqual(r.details.states, {
+    initialized: false,
+    paused: false,
+    oracle: false,
+    token: false,
+  });
+  assert.match(r.error!, /Missing contract state/);
+});
+
+test("checkInvoiceLiquidityState passes when all required state keys exist", async () => {
+  const deps = depsWith({
+    "invoice.example": () => ({ json: async () => ({ result: { entries: [{ xdr: "AA==" }] } }) }),
+  });
+  const r = await checkInvoiceLiquidityState(
+    {
+      ...cfg,
+      invoiceLiquidityId: "CINVOICE",
+      invoiceLiquidityRpcUrl: "https://invoice.example",
+    },
+    deps
+  );
+  assert.equal(r.status, "ok");
+  assert.deepEqual(r.details.missing, []);
 });
 
 test("runHealthChecks is healthy when all critical checks pass", async () => {
