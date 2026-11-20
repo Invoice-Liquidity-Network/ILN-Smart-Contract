@@ -137,6 +137,7 @@ check fails if a row exists in one place but not the other.
 | [TwapEnabledForFeed](#twapenabledforfeed) | `set_twap_enabled` |
 | [TwapWindowUpdated](#twapwindowupdated) | `set_twap_window_ledgers` |
 | [TwapInsufficientData](#twapinsufficientdata) | `get_twap_price` (when observation count < minimum) |
+| [TieFairnessPolicyUpdated](#tiefairnesspolicyupdated) | `set_tie_fairness_policy` (Issue #1035) |
 | [InvoiceNftMinted / InvoiceNftTransferred / InvoiceNftBurned](#invoice-nft-lifecycle) | invoice submit / fund / pay (`nft.rs`) |
 
 ### Full function inventory
@@ -524,6 +525,34 @@ Topics: `["twap_insufficient_data", feed_type]`
 | `token` | `Address` | Token queried |
 | `observations` | `u32` | Number of observations found |
 | `min_required` | `u32` | Minimum number of observations required |
+
+### TieFairnessPolicyUpdated
+
+Emitted by `set_tie_fairness_policy()` when the admin flips the fund-queue
+tie fairness policy (Issue #1035). Records both sides of the transition so
+indexers can reconstruct which policy governed any historical
+`fund_queue_tie_broken` draw.
+
+Topics: `["tie_fairness_policy_updated", updated_by]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `old_policy` | `TiePolicy` | Previous policy (`UniformRandom` if never set) |
+| `new_policy` | `TiePolicy` | Newly configured policy |
+| `updated_by` | `Address` | Admin who made the change |
+
+**Rollout / recovery / upgrade (Issue #1035).** The policy is a single
+instance-storage entry (`DataKey::QueueTiePolicy`), per contract instance —
+no per-LP state, so switching policies can never grow state unbounded.
+Bounded rollout: deploy with the key absent (default `UniformRandom`,
+identical to pre-#1035 behaviour); opt one staging instance into
+`DeterministicFirst` and monitor the `fund_queue_tie_broken` winner
+distribution before opting production in. Recovery: the admin calls
+`set_tie_fairness_policy(caller, UniformRandom)` again — symmetric, subject
+to the same 120-ledger admin-parameter cooldown as the forward flip.
+Upgrade impact: no storage migration is needed because an absent record
+already means the default; instance storage survives WASM upgrades, so the
+configured policy persists across contract version bumps.
 
 ---
 
