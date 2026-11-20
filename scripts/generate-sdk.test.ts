@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  checkSdkContractDrift,
   generateSdkFiles,
   loadSpecFromCli,
   mapRustTypeToTs,
@@ -71,4 +72,38 @@ test("generateSdkFiles writes at least three typed stubs", () => {
   assert.match(getInvoice, /export async function getInvoice/);
   assert.match(getInvoice, /invoiceId: bigint/);
   assert.match(getInvoice, /Promise<unknown>/);
+});
+
+test("checkSdkContractDrift accepts generated stubs matching the contract ABI", () => {
+  const spec = loadSpecFromCli({ specPath: "docs/contract-spec.json" });
+  const drift = checkSdkContractDrift({
+    spec,
+    generatedDir: path.join(path.dirname(new URL(import.meta.url).pathname), "../sdk/src/generated"),
+    contractSourcePath: path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      "../contracts/invoice_liquidity/src/lib.rs"
+    ),
+  });
+  assert.deepEqual(drift, []);
+});
+
+test("checkSdkContractDrift reports missing and mismatched generated methods", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "iln-sdk-drift-"));
+  fs.writeFileSync(path.join(tmp, "index.generated.ts"), 'export { getInvoice } from "./getInvoice.generated.js";\n');
+  fs.writeFileSync(
+    path.join(tmp, "getInvoice.generated.ts"),
+    'export async function getInvoice(\n  server: X,\n  contractAddress: string,\n  invoiceId: string,\n  networkPassphrase: string\n): Promise<unknown> { contract.call("get_invoice"); }\n'
+  );
+  const rustSource = path.join(tmp, "contract.rs");
+  fs.writeFileSync(rustSource, "pub fn get_invoice(env: Env, invoice_id: u64) -> Result<(), Error> {}\n");
+  const spec = loadSpecFromCli({ specPath: "docs/contract-spec.json" });
+
+  const drift = checkSdkContractDrift({
+    spec,
+    generatedDir: tmp,
+    contractSourcePath: rustSource,
+    only: ["get_invoice", "cancel_invoice"],
+  });
+  assert.ok(drift.some((m) => m.includes("generated SDK export missing for contract entrypoint cancel_invoice")));
+  assert.ok(drift.some((m) => m.includes("SDK/Rust param drift for get_invoice")));
 });

@@ -34,8 +34,17 @@ type InvoiceStatus =
   | "Expired"
   | "Cancelled";
 
+const V1_STATUSES: readonly InvoiceStatus[] = [
+  "Pending",
+  "Funded",
+  "Paid",
+  "Defaulted",
+  "Expired",
+  "Cancelled",
+];
+
 /** v1 persisted invoice schema. */
-interface InvoiceV1 {
+export interface InvoiceV1 {
   id: number;
   freelancer: string;
   payer: string;
@@ -48,13 +57,41 @@ interface InvoiceV1 {
 }
 
 /** v2 persisted invoice schema — adds three fields. */
-interface InvoiceV2 extends InvoiceV1 {
+export interface InvoiceV2 extends InvoiceV1 {
   submitter_reputation: number; // snapshot; defaults to payer score (or 50)
   allowed_lps: string[] | null; // LP whitelist; defaults to null (public)
   is_auction: boolean; // Dutch-auction flag; defaults to false
 }
 
 const DEFAULT_REPUTATION = 50;
+
+/** Fail closed on unsupported or already-migrated layouts. */
+export function assertV1Layout(v1: unknown): asserts v1 is InvoiceV1 {
+  if (!v1 || typeof v1 !== "object") throw new Error("invoice is not an object");
+  const row = v1 as Record<string, unknown>;
+  const required: Record<keyof InvoiceV1, string> = {
+    id: "number",
+    freelancer: "string",
+    payer: "string",
+    amount: "bigint",
+    due_date: "number",
+    discount_rate: "number",
+    status: "string",
+    amount_funded: "bigint",
+    amount_paid: "bigint",
+  };
+  for (const [field, type] of Object.entries(required)) {
+    if (typeof row[field] !== type) {
+      throw new Error(`invoice ${String(row.id ?? "?")}: ${field} must be ${type}`);
+    }
+  }
+  if (!V1_STATUSES.includes(row.status as InvoiceStatus)) {
+    throw new Error(`invoice ${String(row.id)}: unsupported status ${String(row.status)}`);
+  }
+  for (const field of ["submitter_reputation", "allowed_lps", "is_auction"]) {
+    if (field in row) throw new Error(`invoice ${String(row.id)}: already migrated (${field} present)`);
+  }
+}
 
 /**
  * Pure migration transform: v1 invoice + reputation table -> v2 invoice.
@@ -64,12 +101,21 @@ export function migrateInvoice(
   v1: InvoiceV1,
   reputation: Record<string, number>
 ): InvoiceV2 {
+  assertV1Layout(v1);
   return {
     ...v1,
     submitter_reputation: reputation[v1.freelancer] ?? DEFAULT_REPUTATION,
     allowed_lps: null,
     is_auction: false,
   };
+}
+
+export function migrateV1State(
+  invoices: readonly unknown[],
+  reputation: Record<string, number>
+): InvoiceV2[] {
+  for (const invoice of invoices) assertV1Layout(invoice);
+  return (invoices as InvoiceV1[]).map((invoice) => migrateInvoice(invoice, reputation));
 }
 
 /** Assert helper that throws (so the script exits non-zero) on failure. */
@@ -218,7 +264,7 @@ async function runSimulate() {
       `freelancers have a reputation entry, remainder exercise the default-score path).`
   );
 
-  const migrated = invoices.map((v1) => migrateInvoice(v1, reputation));
+  const migrated = migrateV1State(invoices, reputation);
   console.log(`• Migrated ${migrated.length} invoices to v2 schema.`);
 
   verifyMigration(invoices, migrated, reputation);

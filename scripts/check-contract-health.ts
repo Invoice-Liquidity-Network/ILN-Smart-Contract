@@ -58,6 +58,8 @@ export interface HealthConfig {
   notificationsUrl: string;
   insurancePoolRpcUrl: string;
   insurancePoolId: string;
+  invoiceLiquidityRpcUrl?: string;
+  invoiceLiquidityId?: string;
   ledgerLagThreshold: number;
   timeoutMs: number;
 }
@@ -87,6 +89,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HealthConfig {
     notificationsUrl: (env.NOTIFICATIONS_URL || "http://localhost:3001").replace(/\/$/, ""),
     insurancePoolRpcUrl: env.INSURANCE_POOL_RPC_URL || env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org",
     insurancePoolId: env.INSURANCE_POOL_ID || "",
+    invoiceLiquidityRpcUrl: env.INVOICE_LIQUIDITY_RPC_URL || env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org",
+    invoiceLiquidityId: env.INVOICE_LIQUIDITY_ID || "",
     ledgerLagThreshold: Number(env.LEDGER_LAG_THRESHOLD || 100),
     timeoutMs: Number(env.HEALTH_TIMEOUT_MS || 5000),
   };
@@ -314,6 +318,93 @@ export async function checkInsurancePool(
   }
 }
 
+/** 6. Invoice liquidity state — missing required keys fail explicitly. */
+export async function checkInvoiceLiquidityState(
+  cfg: HealthConfig,
+  deps: Deps = defaultDeps
+): Promise<CheckResult> {
+  const base: CheckResult = {
+    name: "invoice_liquidity_state",
+    status: "fail",
+    critical: true,
+    latencyMs: null,
+    details: { contractId: cfg.invoiceLiquidityId },
+    error: null,
+  };
+
+  if (!cfg.invoiceLiquidityId) {
+    return {
+      ...base,
+      critical: false,
+      status: "unknown",
+      error: "INVOICE_LIQUIDITY_ID not configured — cannot verify contract state",
+    };
+  }
+
+  const required = [
+    { label: "initialized", key: "Admin" },
+    { label: "paused", key: "Paused" },
+    { label: "oracle", key: "OracleRegistry" },
+    { label: "token", key: "TokenList" },
+  ] as const;
+  const rpcUrl = cfg.invoiceLiquidityRpcUrl || cfg.sorobanRpcUrl;
+
+  const results = await Promise.all(
+    required.map(async ({ label, key }) => {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getLedgerEntries",
+        params: {
+          keys: [
+            Buffer.from(
+              JSON.stringify({ contractId: cfg.invoiceLiquidityId, key: { type: "symbol", value: key } })
+            ).toString("base64"),
+          ],
+        },
+      });
+      try {
+        const { res, latencyMs } = await timedFetch(
+          deps,
+          rpcUrl,
+          { method: "POST", headers: { "content-type": "application/json" }, body },
+          cfg.timeoutMs
+        );
+        if (!res.ok) return { label, present: false, error: `RPC returned HTTP ${res.status}`, latencyMs };
+        const json: any = await res.json();
+        if (json.error) {
+          return { label, present: false, error: `RPC error: ${JSON.stringify(json.error)}`, latencyMs };
+        }
+        const entries: unknown[] = json.result?.entries ?? [];
+        return {
+          label,
+          present: entries.length > 0,
+          error: entries.length > 0 ? null : `${key} ledger key not found`,
+          latencyMs,
+        };
+      } catch (e) {
+        return { label, present: false, error: errMsg(e), latencyMs: null };
+      }
+    })
+  );
+
+  const states: Record<string, boolean> = {};
+  const missing: string[] = [];
+  for (const result of results) {
+    states[result.label] = result.present;
+    if (!result.present) missing.push(`${result.label}: ${result.error}`);
+  }
+  const maxLatency = Math.max(0, ...results.map((r) => r.latencyMs ?? 0));
+
+  return {
+    ...base,
+    status: missing.length ? "fail" : "ok",
+    latencyMs: maxLatency || null,
+    details: { ...base.details, states, missing },
+    error: missing.length ? `Missing contract state — ${missing.join("; ")}` : null,
+  };
+}
+
 /** 4. Notification service `/health` endpoint. */
 export async function checkNotifications(
   cfg: HealthConfig,
@@ -361,15 +452,16 @@ export async function runHealthChecks(
     checkContractRpc(cfg, deps),
     checkIndexer(cfg, deps),
   ]);
-  const [lag, notifications, insurancePool] = await Promise.all([
+  const [lag, notifications, insurancePool, invoiceState] = await Promise.all([
     checkLedgerLag(cfg, indexer.lastIndexedLedger, deps),
     checkNotifications(cfg, deps),
     checkInsurancePool(cfg, deps),
+    checkInvoiceLiquidityState(cfg, deps),
   ]);
 
   // Drop the helper-only field before reporting.
   const { lastIndexedLedger: _ignored, ...indexerResult } = indexer;
-  const checks: CheckResult[] = [rpc, indexerResult, lag, notifications, insurancePool];
+  const checks: CheckResult[] = [rpc, indexerResult, lag, notifications, insurancePool, invoiceState];
 
   const healthy = checks.every((c) => !(c.critical && c.status === "fail"));
 

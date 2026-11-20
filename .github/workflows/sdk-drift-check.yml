@@ -1,0 +1,25 @@
+name: SDK/ABI Drift Check
+
+on:
+  pull_request:
+    paths:
+      - "contracts/invoice_liquidity/src/lib.rs"
+      - "docs/contract-spec.json"
+      - "scripts/generate-sdk.ts"
+      - "scripts/generate-sdk.test.ts"
+      - "sdk/src/generated/**"
+      - ".github/workflows/sdk-drift-check.yml"
+  workflow_dispatch: {}
+
+jobs:
+  sdk-drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Rust contract and generated SDK signatures
+        run: npx tsx scripts/generate-sdk.ts --spec docs/contract-spec.json --check

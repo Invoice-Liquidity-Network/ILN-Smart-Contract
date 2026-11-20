@@ -70,6 +70,19 @@ Local contract deployment writes `.contracts-local.env`. Source it before runnin
 source .contracts-local.env
 ```
 
+No example in this document pins a deployed contract ID. Contract IDs are
+environment-specific: use the values written by the deploy scripts rather than
+copying an ID from another network or a previous deployment. The smoke-test
+example below reads `CONTRACT_ID` from `INVOICE_LIQUIDITY_ID`; other scripts read
+`ILN_GOVERNANCE_ID`, `ILN_DISTRIBUTION_ID`, `REPUTATION_BONUS_ID`, and
+`INSURANCE_POOL_ID` directly. If a required ID is missing, fail before invoking
+the script instead of falling back to a stale value:
+
+```bash
+: "${INVOICE_LIQUIDITY_ID:?source .contracts-local.env after deploying invoice_liquidity}"
+: "${INSURANCE_POOL_ID:?source .contracts-local.env after deploying insurance_pool}"
+```
+
 | Variable | Used by | Default | Description |
 |----------|---------|---------|-------------|
 | `INVOICE_LIQUIDITY_ID` | Local deploy output, SDK examples, scripts | none | Deployed `invoice_liquidity` contract ID. Created by `scripts/deploy-local.sh`. |
@@ -268,12 +281,14 @@ The SDK is a library, so it does not start a server. Use `docs/sdk-integration.m
 cd cli
 pnpm install
 pnpm run build
-node dist/index.js config set network testnet
-node dist/index.js config set rpcUrl https://soroban-testnet.stellar.org
+: "${CLI_NETWORK:?set to a network name accepted by the CLI}"
+: "${SOROBAN_RPC_URL:?source .contracts-local.env or set the target RPC URL}"
+node dist/index.js config set network "$CLI_NETWORK"
+node dist/index.js config set rpcUrl "$SOROBAN_RPC_URL"
 node dist/index.js wallet list
 ```
 
-For local-network experiments, set the RPC URL to `http://localhost:8000`. The current CLI config accepts `testnet` or `mainnet` as network names, so local RPC use is best kept to commands that do not validate the network enum.
+Set `CLI_NETWORK` and `SOROBAN_RPC_URL` from the target environment before running the CLI. For local-network experiments, `source .contracts-local.env` and set `SOROBAN_RPC_URL=http://localhost:8000` as shown above. The current CLI config accepts `testnet` or `mainnet` as network names, so local RPC use is best kept to commands that do not validate the network enum.
 
 ### Indexer
 
