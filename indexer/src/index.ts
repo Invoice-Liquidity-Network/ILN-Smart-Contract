@@ -26,15 +26,19 @@ const chainReader = config.contractId
 
 const app = createApp(db, { apiKeys: config.apiKeys, chainReader });
 const eventRepository = createSqlEventRepository(db);
-const eventListener = createEventListener({
-  repository: eventRepository,
-  horizonUrl: config.horizonUrl,
-  contractAddress: config.contractId,
-});
 
 const httpServer = createServer(app);
 const wsEndpoint = new EventWebSocketEndpoint({ server: httpServer, path: '/events' });
 wsEndpoint.start();
+
+const eventListener = createEventListener({
+  repository: eventRepository,
+  horizonUrl: config.horizonUrl,
+  contractAddress: config.contractId,
+  onEvent: (event) => {
+    wsEndpoint.publish(event);
+  },
+});
 
 if (config.contractId) {
   void eventListener.start().catch((error) => {

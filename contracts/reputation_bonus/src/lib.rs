@@ -39,6 +39,12 @@ impl ReputationBonusContract {
         get_config(&env).map_err(|_| ContractError::ConfigErrorUnauthorized)
     }
 
+    /// Returns the admin set by `init`, or an error when the contract has not
+    /// been initialized. Used by deployment verification.
+    pub fn get_admin(env: Env) -> Result<Address, ContractError> {
+        crate::config::get_admin(&env).map_err(|_| ContractError::ConfigErrorUnauthorized)
+    }
+
     pub fn update_config(
         env: Env,
         caller: Address,

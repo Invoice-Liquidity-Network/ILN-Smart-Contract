@@ -378,6 +378,15 @@ impl IlnDistribution {
         );
     }
 
+    /// Returns whether `initialize` has run. Used by deployment verification
+    /// so a contract that was deployed but never initialized is detectable.
+    pub fn is_initialized(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&StorageKey::Initialized)
+            .unwrap_or(false)
+    }
+
     /// Get current LP reward rate.
     pub fn get_lp_reward_rate(env: Env) -> i128 {
         env.storage()
