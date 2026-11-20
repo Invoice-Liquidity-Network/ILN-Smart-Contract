@@ -23,23 +23,25 @@ use access::{check_rate_limit, lock_reentrancy, unlock_reentrancy};
 pub mod constants;
 use constants::{
     ADMIN_CHANGE_COOLDOWN_LEDGERS, DEFAULT_RATE_LIMIT_LEDGERS, ECONOMIC_PARAM_COOLDOWN_LEDGERS,
-    QUEUE_DELAY_LEDGERS, UPGRADE_COOLDOWN_LEDGERS,
+    MAX_FEE_TIERS, QUEUE_DELAY_LEDGERS, UPGRADE_COOLDOWN_LEDGERS,
 };
 pub mod oracle_interface;
 pub mod oracle_registry;
+pub mod token_safety;
 pub mod twap;
 use insurance_pool::InsurancePoolInterfaceClient;
 use oracle_registry::OracleFeedType;
-use twap_accumulator::{record_observation, get_twap, TWAPError};
+use twap_accumulator::{get_twap, record_observation, TWAPError};
 
 pub use crate::invoice::{
-    AppealRecord, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode,
-    ReputationProfile, ReputationScore, TopPayerEntry,
+    AppealRecord, FundQueueTtlMargins, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest,
+    ReferralCode, ReputationProfile, ReputationScore, TopPayerEntry,
 };
 pub use crate::nft::InvoiceNftMetadata;
 pub use crate::storage::DataKey;
 pub use config::{Config, ConfigError};
 pub use errors::ContractError;
+pub use events::RollbackRehearsalReport;
 use soroban_sdk::{
     contract, contractimpl, token::Client as TokenClient, vec, Address, BytesN, Env, IntoVal,
     Symbol, Vec,
@@ -49,13 +51,15 @@ use crate::storage::get_admin;
 use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
-    DistributionContractUpdated, FundQueueResolutionAttempted, FundQueueResolved, FundRequested,
+    DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved,
+    FundRequested,
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
     PriceOracleUpdated, SignerRotationCancelled, SignerRotationFinalized,
     SignerRotationScheduled, TokenAdded, TokenRemoved,
 };
+use invoice::get_last_pause_timestamp;
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
     get_dispute, get_fund_queue, get_fund_queue_opened_at, get_invoice_funders, get_lp_invoices,
@@ -68,9 +72,9 @@ use invoice::{
     save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
     save_queue_resolution, set_lp_score, set_max_invoice_amount, set_min_payer_reputation,
     set_paused, set_payer_score, set_reputation, set_token_volume_cap, try_load_invoice,
-    try_set_fund_queue_opened_at, ContractStats, DisputeRecord, ProtocolStatus, StorageKey,
+    try_set_fund_queue_opened_at, clear_fund_queue_state, get_queue_resolved_at,
+    reopen_fund_queue, ContractStats, DisputeRecord, ProtocolStatus, StorageKey,
 };
-use invoice::get_last_pause_timestamp;
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
 
@@ -183,6 +187,14 @@ impl InvoiceLiquidityContract {
             &crate::storage::DataKey::TokenDecimals(usdc_token.clone()),
             &6_u32,
         );
+        // Issue #1070: every approved token must have registered decimals.
+        // EURC was previously approved without an entry and silently fell
+        // back to 6 at validation time; 6 is persisted here so behavior is
+        // unchanged but explicit.
+        env.storage().persistent().set(
+            &crate::storage::DataKey::TokenDecimals(eurc_token.clone()),
+            &6_u32,
+        );
 
         // approve native XLM SAC (7 decimals)
         env.storage().persistent().set(
@@ -226,8 +238,20 @@ impl InvoiceLiquidityContract {
     }
 
     // ------------------------------------------------------------
-    /// Access: Admin only
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
+/// `set_admin` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `new_admin` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "set_admin");
@@ -244,8 +268,20 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
+/// `update_fee_rate` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `rate` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_rate");
@@ -274,8 +310,20 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
+/// `update_max_discount` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `rate` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_max_discount");
@@ -306,9 +354,21 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Update reputation decay parameters. Admin or governance only.
-    /// Access: Admin only
-    pub fn update_decay_params(
+/// Update reputation decay parameters. Admin or governance only.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `rate_bps` — see signature
+/// * `period_ledgers` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn update_decay_params(
         env: Env,
         rate_bps: u32,
         period_ledgers: u64,
@@ -359,8 +419,20 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn set_distribution_contract(
+/// `set_distribution_contract` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `distribution_contract` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_distribution_contract(
         env: Env,
         distribution_contract: Address,
     ) -> Result<(), ContractError> {
@@ -395,8 +467,20 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn set_price_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
+/// `set_price_oracle` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `oracle` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_price_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_price_oracle", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "set_price_oracle");
@@ -421,12 +505,20 @@ impl InvoiceLiquidityContract {
         crate::storage::get_config(&env).and_then(|config| config.price_oracle)
     }
 
-    /// Update the maximum oracle data age in ledgers. Admin / governance only.
-    ///
-    /// Setting this to 0 disables the freshness check entirely (not recommended
-    /// for production — stale data is as dangerous as no oracle).
-    /// Access: Admin only
-    pub fn set_max_oracle_age(env: Env, max_age_ledgers: u64) -> Result<(), ContractError> {
+/// Update the maximum oracle data age in ledgers. Admin / governance only.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `max_age_ledgers` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_max_oracle_age(env: Env, max_age_ledgers: u64) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_max_oracle_age", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "set_max_oracle_age");
@@ -531,6 +623,10 @@ impl InvoiceLiquidityContract {
     /// Unlike `fund_invoice`'s inline check, this never errors on stale or
     /// unverified data — it only reports the observation — making it safe
     /// for off-chain monitors/keepers to poll independent of funding activity.
+    /// It also drives Issue #1048's half-open circuit-breaker auto-recovery:
+    /// each healthy observation from a tripped oracle advances its recovery
+    /// streak (a `fund_invoice` call cannot, since it rejects before querying
+    /// while the breaker is open).
     /// Access: Anyone
     pub fn check_oracle_health(
         env: Env,
@@ -541,20 +637,86 @@ impl InvoiceLiquidityContract {
         oracle_registry::check_oracle_health(env, feed_type, token, payer)
     }
 
+    /// Issue #1049: permissionless, never-erroring diagnostic for the Identity
+    /// verification gate. It runs the *same* shared decision logic as
+    /// `fund_invoice` (multi-oracle quorum, then the legacy single-oracle
+    /// path: circuit breaker, timestamp monotonicity, duplicate-update cap,
+    /// ledger freshness, verified flag) — but reports the outcome instead of
+    /// erroring, so its side effects actually commit: the
+    /// `oracle_stale_data_rejected` and `oracle_feeder_disagreement` failure
+    /// events and the recorded oracle health. `fund_invoice` still returns
+    /// `Err` on every failing outcome, and Soroban rolls back events for an
+    /// `Err`-returning invocation, which is why those failures need this
+    /// committed diagnostic to be observable on chain.
+    ///
+    /// Returns `IdentityVerificationOutcome::Verified` when the payer passes
+    /// the gate (or when no oracle is resolvable — the historical fail-open).
+    /// The recorded health also drives Issue #1048's half-open circuit-breaker
+    /// auto-recovery, exactly like `check_oracle_health`.
+    /// Access: Anyone
+    pub fn check_oracle_verification(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+        payer: Address,
+    ) -> oracle_registry::IdentityVerificationOutcome {
+        oracle_registry::check_oracle_verification(env, feed_type, token, payer)
+    }
+
+    /// Issue #1055: the whole recorded oracle configuration + health state for
+    /// `feed_type` + `token` in a single call — the resolved oracle, the last
+    /// health snapshot, the circuit-breaker flag, in-progress recovery, the
+    /// registered Identity quorum + threshold, and the registered price
+    /// sources. This is the one call an off-chain `/health` probe should use to
+    /// answer "is this feed's oracle gating healthy?".
+    ///
+    /// Cheap by construction: it makes **no** cross-contract calls and writes
+    /// nothing — every field is a local read of already-recorded state — so it
+    /// is safe to poll frequently and while the contract is paused. For the
+    /// *live* per-feeder health of a multi-oracle Identity quorum (which the
+    /// single-oracle health snapshot never records), use
+    /// `check_identity_quorum_health`.
+    /// Access: Anyone
+    pub fn get_oracle_status(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> oracle_registry::OracleStatusView {
+        oracle_registry::get_oracle_status(env, feed_type, token)
+    }
+
     /// Whether the oracle circuit breaker for `feed_type` + `token` is
     /// currently tripped (from `MAX_CONSECUTIVE_STALE_QUERIES` consecutive
     /// stale responses) and therefore excluded from `fund_invoice`'s
-    /// oracle-gated resolution until governance calls
-    /// `reset_oracle_circuit`.
+    /// oracle-gated resolution. A tripped breaker is cleared either by
+    /// governance's `reset_oracle_circuit` fast path or automatically once
+    /// the tripping oracle demonstrates a sustained run of healthy
+    /// observations (Issue #1048).
     /// Access: Anyone
     pub fn is_oracle_circuit_tripped(env: Env, feed_type: OracleFeedType, token: Address) -> bool {
         oracle_registry::is_oracle_circuit_tripped(&env, feed_type, &token)
     }
 
-    /// Reset a tripped oracle circuit breaker for `feed_type` + `token`.
-    /// There is no automatic recovery on a single fresh query — this
-    /// explicit, governance-gated call is required, so a flapping oracle
-    /// can't quietly resume being trusted by the funding path.
+    /// Issue #1048: the in-progress half-open recovery of a tripped breaker
+    /// for `feed_type` + `token` — the tripping oracle plus the length and
+    /// start ledger of its current healthy-observation streak — or `None`
+    /// when nothing is recovering. Lets operators observe whether a breaker
+    /// is on track to auto-recover or is stuck (feeding the
+    /// `oracle_circuit_recovered` event).
+    /// Access: Anyone
+    pub fn get_circuit_recovery_state(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+    ) -> Option<oracle_registry::CircuitRecoveryState> {
+        oracle_registry::get_circuit_recovery_state(env, feed_type, token)
+    }
+
+    /// Reset a tripped oracle circuit breaker for `feed_type` + `token`. This
+    /// explicit, governance-gated call is the fast path; a breaker also
+    /// auto-recovers (Issue #1048) once the tripping oracle serves a sustained
+    /// run of fresh, advancing responses — never on a single fresh query, so
+    /// a flapping oracle can't quietly resume being trusted.
     /// Access: Admin only (governance-controlled via cross-contract proposal
     /// execution, same pattern as `register_oracle` / `remove_oracle`).
     pub fn reset_oracle_circuit(
@@ -611,6 +773,82 @@ impl InvoiceLiquidityContract {
     /// Access: Anyone
     pub fn get_max_price_deviation_bps(env: Env) -> u32 {
         oracle_registry::get_max_price_deviation_bps(env)
+    }
+
+    // ── Issue #1047: multi-oracle Identity quorum ──────────────────────
+
+    /// Register `oracle` as an Identity feeder in `feed_type`'s multi-oracle
+    /// quorum list. When the list is non-empty, `fund_invoice`'s
+    /// oracle-gated path queries every registered feeder and requires the
+    /// configured quorum (`set_identity_quorum`) to agree the payer is
+    /// verified; disagreement fails closed. An empty list preserves the
+    /// prior single-oracle behavior.
+    /// Access: Admin only (governance-controlled via cross-contract proposal
+    /// execution, same pattern as `register_oracle` / `add_price_source`).
+    pub fn add_identity_oracle(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::add_identity_oracle(&env, feed_type, oracle)
+    }
+
+    /// Remove `oracle` from `feed_type`'s Identity-oracle quorum list.
+    /// Access: Admin only.
+    pub fn remove_identity_oracle(
+        env: Env,
+        feed_type: OracleFeedType,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        oracle_registry::remove_identity_oracle(&env, feed_type, oracle)
+    }
+
+    /// The currently registered Identity oracles for `feed_type`.
+    /// Access: Anyone
+    pub fn get_identity_oracles(env: Env, feed_type: OracleFeedType) -> soroban_sdk::Vec<Address> {
+        oracle_registry::get_identity_oracles(env, feed_type)
+    }
+
+    /// Set the number of registered Identity oracles that must agree the payer
+    /// is verified before oracle-gated funding proceeds (the `N` in `N`-of-`M`).
+    /// Must be in `[1, MAX_IDENTITY_ORACLES_PER_FEED]`.
+    /// Access: Admin only.
+    pub fn set_identity_quorum(env: Env, quorum: u32) -> Result<(), ContractError> {
+        oracle_registry::set_identity_quorum(&env, quorum)
+    }
+
+    /// The currently configured Identity verification quorum. Defaults to
+    /// [`oracle_registry::DEFAULT_IDENTITY_QUORUM`] (1) until set.
+    /// Access: Anyone
+    pub fn get_identity_quorum(env: Env) -> u32 {
+        oracle_registry::get_identity_quorum(env)
+    }
+
+    /// Issue #1055: the *live* health of the registered Identity quorum for
+    /// `feed_type` + `token` — one `FeederHealth` observation per registered
+    /// feeder (index-aligned with `feeders`), the count that agreed, the
+    /// configured threshold, and whether the quorum is currently met.
+    ///
+    /// This fills the observability gap the single-oracle health snapshot
+    /// leaves: the quorum path never writes `OracleHealth`, so `get_oracle_health`
+    /// (and `get_oracle_status`) report `None` in quorum mode no matter how
+    /// often verification runs. Here each feeder is probed and reported as
+    /// `Verified` / `Unverified` / `Stale` / `Unreachable`, using the **same**
+    /// predicate the funding gate applies, so a silently degraded feeder is
+    /// visible before it makes funding fail closed.
+    ///
+    /// Permissionless and never-erroring — an unreachable feeder is reported,
+    /// not propagated. Writes and emits nothing; the fan-out is bounded by
+    /// `MAX_IDENTITY_ORACLES_PER_FEED`. When no feeder is registered the list
+    /// is empty and `quorum_met` is `false` (the single-oracle chain governs).
+    /// Access: Anyone
+    pub fn check_identity_quorum_health(
+        env: Env,
+        feed_type: OracleFeedType,
+        token: Address,
+        payer: Address,
+    ) -> oracle_registry::IdentityQuorumHealth {
+        oracle_registry::check_identity_quorum_health(env, feed_type, token, payer)
     }
 
     /// Query every registered price source for `feed_type` + `token` and
@@ -683,20 +921,26 @@ impl InvoiceLiquidityContract {
     /// Windowed TWAP average for `feed_type` + `token`, or `None` when
     /// fewer than two in-window samples exist.
     /// Access: Anyone
-    pub fn get_twap_price(
-        env: Env,
-        feed_type: OracleFeedType,
-        token: Address,
-    ) -> Option<i128> {
+    pub fn get_twap_price(env: Env, feed_type: OracleFeedType, token: Address) -> Option<i128> {
         oracle_registry::get_twap_price(&env, feed_type, &token)
     }
 
     // ── Issue #529: insurance pool integration ────────────────────
 
-    /// Configure the deployed insurance pool contract address consulted by
-    /// `claim_default` to compensate enrolled LPs on a confirmed default.
-    /// Access: Admin only
-    pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
+/// Configure the deployed insurance pool contract address consulted by
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `pool` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_insurance_pool(env: Env, pool: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_insurance_pool", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "set_insurance_pool");
@@ -710,20 +954,41 @@ impl InvoiceLiquidityContract {
         crate::storage::get_insurance_pool(&env)
     }
 
-    /// Access: Admin only
-    pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), ContractError> {
+/// `add_token` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `token` — see signature
+/// * `decimals` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "add_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "add_token");
 
-        let token_client = token_client(&env, &token);
-        let contract_address = env.current_contract_address();
-        let test_amount: i128 = 1_000_000;
         let admin_address: Address = env
             .storage()
             .instance()
             .get(&crate::storage::DataKey::Admin)
             .unwrap();
+
+        // Issue #1070: the declared precision must match the token's own
+        // `decimals()`; tokens that cannot report decimals are rejected.
+        token_safety::validate_token_decimals(&env, &token, decimals)?;
+        // Issue #1073: the token must expose SAC authorization flags, and
+        // this contract and the admin must be authorized holders.
+        token_safety::validate_sac_authorization(&env, &token, &admin_address)?;
+
+        let token_client = token_client(&env, &token);
+        let contract_address = env.current_contract_address();
+        let test_amount: i128 = 1_000_000;
         let before_balance = token_client.balance(&contract_address);
 
         token_client.transfer(&admin_address, &contract_address, &test_amount);
@@ -771,8 +1036,20 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn remove_token(env: Env, token: Address) -> Result<(), ContractError> {
+/// `remove_token` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `token` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn remove_token(env: Env, token: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "remove_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "remove_token");
@@ -807,9 +1084,9 @@ impl InvoiceLiquidityContract {
     /// Return the registered decimal precision for a token.
     ///
     /// Returns `None` when the token has never been registered via
-    /// `add_token` or `initialize`. For the two bootstrap tokens (USDC at 6
-    /// decimals and XLM at 7 decimals) these are set automatically during
-    /// `initialize`.
+    /// `add_token` or `initialize`. The bootstrap tokens (USDC and EURC at
+    /// 6 decimals, XLM at 7) are set automatically during `initialize`;
+    /// legacy deployments are backfilled by `migrate` (Issue #1070).
     ///
     /// Access: Anyone
     pub fn get_token_decimals(env: Env, token: Address) -> Option<u32> {
@@ -818,11 +1095,139 @@ impl InvoiceLiquidityContract {
             .get(&crate::storage::DataKey::TokenDecimals(token))
     }
 
+    /// Issue #1069: compare `token`'s registered decimals against what it
+    /// reports via `decimals()` right now. `initialize`'s bootstrap tokens
+    /// (USDC, EURC at 6; XLM at 7) are registered without ever being
+    /// checked against the token itself — unlike `add_token`, which always
+    /// validates. On Stellar Mainnet, classic-asset SACs (including real
+    /// USDC/EURC) report 7 decimals, so a real deployment is likely already
+    /// diverged for USDC/EURC specifically; see docs/token-safety.md's
+    /// "Known limitations". This lets any off-chain monitor detect that
+    /// divergence instead of it being silently assumed away. A `None` in
+    /// either field of the result means that side couldn't be determined
+    /// (not approved yet, or the token can't currently answer `decimals()`)
+    /// — it does not by itself indicate a mismatch.
+    ///
+    /// Access: Anyone
+    pub fn audit_token_decimals(env: Env, token: Address) -> token_safety::TokenDecimalsAudit {
+        token_safety::audit_token_decimals(&env, &token)
+    }
+
+    /// Issue #1069: correct an *already-approved* token's registered
+    /// decimals to match a value re-validated against the token's own
+    /// `decimals()` — the same check `add_token` applies when a token is
+    /// first approved. Exists for tokens approved before that validation
+    /// existed, most notably `initialize`'s bootstrap tokens (see
+    /// `audit_token_decimals` above for why those are likely wrong on a
+    /// real deployment). Does not approve a new token, move any funds, or
+    /// retroactively change any existing invoice's stored `amount` — it
+    /// only changes the minimum-amount validation applied to invoices
+    /// submitted *after* this call, in `token`.
+    ///
+    /// # Errors
+    /// * `Unauthorized` if caller is not admin, or if `token` is not
+    ///   currently approved.
+    /// * `TokenDecimalsUnavailable` / `InvalidTokenDecimals` if `decimals`
+    ///   does not match what the token itself reports.
+    ///
+    /// Access: Admin only
+    pub fn correct_token_decimals(
+        env: Env,
+        token: Address,
+        decimals: u32,
+    ) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        if !is_approved_token(&env, &token) {
+            return Err(ContractError::Unauthorized);
+        }
+        check_rate_limit(&env, "correct_token_decimals", DEFAULT_RATE_LIMIT_LEDGERS)?;
+        token_safety::validate_token_decimals(&env, &token, decimals)?;
+
+        let old_decimals = env
+            .storage()
+            .persistent()
+            .get(&crate::storage::DataKey::TokenDecimals(token.clone()));
+
+        record_admin_action(&env, "correct_token_decimals");
+        env.storage().persistent().set(
+            &crate::storage::DataKey::TokenDecimals(token.clone()),
+            &decimals,
+        );
+
+        let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        env.events().publish(
+            (Symbol::new(&env, "token_decimals_corrected"), token.clone()),
+            TokenDecimalsCorrected {
+                token,
+                old_decimals: old_decimals.unwrap_or(decimals),
+                new_decimals: decimals,
+                updated_by,
+            },
+        );
+        Ok(())
+    }
+
+    /// Issue #1072: amount of `token` escrowed for `recipient` because their
+    /// trustline was frozen when a payout or refund was due.
+    ///
+    /// Access: Anyone
+    pub fn get_pending_payout(env: Env, recipient: Address, token: Address) -> i128 {
+        token_safety::pending_payout(&env, &recipient, &token)
+    }
+
+    /// Issue #1072: withdraw an escrowed payout once `recipient`'s trustline
+    /// is authorized again.
+    ///
+    /// # Arguments
+    /// * `env` — host environment
+    /// * `recipient` — address the payout was escrowed for
+    /// * `token` — token the payout is denominated in
+    ///
+    /// # Returns
+    /// * `Ok(amount)` — the amount transferred to `recipient`
+    ///
+    /// # Errors
+    /// * `NothingToClaim` if nothing is escrowed for `(recipient, token)`
+    /// * `AccountFrozen` while `recipient` is still deauthorized
+    /// * `InsufficientContractBalance` if an issuer clawback left the
+    ///   contract unable to cover it
+    /// * `ContractPaused` / `Reentrancy`
+    ///
+    /// The escrow entry is left intact on every error path.
+    ///
+    /// Access: `recipient` (require_auth)
+    pub fn claim_pending_payout(
+        env: Env,
+        recipient: Address,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        lock_reentrancy(&env)?;
+        if is_paused(&env) {
+            unlock_reentrancy(&env);
+            return Err(ContractError::ContractPaused);
+        }
+        recipient.require_auth();
+        let amount = token_safety::claim_pending(&env, &recipient, &token)?;
+        unlock_reentrancy(&env);
+        Ok(amount)
+    }
+
     // ------------------------------------------------------------
     // pause / unpause (emergency controls)
     // ------------------------------------------------------------
-    /// Access: Admin only
-    pub fn pause(env: Env) -> Result<(), ContractError> {
+/// `pause` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn pause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "pause");
 
@@ -836,8 +1241,19 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Access: Admin only
-    pub fn unpause(env: Env) -> Result<(), ContractError> {
+/// `unpause` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn unpause(env: Env) -> Result<(), ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "unpause");
 
@@ -909,7 +1325,11 @@ impl InvoiceLiquidityContract {
 
     /// Propose a new protocol fee rate via the multisig flow.
     /// Access: configured multisig signer only
-    pub fn propose_set_fee_rate(env: Env, proposer: Address, rate: u32) -> Result<u64, ContractError> {
+    pub fn propose_set_fee_rate(
+        env: Env,
+        proposer: Address,
+        rate: u32,
+    ) -> Result<u64, ContractError> {
         multisig::propose(&env, &proposer, multisig::AdminAction::SetFeeRate(rate))
     }
 
@@ -934,10 +1354,7 @@ impl InvoiceLiquidityContract {
         multisig::propose(
             &env,
             &proposer,
-            multisig::AdminAction::UpdateMultisig {
-                new_signers,
-                new_threshold,
-            },
+            multisig::AdminAction::UpdateMultisig(new_signers, new_threshold),
         )
     }
 
@@ -955,17 +1372,16 @@ impl InvoiceLiquidityContract {
         multisig::propose(
             &env,
             &proposer,
-            multisig::AdminAction::RotateSigner {
-                old_signer,
-                new_signer,
-            },
+            multisig::AdminAction::RotateSigner(old_signer, new_signer),
         )
     }
 
     /// Returns the currently scheduled signer rotation, if any (Issue #640).
     /// Access: Anyone
     pub fn get_pending_signer_rotation(env: Env) -> Option<multisig::PendingRotation> {
-        env.storage().instance().get(&DataKey::PendingSignerRotation)
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingSignerRotation)
     }
 
     /// Finalize a scheduled signer rotation once its timelock has elapsed,
@@ -1009,7 +1425,11 @@ impl InvoiceLiquidityContract {
     /// Execute a multisig proposal once its approval threshold has been
     /// met, applying the action it authorized.
     /// Access: configured multisig signer only
-    pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), ContractError> {
+    pub fn execute_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
         let action = multisig::execute(&env, &caller, proposal_id)?;
         match action {
             multisig::AdminAction::Pause => {
@@ -1052,11 +1472,19 @@ impl InvoiceLiquidityContract {
                 );
             }
             multisig::AdminAction::SetFeeRate(rate) => {
-                let old_rate: u32 = env.storage().instance().get(&StorageKey::FeeRate).unwrap_or(0);
+                let old_rate: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&StorageKey::FeeRate)
+                    .unwrap_or(0);
                 env.storage().instance().set(&StorageKey::FeeRate, &rate);
                 let pn = Symbol::new(&env, "protocol_fee_rate_bps");
                 env.events().publish(
-                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    (
+                        Symbol::new(&env, "parameter_updated"),
+                        pn.clone(),
+                        caller.clone(),
+                    ),
                     ParameterUpdated {
                         param_name: pn,
                         old_value: old_rate as i128,
@@ -1071,10 +1499,16 @@ impl InvoiceLiquidityContract {
                     .instance()
                     .get(&StorageKey::MaxDiscountRate)
                     .unwrap_or(0);
-                env.storage().instance().set(&StorageKey::MaxDiscountRate, &rate);
+                env.storage()
+                    .instance()
+                    .set(&StorageKey::MaxDiscountRate, &rate);
                 let pn = Symbol::new(&env, "max_discount_rate_bps");
                 env.events().publish(
-                    (Symbol::new(&env, "parameter_updated"), pn.clone(), caller.clone()),
+                    (
+                        Symbol::new(&env, "parameter_updated"),
+                        pn.clone(),
+                        caller.clone(),
+                    ),
                     ParameterUpdated {
                         param_name: pn,
                         old_value: old_rate as i128,
@@ -1083,10 +1517,7 @@ impl InvoiceLiquidityContract {
                     },
                 );
             }
-            multisig::AdminAction::UpdateMultisig {
-                new_signers,
-                new_threshold,
-            } => {
+            multisig::AdminAction::UpdateMultisig(new_signers, new_threshold) => {
                 if !multisig::is_valid_config(&new_signers, new_threshold) {
                     return Err(ContractError::InvalidMultisigConfig);
                 }
@@ -1094,12 +1525,11 @@ impl InvoiceLiquidityContract {
                     signers: new_signers,
                     threshold: new_threshold,
                 };
-                env.storage().instance().set(&DataKey::MultisigAdmin, &updated);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::MultisigAdmin, &updated);
             }
-            multisig::AdminAction::RotateSigner {
-                old_signer,
-                new_signer,
-            } => {
+            multisig::AdminAction::RotateSigner(old_signer, new_signer) => {
                 let rotation =
                     multisig::schedule_rotation(&env, old_signer.clone(), new_signer.clone())?;
                 env.events().publish(
@@ -1118,27 +1548,33 @@ impl InvoiceLiquidityContract {
     // ------------------------------------------------------------
     // upgrade (Issue #48, #539)
     // ------------------------------------------------------------
-    /// Upgrade the contract to a new WASM hash.
-    ///
-    /// Only the admin can trigger an upgrade. The function performs the
-    /// actual on-chain WASM replacement via the Soroban deployer API,
-    /// records the upgrade in storage, and emits an event for audit.
-    ///
-    /// # Arguments
-    /// - `env`: The Soroban environment
-    /// - `new_wasm_hash`: The hash of the new WASM binary to upgrade to (32 bytes)
-    ///
-    /// # Returns
-    /// - `Ok(())` if the upgrade succeeded
-    /// - `Err(ContractError)` if called by non-admin
-    ///
-    /// Access: Admin only
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+/// Upgrade the contract to a new WASM hash.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `new_wasm_hash` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "upgrade", UPGRADE_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "upgrade");
 
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+
+        // Issue #1082: Reject the upgrade if any live persistent storage entry
+        // that carries TTL-managed data (InvoiceCore, InvoiceMetadata, FundQueue,
+        // FundQueueOpenedAt, QueueResolution) has a remaining TTL below the
+        // minimum safety threshold.  This prevents an upgrade from silently
+        // proceeding while critical data is on the verge of expiry, which would
+        // cause data loss in the new WASM without any on-chain indication.
+        crate::storage::validate_ttl_fields_pre_upgrade(&env)?;
 
         // Issue #539: Actually perform the upgrade via the Soroban deployer.
         env.deployer()
@@ -1166,7 +1602,10 @@ impl InvoiceLiquidityContract {
     }
 
     // Issue #539: Return the current on-chain storage schema version.
-    pub fn get_storage_version(env: Env) -> u32 {
+    /// `get_storage_version` contract entry point.
+///
+/// Access: Anyone
+pub fn get_storage_version(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&crate::storage::DataKey::StorageVersion)
@@ -1176,6 +1615,13 @@ impl InvoiceLiquidityContract {
     // Issue #539: Migrate storage from an older schema version to the current
     // version. Can only be called by admin. This allows incremental storage
     // layout changes to be applied atomically after an upgrade.
+    //
+    // Issue #859 documented exemption (no rate limit): storage migrations are
+    // one-shot, version-gated (a second call at the current version is a
+    // no-op) ops that typically must run *immediately* after an upgrade —
+    // clamping them to the upgrade cooldown would block time-critical
+    // post-upgrade repairs. Every call is already audited via
+    // `record_admin_action` and gated by `require_admin`.
     pub fn migrate(env: Env) -> Result<u32, ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "migrate");
@@ -1196,6 +1642,25 @@ impl InvoiceLiquidityContract {
         //     // migrate from v1 to v2
         // }
 
+        // v3 (Issue #1070): submit/batch/convert no longer fall back to 6
+        // decimals. Backfill the bootstrap tokens with the precision they
+        // were effectively using so legacy deployments keep working. Only
+        // missing entries are written; existing values are never changed.
+        if current < 3 {
+            if let Some(config) = crate::storage::get_config(&env) {
+                for (token, decimals) in [
+                    (config.usdc_sac_address, 6_u32),
+                    (config.eurc_sac_address, 6_u32),
+                    (config.xlm_sac_address, 7_u32),
+                ] {
+                    let key = crate::storage::DataKey::TokenDecimals(token);
+                    if !env.storage().persistent().has(&key) {
+                        env.storage().persistent().set(&key, &decimals);
+                    }
+                }
+            }
+        }
+
         env.storage().instance().set(
             &crate::storage::DataKey::StorageVersion,
             &crate::constants::CURRENT_STORAGE_VERSION,
@@ -1213,17 +1678,89 @@ impl InvoiceLiquidityContract {
         Ok(crate::constants::CURRENT_STORAGE_VERSION)
     }
 
-    /// Update the fee tier configuration. Admin or governance only.
+    // ------------------------------------------------------------
+    // rehearse_rollback (Issue #1083)
+    // ------------------------------------------------------------
+    /// Dry-run rollback-safety rehearsal for the invoice storage layout.
     ///
-    /// Fee tiers must be sorted by `min_amount` in ascending order. Each tier
-    /// specifies a minimum invoice amount (inclusive) and a fee rate in basis
-    /// points. The effective fee for an invoice is the fee rate of the first
-    /// tier whose `min_amount` is <= the invoice amount.
+    /// Samples the most-recent `ROLLBACK_SAMPLE_SIZE` invoice IDs and
+    /// verifies that each one satisfies the *rollback-safe invariant*:
     ///
-    /// An empty list disables tiered fees and falls back to the flat FeeRate.
-    /// Access: Admin only
-    pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), ContractError> {
+    /// ```text
+    /// Invoice(id) present  OR  (InvoiceCore(id) AND InvoiceMetadata(id)) both present
+    /// ```
+    ///
+    /// An invoice with only one half of the split format (orphaned entry)
+    /// would be invisible to a v1 (pre-split) WASM after rollback.  This
+    /// function detects such entries **before** a rollback is executed so
+    /// the admin can repair them first.
+    ///
+    /// The function is **read-only** — it never modifies storage.  Calling
+    /// it is safe at any time; there are no side-effects other than the
+    /// emitted event.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(RollbackRehearsalReport)` — all sampled invoices satisfy the
+    ///   invariant; a rollback is safe from a storage-completeness
+    ///   perspective.
+    /// * `Err(RollbackUnsafe)` — at least one orphaned entry was found;
+    ///   **do not roll back** until entries are repaired.
+    ///
+    /// # Access
+    ///
+    /// Admin only (not rate-limited — this is a read-only diagnostic that
+    /// must be callable immediately before a rollback without cooldown
+    /// friction, similar to `migrate`).
+    pub fn rehearse_rollback(
+        env: Env,
+    ) -> Result<crate::events::RollbackRehearsalReport, ContractError> {
         require_admin(&env)?;
+        record_admin_action(&env, "rehearse_rollback");
+
+        let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+
+        // Run the pure storage-completeness check.
+        let report = crate::storage::check_rollback_safety(&env)?;
+
+        // Emit an auditable on-chain event regardless of outcome.
+        // (check_rollback_safety only returns Ok when rollback_safe==true,
+        //  so if we reach here the rehearsal passed.)
+        env.events().publish(
+            (Symbol::new(&env, "rollback_rehearsal"), admin.clone()),
+            RollbackRehearsalCompleted {
+                admin,
+                report: report.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(report)
+    }
+
+/// Update the fee tier configuration. Admin or governance only.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `tiers` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), ContractError> {
+        require_admin(&env)?;
+        // Issue #1061: reject a tier configuration larger than the declared
+        // budget before it is stored. `effective_fee_rate` walks the whole list
+        // on every settlement, so this keeps `mark_paid`'s per-invocation cost
+        // bounded regardless of what governance supplies. Checked after
+        // `require_admin` so authorization still takes precedence.
+        if tiers.len() > MAX_FEE_TIERS {
+            return Err(ContractError::TooManyFeeTiers);
+        }
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_tiers");
         let admin = get_admin(&env).ok_or(ContractError::Unauthorized)?;
@@ -1284,6 +1821,16 @@ impl InvoiceLiquidityContract {
     }
 
     // ------------------------------------------------------------
+    // Pause state (read-only view)
+    // ------------------------------------------------------------
+    /// Whether the contract is currently paused. Complements
+    /// `get_protocol_status` for callers that only need the flag.
+    /// Access: Anyone
+    pub fn is_paused(env: Env) -> bool {
+        crate::invoice::is_paused(&env)
+    }
+
+    // ------------------------------------------------------------
     // get_protocol_status (read-only view — Issue #775)
     // ------------------------------------------------------------
     /// Operationally-relevant protocol state in one call, for public
@@ -1292,8 +1839,7 @@ impl InvoiceLiquidityContract {
     ///
     /// Access: Anyone
     pub fn get_protocol_status(env: Env) -> ProtocolStatus {
-        let admin =
-            get_admin(&env).unwrap_or_else(|| env.current_contract_address());
+        let admin = get_admin(&env).unwrap_or_else(|| env.current_contract_address());
 
         let multisig: Option<multisig::MultisigAdmin> =
             env.storage().instance().get(&DataKey::MultisigAdmin);
@@ -1428,15 +1974,18 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::MaxInvoiceAmountExceeded);
         }
 
-        validate_invoice_terms(&env, amount, due_date, discount_rate)?;
-
         // token validation
         if !is_approved_token(&env, &token) {
             return Err(ContractError::Unauthorized);
         }
 
-        // Re-validate amount using token-aware decimal precision now that we
-        // know the token is on the allowlist (and therefore has decimals stored).
+        // Issue #1051: the amount floor is enforced solely through the token's
+        // *registered* decimal precision, which fails closed with
+        // `TokenDecimalsNotConfigured` when absent. The former decimals-blind
+        // pre-check (`validate_invoice_terms`, hardcoded 6-decimal floor) has
+        // been removed: it compared the amount against an assumed scale and so
+        // weakened precision — for a 7-decimal asset it under-enforced the
+        // floor by 10x — had it ever run without this token-aware check after it.
         validate_invoice_terms_with_token(&env, amount, due_date, discount_rate, &token)?;
 
         let id = next_invoice_id(&env)?;
@@ -1547,10 +2096,12 @@ impl InvoiceLiquidityContract {
             InvoiceStatus::Cancelled => return Err(ContractError::AlreadyCancelled),
         }
 
-        validate_invoice_terms(&env, amount, due_date, discount_rate)?;
-
-        // Issue #489: re-validate with token-aware minimum so updating
+        // Issue #489 / #1051: validate with token-aware minimum so updating
         // cannot push the amount below the token-specific floor (e.g. XLM).
+        // The former decimals-blind pre-check (`validate_invoice_terms`, a
+        // hardcoded 6-decimal floor) has been removed: it weakened precision
+        // by comparing the amount against an assumed scale instead of the
+        // token's registered decimals, which fail closed.
         validate_invoice_terms_with_token(&env, amount, due_date, discount_rate, &invoice.token)?;
 
         invoice.amount = amount;
@@ -1624,6 +2175,8 @@ impl InvoiceLiquidityContract {
         if !is_approved_token(&env, &new_token) {
             return Err(ContractError::Unauthorized);
         }
+        // Issue #1070: and must have registered decimals.
+        token_safety::registered_token_decimals(&env, &new_token)?;
 
         let old_token = invoice.token.clone();
         invoice.token = new_token.clone();
@@ -1666,13 +2219,14 @@ impl InvoiceLiquidityContract {
                 authenticated_freelancers.push_back(params.freelancer.clone());
             }
 
-            validate_invoice_terms(&env, params.amount, params.due_date, params.discount_rate)?;
-
             if !is_approved_token(&env, &params.token) {
                 return Err(ContractError::Unauthorized);
             }
 
-            // Re-validate with token-aware decimal precision.
+            // Issue #1051: enforce the amount floor solely through the token's
+            // registered decimal precision (fails closed). The former
+            // decimals-blind pre-check (`validate_invoice_terms`, hardcoded
+            // 6-decimal floor) weakened precision for non-6-decimal assets.
             validate_invoice_terms_with_token(
                 &env,
                 params.amount,
@@ -1777,6 +2331,10 @@ impl InvoiceLiquidityContract {
     /// Queue is kept sorted by score (descending) for O(1) resolution.
     /// Access: LP only
     pub fn join_fund_queue(env: Env, lp: Address, invoice_id: u64) -> Result<(), ContractError> {
+        if is_paused(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+
         require_lp(&env, &lp)?;
 
         if !invoice_exists(&env, invoice_id) {
@@ -1799,8 +2357,18 @@ impl InvoiceLiquidityContract {
             InvoiceStatus::Expired => return Err(ContractError::InvoiceExpired),
             InvoiceStatus::Cancelled => return Err(ContractError::AlreadyCancelled),
         }
+        // Issue #1021: a Pending invoice past its due date is effectively
+        // expired even before `expire_invoice` is called; do not queue on it.
+        if env.ledger().timestamp() > u64::from(invoice.due_date) {
+            return Err(ContractError::InvoiceExpired);
+        }
 
         let mut queue = get_fund_queue(&env, invoice_id);
+
+        // Issue #1022: bound queue growth (fail closed).
+        if queue.len() >= crate::constants::MAX_FUND_QUEUE_LEN {
+            return Err(ContractError::QueueFull);
+        }
 
         // Prevent duplicate entries.
         for i in 0..queue.len() {
@@ -1823,6 +2391,27 @@ impl InvoiceLiquidityContract {
                 insert_pos = i;
                 break;
             }
+        }
+
+        // Issue #1095: the queue is bounded. When full, a joiner must strictly
+        // outscore the lowest-scored entry (the tail, since the queue is sorted
+        // descending) and displaces it; otherwise the join is rejected.
+        if queue.len() >= crate::constants::MAX_FUND_QUEUE_LEN {
+            let tail = queue.last().ok_or(ContractError::QueueFull)?;
+            if score <= tail.score {
+                return Err(ContractError::QueueFull);
+            }
+            queue.pop_back();
+            env.events().publish(
+                (Symbol::new(&env, "fund_queue_displaced"), invoice_id),
+                crate::events::FundQueueEntryDisplaced {
+                    invoice_id,
+                    displaced_lp: tail.lp,
+                    displaced_score: tail.score,
+                    new_lp: lp.clone(),
+                    new_score: score,
+                },
+            );
         }
 
         queue.insert(insert_pos, new_request);
@@ -1850,9 +2439,18 @@ impl InvoiceLiquidityContract {
     /// Can be called by anyone once at least one LP has joined the queue.
     ///
     /// **Optimization Note**: The queue is maintained in sorted order (descending score)
-    /// by `join_fund_queue`, so this operation is O(1) — just returning the first element.
-    /// Access: Anyone
+    /// by `join_fund_queue`, so the winning score is always at index 0. The cost is
+    /// O(tied_count) rather than O(1), however: Issue #708's fairness fix scans the
+    /// contiguous top-score prefix (`queue[0..tied_count]`) to pick uniformly among
+    /// ties. That loop is bounded by the queue length — worst case (every entry tied)
+    /// it reads all `MAX_FUND_QUEUE_LEN` entries — which the
+    /// `queue_resolution_tie_fanout` entry in `storage::RESOURCE_ENVELOPE` declares
+    /// and `tests_benchmarks.rs` measures (Issue #1058). Access: Anyone
     pub fn resolve_fund_queue(env: Env, invoice_id: u64) -> Result<Address, ContractError> {
+        if is_paused(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
         }
@@ -1861,6 +2459,12 @@ impl InvoiceLiquidityContract {
         if let Some(approved) = get_queue_resolution(&env, invoice_id) {
             return Ok(approved);
         }
+
+        // Issues #1019/#1021: resolution may happen long after LPs joined.
+        // Re-validate the invoice at resolution time and never lock in a
+        // winner for an invoice that can no longer be funded.
+        let invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
+        Self::require_queueable(&env, &invoice)?;
 
         let queue = get_fund_queue(&env, invoice_id);
         if queue.is_empty() {
@@ -1871,22 +2475,43 @@ impl InvoiceLiquidityContract {
         // that all LPs have a fair window to join before the winner is locked.
         // The delay is measured in ledger sequences (not timestamps) because
         // ledger sequence is monotonically increasing and cannot be manipulated.
-        if let Some(opened_at) = get_fund_queue_opened_at(&env, invoice_id) {
-            let current = env.ledger().sequence();
-            if current < opened_at.saturating_add(QUEUE_DELAY_LEDGERS) {
-                // Emit an attempt event so off-chain monitors can detect MEV
-                // probing even on rejected calls.
+        //
+        // Issue #1013: fail closed, not open, when this record is missing.
+        // The queue checked above is non-empty, so `try_set_fund_queue_opened_at`
+        // must have run when the first LP joined — `FundQueueOpenedAt` can only
+        // be absent here if it was archived (TTL lapsed) or otherwise lost, not
+        // because no delay was ever required. Previously a missing record fell
+        // through this gate silently, letting the queue resolve immediately
+        // with no MEV-mitigation wait at all; now it is rejected instead.
+        let current = env.ledger().sequence();
+        let opened_at = match get_fund_queue_opened_at(&env, invoice_id) {
+            Some(opened_at) => opened_at,
+            None => {
                 env.events().publish(
                     (Symbol::new(&env, "queue_resolve_attempt"), invoice_id),
                     FundQueueResolutionAttempted {
                         invoice_id,
-                        caller_ledger: opened_at,
+                        caller_ledger: 0,
                         attempted_at_ledger: current,
                         success: false,
                     },
                 );
-                return Err(ContractError::QueueNotMature);
+                return Err(ContractError::QueueStateArchived);
             }
+        };
+        if current < opened_at.saturating_add(QUEUE_DELAY_LEDGERS) {
+            // Emit an attempt event so off-chain monitors can detect MEV
+            // probing even on rejected calls.
+            env.events().publish(
+                (Symbol::new(&env, "queue_resolve_attempt"), invoice_id),
+                FundQueueResolutionAttempted {
+                    invoice_id,
+                    caller_ledger: opened_at,
+                    attempted_at_ledger: current,
+                    success: false,
+                },
+            );
+            return Err(ContractError::QueueNotMature);
         }
 
         // Queue is sorted by score (descending), so the highest score is at
@@ -1903,23 +2528,55 @@ impl InvoiceLiquidityContract {
         // (queue[0..tied_count]), since the queue is sorted by score alone.
         // When there's more than one, pick uniformly among them using
         // Soroban's network-seeded PRNG instead of always taking index 0.
-        let best_score = queue.get(0).unwrap().score;
-        let mut tied_count: u32 = 1;
-        while tied_count < queue.len() && queue.get(tied_count).unwrap().score == best_score {
-            tied_count += 1;
+        //
+        // Issue #1019: scores are snapshotted at join time, but resolution
+        // is delayed (QUEUE_DELAY_LEDGERS and beyond), so a snapshot can be
+        // stale. Re-read each LP's *current* score (queue length is capped
+        // by MAX_FUND_QUEUE_LEN) and pick the winner among the current
+        // maximum, so a stale high snapshot cannot win.
+        let mut best_score: u32 = 0;
+        for i in 0..queue.len() {
+            let s = get_lp_score(&env, &queue.get(i).unwrap().lp);
+            if s > best_score {
+                best_score = s;
+            }
         }
-        let winner_index: u32 = if tied_count > 1 {
+        let mut tied: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&env);
+        for i in 0..queue.len() {
+            if get_lp_score(&env, &queue.get(i).unwrap().lp) == best_score {
+                tied.push_back(i);
+            }
+        }
+        let winner_index: u32 = if tied.len() > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
-            // version — generate as u64, then narrow (safe: tied_count is a
-            // small queue length, well within u32 range).
-            env.prng().gen_range::<u64>(0..u64::from(tied_count)) as u32
+            // version — generate as u64, then narrow (safe: tied.len() is
+            // bounded by MAX_FUND_QUEUE_LEN).
+            tied.get(env.prng().gen_range::<u64>(0..u64::from(tied.len())) as u32)
+                .unwrap()
         } else {
-            0
+            tied.get(0).unwrap()
         };
-        let best_entry = queue.get(winner_index).unwrap();
+        let best_entry = queue
+            .get(winner_index)
+            .ok_or(ContractError::QueueIndexOutOfBounds)?;
         let best_lp = best_entry.lp.clone();
 
         save_queue_resolution(&env, invoice_id, &best_lp);
+
+        // Issue #1027: emit FundQueueTieBroken when the winner was drawn by
+        // PRNG among two or more equally-scored LPs. Lets off-chain
+        // monitors measure tie frequency and per-LP tie-win rates.
+        if tied_count > 1 {
+            env.events().publish(
+                (Symbol::new(&env, "fund_queue_tie_broken"), invoice_id),
+                FundQueueTieBroken {
+                    invoice_id,
+                    tied_count,
+                    winner_index,
+                    approved_lp: best_lp.clone(),
+                },
+            );
+        }
 
         // Emit resolution attempt event (successful).
         let current_ledger = env.ledger().sequence();
@@ -1947,6 +2604,106 @@ impl InvoiceLiquidityContract {
         );
 
         Ok(best_lp)
+    }
+
+    /// Issues #1019/#1021: an invoice can only be queued/resolved while it is
+    /// still fundable. Mirrors the `fund_invoice` status gate.
+    fn require_queueable(env: &Env, invoice: &invoice::Invoice) -> Result<(), ContractError> {
+        match invoice.status {
+            InvoiceStatus::Pending | InvoiceStatus::PartiallyFunded => {}
+            InvoiceStatus::Funded => return Err(ContractError::AlreadyFunded),
+            InvoiceStatus::Paid => return Err(ContractError::AlreadyPaid),
+            InvoiceStatus::Defaulted => return Err(ContractError::InvoiceDefaulted),
+            InvoiceStatus::Appealed => return Err(ContractError::InvoiceAppealed),
+            InvoiceStatus::Disputed => return Err(ContractError::InvoiceDisputed),
+            InvoiceStatus::Expired => return Err(ContractError::InvoiceExpired),
+            InvoiceStatus::Cancelled => return Err(ContractError::AlreadyCancelled),
+        }
+        if env.ledger().timestamp() > u64::from(invoice.due_date) {
+            return Err(ContractError::InvoiceExpired);
+        }
+        Ok(())
+    }
+
+    /// Issues #1020/#1021: permissionless recovery for a stuck fund queue.
+    ///
+    /// * Invoice no longer fundable (cancelled, expired, past due, funded,
+    ///   paid, …): delete all queue state for it (bounded storage) and
+    ///   return `Ok(None)`.
+    /// * Invoice fundable and the approved LP has not funded within
+    ///   `QUEUE_RESOLUTION_TTL_LEDGERS` of resolution (shortened to
+    ///   `QUEUE_DELAY_LEDGERS` when the invoice is within
+    ///   `NEAR_EXPIRY_WINDOW_SECS` of its due date): evict the stalled
+    ///   winner, drop the resolution and restart the maturity window for the
+    ///   remaining LPs. Returns `Ok(Some(evicted_lp))`. Evicted LPs may
+    ///   rejoin later.
+    /// * Otherwise `QueueNotStalled`.
+    ///
+    /// Moves no funds and grants no privilege beyond removing the stalled
+    /// winner's exclusive right to fund, so it is safe to leave callable by
+    /// anyone. Access: Anyone
+    pub fn recover_fund_queue(
+        env: Env,
+        invoice_id: u64,
+    ) -> Result<Option<Address>, ContractError> {
+        if is_paused(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        let invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
+        let queue = get_fund_queue(&env, invoice_id);
+        let resolution = get_queue_resolution(&env, invoice_id);
+
+        if queue.is_empty() && resolution.is_none() {
+            return Err(ContractError::QueueNotStalled);
+        }
+
+        if Self::require_queueable(&env, &invoice).is_err() {
+            clear_fund_queue_state(&env, invoice_id);
+            env.events().publish(
+                (Symbol::new(&env, "fund_queue_recovered"), invoice_id),
+                FundQueueRecovered {
+                    invoice_id,
+                    evicted_lp: resolution.clone(),
+                    remaining_lps: 0,
+                    purged: true,
+                },
+            );
+            return Ok(None);
+        }
+
+        let winner = resolution.ok_or(ContractError::QueueNotStalled)?;
+        let resolved_at = get_queue_resolved_at(&env, invoice_id).unwrap_or(0);
+        let now_ts = env.ledger().timestamp();
+        let near_expiry =
+            u64::from(invoice.due_date).saturating_sub(now_ts) <= crate::constants::NEAR_EXPIRY_WINDOW_SECS;
+        let grace = if near_expiry {
+            QUEUE_DELAY_LEDGERS
+        } else {
+            crate::constants::QUEUE_RESOLUTION_TTL_LEDGERS
+        };
+        if env.ledger().sequence() < resolved_at.saturating_add(grace) {
+            return Err(ContractError::QueueNotStalled);
+        }
+
+        let mut remaining: soroban_sdk::Vec<invoice::LpFundRequest> = soroban_sdk::Vec::new(&env);
+        for i in 0..queue.len() {
+            let entry = queue.get(i).unwrap();
+            if entry.lp != winner {
+                remaining.push_back(entry);
+            }
+        }
+        reopen_fund_queue(&env, invoice_id, &remaining);
+
+        env.events().publish(
+            (Symbol::new(&env, "fund_queue_recovered"), invoice_id),
+            FundQueueRecovered {
+                invoice_id,
+                evicted_lp: Some(winner.clone()),
+                remaining_lps: remaining.len(),
+                purged: false,
+            },
+        );
+        Ok(Some(winner))
     }
 
     // ------------------------------------------------------------
@@ -2001,60 +2758,75 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::PayerReputationTooLow);
         }
 
-        // Issues #92 + #93 + #532 + circuit-breaker: optional oracle
+        // Issues #92 + #93 + #532 + circuit-breaker + #1047: optional oracle
         // verification with a data-freshness guard. When
         // require_oracle_verification is true, the oracle registry is
-        // queried for the Identity feed, resolved per the invoice's token
-        // (per-token override, then feed-type default, then the legacy
-        // price_oracle config field) — skipping any level that's
-        // circuit-tripped from repeated staleness. If nothing was ever
-        // registered, the flag is a no-op (existing fail-open behavior). If
-        // everything registered is circuit-tripped, funding is rejected
-        // rather than silently proceeding as if no oracle existed.
+        // consulted for the Identity feed. Two modes:
+        //   * Issue #1047 (multi-oracle quorum): if governance has registered
+        //     Identity feeders via `add_identity_oracle`, EVERY registered
+        //     feeder is queried and the configured quorum
+        //     (`set_identity_quorum`) must agree the payer is verified with
+        //     fresh data. Disagreement fails closed as `PayerUnverified`.
+        //   * Legacy single-oracle mode (empty quorum list): resolved per the
+        //     invoice's token (per-token override, then feed-type default,
+        //     then the legacy price_oracle config field) — skipping any level
+        //     that's circuit-tripped from repeated staleness.
+        // If nothing was ever registered, the flag is a no-op (existing
+        // fail-open behavior). If everything registered is circuit-tripped,
+        // funding is rejected rather than silently proceeding as if no oracle
+        // existed.
         if require_oracle_verification {
-            let resolution = oracle_registry::resolve_oracle_for_verification(
+            // Issue #93: the max age bound is shared by the multi-oracle quorum
+            // check and the single-oracle path below.
+            let max_age = crate::storage::get_config(&env)
+                .map(|c| c.max_oracle_age_ledgers)
+                .unwrap_or(DEFAULT_MAX_ORACLE_AGE_LEDGERS);
+
+            // Issue #1049: run the *shared* identity gate. The exact same helper
+            // backs the public, never-erroring `check_oracle_verification`
+            // diagnostic — the only path whose stale / disagreement events can
+            // survive into a ledger, because an `Err`-returning invocation rolls
+            // every emitted event (and storage write) back. This block therefore
+            // keeps returning the same errors as before, but the decision itself
+            // — and the order it is reached in (quorum → circuit → monotonicity →
+            // duplicate → health record → freshness → verified) — now lives in
+            // one place so the two paths can never drift.
+            match oracle_registry::evaluate_identity_verification(
                 &env,
                 OracleFeedType::Identity,
                 &invoice.token,
-            );
-            if resolution == oracle_registry::OracleResolution::CircuitOpen {
-                return Err(ContractError::OracleCircuitOpen);
-            }
-            if let oracle_registry::OracleResolution::Available(oracle_addr) = resolution {
-                let response: OracleVerificationResponse = env.invoke_contract(
-                    &oracle_addr,
-                    &Symbol::new(&env, "get_payer_data"),
-                    vec![&env, invoice.payer.clone().into_val(&env)],
-                );
-
-                // Issue #93: reject stale oracle data.
-                // Staleness = current_ledger_sequence - oracle.timestamp >= max_oracle_age_ledgers.
-                // If max_oracle_age_ledgers == 0 the check is disabled (governance escape hatch).
-                let max_age = crate::storage::get_config(&env)
-                    .map(|c| c.max_oracle_age_ledgers)
-                    .unwrap_or(DEFAULT_MAX_ORACLE_AGE_LEDGERS);
-
-                // Issue #532: record health (staleness) for this oracle
-                // regardless of outcome, so monitoring sees every query.
-                oracle_registry::record_oracle_health(
-                    &env,
-                    OracleFeedType::Identity,
-                    &invoice.token,
-                    &oracle_addr,
-                    response.timestamp,
-                    max_age,
-                );
-
-                if max_age > 0 {
-                    let current_ledger = env.ledger().sequence() as u64;
-                    let age = current_ledger.saturating_sub(response.timestamp as u64);
-                    if age >= max_age {
-                        return Err(ContractError::OracleDataStale);
-                    }
+                &invoice.payer,
+                max_age,
+            ) {
+                oracle_registry::IdentityVerificationOutcome::Verified => {
+                    // Payer is verified: either the multi-oracle quorum agreed, or
+                    // the legacy single-oracle path returned fresh + verified data
+                    // (or no oracle was resolvable — the historical fail-open).
                 }
-
-                // Issue #92: reject unverified payers.
-                if !response.is_verified {
+                // Issue #1047: feeders disagreed (or too few responded fresh +
+                // verified) — fail closed.
+                oracle_registry::IdentityVerificationOutcome::QuorumDisagreement => {
+                    return Err(ContractError::PayerUnverified);
+                }
+                // Everything registered for this feed is circuit-tripped from
+                // repeated staleness — reject rather than silently proceeding.
+                oracle_registry::IdentityVerificationOutcome::CircuitOpen => {
+                    return Err(ContractError::OracleCircuitOpen);
+                }
+                // Issue #1052: replayed / rolled-back data timestamp.
+                oracle_registry::IdentityVerificationOutcome::TimestampRegression => {
+                    return Err(ContractError::OracleTimestampRegression);
+                }
+                // Issue #1053: too many consecutive identical timestamps.
+                oracle_registry::IdentityVerificationOutcome::DuplicateUpdate => {
+                    return Err(ContractError::OracleDuplicateUpdate);
+                }
+                // Issue #93 / #1050: stale (or future-dated) oracle data.
+                oracle_registry::IdentityVerificationOutcome::Stale => {
+                    return Err(ContractError::OracleDataStale);
+                }
+                // Issue #92: oracle reports the payer is unverified.
+                oracle_registry::IdentityVerificationOutcome::Unverified => {
                     return Err(ContractError::PayerUnverified);
                 }
             }
@@ -2130,13 +2902,24 @@ impl InvoiceLiquidityContract {
             / 10_000;
         let cost = normalized_fund_amount.saturating_sub(fund_discount);
 
+        // Issue #1072: a frozen funder gets a typed error rather than an
+        // opaque transfer trap. If this funding completes the invoice, the
+        // freelancer must also be able to receive, so the LP never pays into
+        // an invoice whose payout cannot be delivered.
+        token_safety::require_authorized(&env, &invoice.token, &funder)?;
+        if prospective_funded == invoice.amount {
+            token_safety::require_authorized(&env, &invoice.token, &invoice.freelancer)?;
+        }
+
         token.transfer(&funder, &contract_address, &cost);
 
         // --- Update contributor list ---
         let mut funders = get_invoice_funders(&env, invoice_id);
         let mut found = false;
         for i in 0..funders.len() {
-            let (addr, amt) = funders.get(i).unwrap();
+            let (addr, amt) = funders
+                .get(i)
+                .ok_or(ContractError::FunderIndexOutOfBounds)?;
             if addr == funder {
                 funders.set(i, (addr, amt.saturating_add(fund_amount)));
                 found = true;
@@ -2160,7 +2943,12 @@ impl InvoiceLiquidityContract {
                 / 10_000;
             let freelancer_payout = invoice.amount.saturating_sub(discount_amount);
 
-            token.transfer(&contract_address, &invoice.freelancer, &freelancer_payout);
+            token_safety::transfer_out_strict(
+                &env,
+                &invoice.token,
+                &invoice.freelancer,
+                freelancer_payout,
+            )?;
 
             invoice.status = InvoiceStatus::Funded;
             invoice.funded_at = Some(env.ledger().timestamp().try_into().unwrap());
@@ -2285,8 +3073,21 @@ impl InvoiceLiquidityContract {
 
     // ------------------------------------------------------------
     // transfer_lp_position
-    /// Access: Current LP only
-    pub fn transfer_lp_position(
+/// `transfer_lp_position` contract entry point.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `invoice_id` — see signature
+/// * `new_lp` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * Authorization / validation errors as defined by this contract
+///
+/// Access: Caller (require_auth)
+pub fn transfer_lp_position(
         env: Env,
         invoice_id: u64,
         new_lp: Address,
@@ -2378,8 +3179,6 @@ impl InvoiceLiquidityContract {
                 // CEI: update state before external token transfers
                 invoice.status = InvoiceStatus::Cancelled;
                 save_invoice(&env, &invoice);
-                let token = token_client(&env, &invoice.token);
-                let contract_address = env.current_contract_address();
                 for i in 0..funders.len() {
                     let (funder_addr, fund_amt) = funders.get(i).unwrap();
                     let fund_discount = fund_amt
@@ -2387,7 +3186,13 @@ impl InvoiceLiquidityContract {
                         .unwrap_or(0)
                         / 10_000;
                     let refund = fund_amt.saturating_sub(fund_discount);
-                    token.transfer(&contract_address, &funder_addr, &refund);
+                    token_safety::pay_or_escrow(
+                        &env,
+                        &invoice.token,
+                        &funder_addr,
+                        refund,
+                        invoice_id,
+                    )?;
                 }
             }
             InvoiceStatus::Funded => return Err(ContractError::AlreadyFunded),
@@ -2507,6 +3312,14 @@ impl InvoiceLiquidityContract {
             return Err(ContractError::NotFunded);
         }
 
+        // Issue #841: hoist the primary-funder lookup above all state writes
+        // and external transfers so the typed error path fires before any side
+        // effect, not after. The invariant (funders is non-empty, checked
+        // above) makes the .ok_or branch unreachable under normal execution.
+        let (primary_lp, primary_lp_funded) = funders
+            .get(0)
+            .ok_or(ContractError::FunderIndexOutOfBounds)?;
+
         let token = token_client(&env, &invoice.token);
         let contract_address = env.current_contract_address();
 
@@ -2524,6 +3337,9 @@ impl InvoiceLiquidityContract {
             .amount_paid
             .checked_add(amount)
             .ok_or(ContractError::ArithmeticOverflow)?;
+
+        // Issue #1072: typed error for a frozen payer.
+        token_safety::require_authorized(&env, &invoice.token, &invoice.payer)?;
 
         // Payer sends partial/full amount to the contract
         token.transfer(&invoice.payer, &contract_address, &normalized_amount);
@@ -2561,16 +3377,16 @@ impl InvoiceLiquidityContract {
                 .instance()
                 .get(&crate::storage::DataKey::Admin)
                 .unwrap();
-            token.transfer(&contract_address, &admin, &protocol_fee);
+            // Issue #1072: a frozen fee recipient must not block settlement.
+            token_safety::pay_or_escrow(&env, &invoice.token, &admin, protocol_fee, invoice_id)?;
         }
 
         let distribute_amount = invoice.amount.saturating_sub(protocol_fee);
 
-        // Legacy compatibility: use first LP for event emission
-        let primary_lp = funders.get(0).unwrap().0.clone();
-
-        // Total amount funded by primary LP
-        let primary_lp_funded = funders.get(0).unwrap().1;
+        // primary_lp / primary_lp_funded were hoisted above the state
+        // writes at the top of this function (Issue #841). The clone here
+        // preserves the previous ownership shape.
+        let primary_lp = primary_lp.clone();
 
         // LP payout after settlement distribution. A genuine multiplication
         // overflow here must surface as an error, not silently collapse to a
@@ -2598,14 +3414,26 @@ impl InvoiceLiquidityContract {
         save_invoice(&env, &invoice);
         crate::nft::sync_nft_state(&env, invoice_id)?;
 
-        // Distribute proportionally to funders
+        // Distribute proportionally to funders. Loop bound is 0..funders.len()
+        // so the .ok_or branch is unreachable under normal execution; the
+        // typed error only fires if the underlying invariant is broken,
+        // in which case the Soroban runtime reverts this entire invocation
+        // and rolls back the preceding save_invoice.
         for i in 0..funders.len() {
-            let (funder_addr, fund_amt) = funders.get(i).unwrap();
+            let (funder_addr, fund_amt) = funders
+                .get(i)
+                .ok_or(ContractError::FunderIndexOutOfBounds)?;
             let funder_share =
                 distribute_amount.checked_mul(fund_amt).unwrap_or(0) / invoice.amount;
-            if funder_share > 0 {
-                token.transfer(&contract_address, &funder_addr, &funder_share);
-            }
+            // Issue #1072: one frozen funder must not block the payer or the
+            // other funders; their share is escrowed instead.
+            token_safety::pay_or_escrow(
+                &env,
+                &invoice.token,
+                &funder_addr,
+                funder_share,
+                invoice_id,
+            )?;
         }
 
         // Increment total paid counter
@@ -2737,8 +3565,6 @@ impl InvoiceLiquidityContract {
             InvoiceStatus::Cancelled => return Err(ContractError::AlreadyCancelled),
         }
 
-        let token = token_client(&env, &invoice.token);
-        let contract_address = env.current_contract_address();
 
         // CEI: update state before external token transfers
         invoice.status = InvoiceStatus::Defaulted;
@@ -2754,7 +3580,7 @@ impl InvoiceLiquidityContract {
                 .unwrap_or(0)
                 / 10_000;
             let refund = fund_amt.saturating_sub(fund_discount);
-            token.transfer(&contract_address, &funder_addr, &refund);
+            token_safety::pay_or_escrow(&env, &invoice.token, &funder_addr, refund, invoice_id)?;
             total_refunded = total_refunded.saturating_add(refund);
         }
 
@@ -2917,14 +3743,21 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Resolve a pending appeal (admin / governance only).
-    ///
-    /// * `upheld=true`  → reverse the default, restore pre-default score, status → Defaulted (reversed).
-    ///   In practice the status transitions back to Defaulted with score restored so the LP
-    ///   can still collect principal they were already refunded. The key effect is reputation repair.
-    /// * `upheld=false` → reject the appeal; invoice remains Defaulted (status reverts from Appealed).
-    /// Access: Admin only
-    pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
+/// Resolve a pending appeal (admin / governance only).
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `invoice_id` — see signature
+/// * `upheld` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "resolve_appeal");
 
@@ -3055,12 +3888,22 @@ impl InvoiceLiquidityContract {
         Ok(())
     }
 
-    /// Resolve a dispute (admin / governance only).
-    ///
-    /// * `resolution_hash` – Optional hash of resolution details
-    /// * `resolution`      – Ruling: 1 = Upheld (Payer right), 2 = Rejected (Freelancer right)
-    /// Access: Admin only
-    pub fn resolve_dispute(
+/// Resolve a dispute (admin / governance only).
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `invoice_id` — see signature
+/// * `resolution_hash` — see signature
+/// * `resolution` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn resolve_dispute(
         env: Env,
         invoice_id: u64,
         resolution_hash: BytesN<32>,
@@ -3089,27 +3932,43 @@ impl InvoiceLiquidityContract {
                 invoice.status = InvoiceStatus::Cancelled;
                 save_invoice(&env, &invoice);
 
-                let token = token_client(&env, &invoice.token);
-                let contract_address = env.current_contract_address();
 
-                // Refund LPs if it was funded.
+                // Refund LPs if it was funded. Loop bound is 0..funders.len()
+                // so the .ok_or branch is unreachable under normal execution;
+                // the typed error only fires if the underlying invariant is
+                // broken, in which case the Soroban runtime reverts this
+                // invocation and rolls back the preceding save_invoice.
                 let funders = get_invoice_funders(&env, invoice_id);
                 if !funders.is_empty() {
                     for i in 0..funders.len() {
-                        let (funder_addr, fund_amt) = funders.get(i).unwrap();
+                        let (funder_addr, fund_amt) = funders
+                            .get(i)
+                            .ok_or(ContractError::FunderIndexOutOfBounds)?;
                         let fund_discount = fund_amt
                             .checked_mul(discount_rate_as_i128(invoice.discount_rate))
                             .unwrap_or(0)
                             / 10_000;
                         let refund = fund_amt.saturating_sub(fund_discount);
-                        token.transfer(&contract_address, &funder_addr, &refund);
+                        token_safety::pay_or_escrow(
+                            &env,
+                            &invoice.token,
+                            &funder_addr,
+                            refund,
+                            invoice_id,
+                        )?;
                     }
                 }
 
                 // Refund payer if a partial payment was made.
                 if invoice.amount_paid > 0 {
                     let refund_amount = invoice.amount_paid;
-                    token.transfer(&contract_address, &invoice.payer, &refund_amount);
+                    token_safety::pay_or_escrow(
+                        &env,
+                        &invoice.token,
+                        &invoice.payer,
+                        refund_amount,
+                        invoice_id,
+                    )?;
 
                     env.events().publish(
                         (
@@ -3221,7 +4080,10 @@ impl InvoiceLiquidityContract {
     // ================================================================
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update_config(
+    /// `update_config` contract entry point.
+///
+/// Access: Anyone
+pub fn update_config(
         env: Env,
         caller: Address,
         high_rep_threshold: u32,
@@ -3234,6 +4096,7 @@ impl InvoiceLiquidityContract {
         usdc_sac_address: Address,
         eurc_sac_address: Address,
     ) -> Result<(), ContractError> {
+        check_rate_limit(&env, "update_config", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         crate::config::update_config(
             &env,
             &caller,
@@ -3247,10 +4110,19 @@ impl InvoiceLiquidityContract {
             usdc_sac_address,
             eurc_sac_address,
         )
-        .map_err(|_| ContractError::Unauthorized)
+        .map_err(|e| match e {
+            crate::config::ConfigError::Unauthorized => ContractError::Unauthorized,
+            crate::config::ConfigError::InvalidBonusBps => ContractError::InvalidAmount,
+            crate::config::ConfigError::InvalidMinDiscountRate => ContractError::InvalidDiscountRate,
+            crate::config::ConfigError::InvalidDecayRate => ContractError::InvalidDecayRate,
+            crate::config::ConfigError::InvalidRepThreshold => ContractError::InvalidRepThreshold,
+        })
     }
 
-    pub fn get_config(env: Env) -> Result<Config, ContractError> {
+    /// `get_config` contract entry point.
+///
+/// Access: Anyone
+pub fn get_config(env: Env) -> Result<Config, ContractError> {
         crate::storage::get_config(&env).ok_or(ContractError::Unauthorized)
     }
     // payer_score
@@ -3297,9 +4169,20 @@ impl InvoiceLiquidityContract {
         get_min_payer_reputation(&env)
     }
 
-    /// Update the minimum payer reputation threshold.
-    /// Access: Admin only
-    pub fn set_min_payer_reputation(env: Env, value: u32) -> Result<(), ContractError> {
+/// Update the minimum payer reputation threshold.
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `value` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_min_payer_reputation(env: Env, value: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(
             &env,
@@ -3336,13 +4219,26 @@ impl InvoiceLiquidityContract {
         get_max_invoice_amount(&env)
     }
 
-    /// Update the maximum single-invoice amount. Intended to be raised over
-    /// time via governance as a staged mainnet rollout progresses.
-    /// Access: Admin only (routed through governance once `admin` is set to
-    /// the governance contract's address — see `iln_governance`).
-    pub fn set_max_invoice_amount(env: Env, value: i128) -> Result<(), ContractError> {
+/// Update the maximum single-invoice amount. Intended to be raised over
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `value` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_max_invoice_amount(env: Env, value: i128) -> Result<(), ContractError> {
         require_admin(&env)?;
-        check_rate_limit(&env, "set_max_invoice_amount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        check_rate_limit(
+            &env,
+            "set_max_invoice_amount",
+            ECONOMIC_PARAM_COOLDOWN_LEDGERS,
+        )?;
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_value = get_max_invoice_amount(&env);
         set_max_invoice_amount(&env, value);
@@ -3369,19 +4265,31 @@ impl InvoiceLiquidityContract {
         get_token_volume_cap(&env, &token)
     }
 
-    /// Update the cumulative funded-volume cap for `token`. Intended to be
-    /// raised over time via governance as a staged mainnet rollout
-    /// progresses — checked against the same cumulative counter used for
-    /// `get_contract_stats` reporting.
-    /// Access: Admin only (routed through governance once `admin` is set to
-    /// the governance contract's address — see `iln_governance`).
-    pub fn set_token_volume_cap(
+/// Update the cumulative funded-volume cap for `token`. Intended to be
+///
+/// # Arguments
+/// * `env` — host environment
+/// * `token` — see signature
+/// * `value` — see signature
+///
+/// # Returns
+/// * `Ok(...)` on success; see Errors
+///
+/// # Errors
+/// * `Unauthorized` if caller is not admin; plus validation errors
+///
+/// Access: Admin only
+pub fn set_token_volume_cap(
         env: Env,
         token: Address,
         value: i128,
     ) -> Result<(), ContractError> {
         require_admin(&env)?;
-        check_rate_limit(&env, "set_token_volume_cap", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
+        check_rate_limit(
+            &env,
+            "set_token_volume_cap",
+            ECONOMIC_PARAM_COOLDOWN_LEDGERS,
+        )?;
         let updated_by = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         let old_value = get_token_volume_cap(&env, &token);
         set_token_volume_cap(&env, &token, value);
@@ -3446,41 +4354,20 @@ impl InvoiceLiquidityContract {
     // ----------------------------------------------------------------
     // query_nft_metadata
     // ----------------------------------------------------------------
-    /// Get NFT metadata for an invoice
-    ///
-    /// Returns complete NFT metadata including invoice ID, amount, due date,
-    /// discount rate, token address, current owner, and mint timestamp.
-    ///
-    /// # Arguments
-    /// * `env` - Soroban environment
-    /// * `invoice_id` - The invoice ID
-    ///
-    /// # Returns
-    /// Option containing the NFT metadata if the NFT exists, None otherwise
-    ///
-    /// # Access
-    /// Anyone
-    pub fn query_nft_metadata(env: Env, invoice_id: u64) -> Option<crate::nft::InvoiceNftMetadata> {
+/// Get NFT metadata for an invoice
+///
+/// Access: Anyone
+pub fn query_nft_metadata(env: Env, invoice_id: u64) -> Option<crate::nft::InvoiceNftMetadata> {
         crate::nft::query_nft_metadata(env, invoice_id)
     }
 
     // ----------------------------------------------------------------
     // query_nft_owner
     // ----------------------------------------------------------------
-    /// Get the owner of an invoice NFT
-    ///
-    /// Returns the current owner address of the NFT representing the invoice.
-    ///
-    /// # Arguments
-    /// * `env` - Soroban environment
-    /// * `invoice_id` - The invoice ID
-    ///
-    /// # Returns
-    /// Option containing the owner address if the NFT exists, None otherwise
-    ///
-    /// # Access
-    /// Anyone
-    pub fn query_nft_owner(env: Env, invoice_id: u64) -> Option<Address> {
+/// Get the owner of an invoice NFT
+///
+/// Access: Anyone
+pub fn query_nft_owner(env: Env, invoice_id: u64) -> Option<Address> {
         crate::nft::query_nft_owner(env, invoice_id)
     }
 }
@@ -3553,26 +4440,19 @@ fn normalize_eurc_amount(amount: i128) -> i128 {
     amount
 }
 
-fn validate_invoice_terms(
-    env: &Env,
-    amount: i128,
-    due_date: u64,
-    discount_rate: u32,
-) -> Result<(), ContractError> {
-    // Backward-compatible fallback (no token context).  Uses the minimum for a
-    // 6-decimal token (USDC).  New call-sites should prefer
-    // `validate_invoice_terms_with_token` so the check is token-aware.
-    validate_invoice_terms_for_min(env, amount, 1_000_000, due_date, discount_rate)
-}
-
 /// Validate invoice terms using the decimal precision stored for `token`.
 ///
 /// The minimum accepted amount is `1` whole unit in the token's own precision:
 /// - 6-decimal token (USDC): minimum = 1_000_000  (= 1 USDC)
 /// - 7-decimal token (XLM):  minimum = 10_000_000 (= 1 XLM)
 ///
-/// Falls back to the 6-decimal floor when no decimals are registered for the
-/// token (i.e. a token added via legacy code paths before Issue #23).
+/// Fails with `TokenDecimalsNotConfigured` when no decimals are registered
+/// for the token. This previously fell back silently to 6 (Issue #1070).
+///
+/// Issue #1051: this is the *only* amount-floor entry point. The former
+/// decimals-blind `validate_invoice_terms` helper (which used a hardcoded
+/// 6-decimal floor) was removed so no call-site can compare amounts against an
+/// assumed scale.
 fn validate_invoice_terms_with_token(
     env: &Env,
     amount: i128,
@@ -3580,11 +4460,7 @@ fn validate_invoice_terms_with_token(
     discount_rate: u32,
     token: &Address,
 ) -> Result<(), ContractError> {
-    let decimals: u32 = env
-        .storage()
-        .persistent()
-        .get(&crate::storage::DataKey::TokenDecimals(token.clone()))
-        .unwrap_or(6);
+    let decimals = token_safety::registered_token_decimals(env, token)?;
 
     let min_amount: i128 = ten_pow(decimals);
     validate_invoice_terms_for_min(env, amount, min_amount, due_date, discount_rate)
@@ -3711,16 +4587,32 @@ fn notify_distribution_settlement(
 pub(crate) mod test;
 // Issue #124 / #641 / #639: multisig admin module + error-path coverage
 // (AlreadySigned / ProposalExpired / ThresholdNotReached).
-mod tests_multisig_admin;
 mod tests_insurance_integration;
 mod tests_lifecycle_integration;
 mod tests_min_invoice_amount;
+mod tests_multisig_admin;
 mod tests_new_features;
 mod tests_oracle_registry;
 mod tests_storage;
 mod tests_storage_layout;
 // Issue #MEV-1: resolve_fund_queue maturity delay
 mod tests_mev_mitigation;
+// Issue #1012: archival/retention tests for fund-queue state (Issues
+// #1011/#1013/#1014/#1015)
+mod tests_queue_archival;
+// Issue #1018: property tests generalizing #1012's renewal/archival
+// scenarios across arbitrary join-spacing sequences
+mod tests_queue_renewal_proptest;
+// Issue #1017: resolve_fund_queue must not finalize a queue's unresolved
+// economic state once the invoice has already been cancelled/expired/etc.
+mod tests_queue_status_gate;
+// Issue #76 / #1066: execution-cost benchmarks + absolute WASM/instruction
+// thresholds. Previously present but never registered, so it never ran and
+// had drifted out of sync with the current contract API.
+mod tests_benchmarks;
+// Issue #1067: a trapped resource-limit invocation must roll back
+// atomically (no partial storage writes, no stranded token transfer).
+mod tests_resource_limit_failure;
 // Issue #invoice-count: get_invoice_count underflow safety
 mod tests_invoice_count;
 // Issue #batch-reputation: batch_submit increments invoices_submitted
@@ -3741,3 +4633,11 @@ mod tests_reputation_decay_long_idle;
 mod tests_nft_event_emission;
 // Issue #851: NFT transfer reputation and insurance consistency
 mod tests_nft_transfer_consistency;
+// Issues #914, #915, #916, #918: Configuration parameter bounds validation
+mod tests_config_parameter_bounds;
+// Issues #1070–#1073: token decimals, SAC authorization, frozen accounts, clawback
+mod tests_token_safety;
+// Issue #1025: Benchmark extension cost at maximum depth and queue TTL / pause controls
+mod tests_max_depth_extension;
+// Issue #1027: Focused tests for join-order tie-breaking replacement
+mod tests_tie_breaking;

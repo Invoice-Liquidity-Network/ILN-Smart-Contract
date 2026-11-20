@@ -19,6 +19,8 @@
 | add_token | env: Env, token: Address, decimals: u32 | Result<(), ContractError> | Access: Admin only |
 | remove_token | env: Env, token: Address | Result<(), ContractError> | Access: Admin only |
 | get_token_decimals | env: Env, token: Address | Option<u32> | /// Access: Anyone |
+| audit_token_decimals | env: Env, token: Address | token_safety::TokenDecimalsAudit | Access: Anyone |
+| correct_token_decimals | env: Env, token: Address, decimals: u32 | Result<(), ContractError> | Access: Admin only |
 | pause | env: Env | Result<(), ContractError> | Access: Admin only |
 | unpause | env: Env | Result<(), ContractError> | Access: Admin only |
 | upgrade | env: Env, new_wasm_hash: BytesN<32> | Result<(), ContractError> | /// Access: Admin only |
@@ -32,6 +34,7 @@
 | get_referral_stats | env: Env, code: BytesN<32> | u64 | Access: Anyone |
 | join_fund_queue | env: Env, lp: Address, invoice_id: u64 | Result<(), ContractError> | Access: LP only |
 | resolve_fund_queue | env: Env, invoice_id: u64 | Result<Address, ContractError> | Access: Anyone |
+| get_fund_queue_ttl_margins | env: Env, invoice_id: u64 | FundQueueTtlMargins | Access: Anyone |
 | fund_invoice | env: Env, funder: Address, invoice_id: u64, fund_amount: i128, require_oracle_verification: bool, | Result<(), ContractError> | consulted and the existing behaviour is preserved. |
 | transfer_invoice | env: Env, invoice_id: u64, new_freelancer: Address, | Result<(), ContractError> | Access: Submitter only |
 | transfer_lp_position | env: Env, invoice_id: u64, new_lp: Address, | Result<(), ContractError> | Access: Current LP only |
@@ -114,7 +117,7 @@
 | execute_coverage_change | env: Env | Result<(), InsuranceError> | expired. Callable by anyone once the delay has elapsed. |
 | cancel_coverage_change | env: Env | Result<(), InsuranceError> | Cancel a pending coverage change proposal. Requires current admin auth. |
 | propose_admin_transfer | env: Env, new_admin: Address | Result<u64, InsuranceError> | previously pending admin proposal. |
-| execute_admin_transfer | env: Env | Result<(), InsuranceError> | expired. Callable by anyone once the delay has elapsed. |
+| execute_admin_transfer | env: Env | Result<(), InsuranceError> | Accept a pending admin transfer once its timelock has expired. Requires the pending admin's auth. |
 | cancel_admin_transfer | env: Env | Result<(), InsuranceError> | Cancel a pending admin transfer proposal. Requires current admin auth. |
 | get_pending_coverage | env: Env | Option<(i128, u64)> | Returns the pending coverage proposal (new cap, eta), if any. |
 | get_pending_admin | env: Env | Option<(Address, u64)> | Returns the pending admin transfer proposal (new admin, eta), if any. |

@@ -1,126 +1,16 @@
 # =============================================================================
 # ILN Smart Contract — Developer Makefile
 # =============================================================================
-# Usage:
-#   make build          Build optimised WASM for all contracts
-#   make test           Run the full test suite (native target)
-#   make fmt            Format all Rust source code
-#   make lint           Run Clippy linter across the workspace
-#   make deploy-testnet Deploy all contracts to Stellar testnet
-#   make coverage       Run tarpaulin code-coverage report
-#   make clean          Remove build artefacts
-#   make help           Print this help message
+# Run `make help` for every target. Each target is defined exactly once: an
+# earlier copy of this file was concatenated with a second, newer copy, so
+# GNU make printed "overriding recipe" warnings and silently used whichever
+# definition came last (Issue #1263).
 # =============================================================================
 
-.PHONY: build test fmt lint deploy-testnet coverage clean help
-
-# Default target
-.DEFAULT_GOAL := help
-
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
-
-## build: Compile all contracts to optimised WASM (wasm32v1-none, release profile)
-build:
-	cargo build-wasm
-	@echo "--- Built WASM artefacts ---"
-	@ls -lh target/wasm32v1-none/release/*.wasm
-
-# ---------------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------------
-
-## test: Run the full test suite on the native target (includes unit + integration tests)
-test:
-	cargo test-native
-
-# ---------------------------------------------------------------------------
-# Format
-# ---------------------------------------------------------------------------
-
-## fmt: Format all Rust source files using rustfmt
-fmt:
-	cargo fmt --all
-
-# ---------------------------------------------------------------------------
-# Lint
-# ---------------------------------------------------------------------------
-
-## lint: Run Clippy with workspace-wide checks and deny warnings
-lint:
-	cargo clippy --all-targets --all-features -- -D warnings
-
-# ---------------------------------------------------------------------------
-# Deploy
-# ---------------------------------------------------------------------------
-
-## deploy-testnet: Deploy all contracts to the Stellar testnet
-##   Requires the Stellar CLI to be installed and STELLAR_ACCOUNT to be set.
-##   Example: STELLAR_ACCOUNT=my-account make deploy-testnet
-deploy-testnet: build
-	@if [ -z "$$STELLAR_ACCOUNT" ]; then \
-		echo "Error: STELLAR_ACCOUNT is not set. Export your Stellar account alias before deploying."; \
-		exit 1; \
-	fi
-	@echo "--- Deploying invoice_liquidity ---"
-	stellar contract deploy \
-		--wasm target/wasm32v1-none/release/invoice_liquidity.wasm \
-		--source "$$STELLAR_ACCOUNT" \
-		--network testnet
-	@echo "--- Deploying iln_governance ---"
-	stellar contract deploy \
-		--wasm target/wasm32v1-none/release/iln_governance.wasm \
-		--source "$$STELLAR_ACCOUNT" \
-		--network testnet
-	@echo "--- Deploying iln_distribution ---"
-	stellar contract deploy \
-		--wasm target/wasm32v1-none/release/iln_distribution.wasm \
-		--source "$$STELLAR_ACCOUNT" \
-		--network testnet
-	@echo "--- Deploying reputation_bonus ---"
-	stellar contract deploy \
-		--wasm target/wasm32v1-none/release/reputation_bonus.wasm \
-		--source "$$STELLAR_ACCOUNT" \
-		--network testnet
-
-# ---------------------------------------------------------------------------
-# Coverage
-# ---------------------------------------------------------------------------
-
-## coverage: Run cargo-tarpaulin and produce an HTML coverage report
-##   Requires cargo-tarpaulin: cargo install cargo-tarpaulin
-coverage:
-	cargo tarpaulin \
-		--target x86_64-unknown-linux-gnu \
-		--workspace \
-		--exclude iln_fuzz \
-		--out Html \
-		--output-dir coverage/
-	@echo "--- Coverage report written to coverage/tarpaulin-report.html ---"
-
-# ---------------------------------------------------------------------------
-# Clean
-# ---------------------------------------------------------------------------
-
-## clean: Remove all build artefacts
-clean:
-	cargo clean
-
-# ---------------------------------------------------------------------------
-# Help
-# ---------------------------------------------------------------------------
-
-## help: Print all documented Makefile targets
-help:
-	@echo ""
-	@echo "ILN Smart Contract — available targets:"
-	@echo ""
-	@grep -E '^## ' Makefile | sed 's/^## /  /'
-	@echo ""
-.PHONY: help install build build-rust build-sdk test test-rust test-e2e fuzz test-fuzz lint \
+.PHONY: help install build build-rust build-sdk test test-rust test-e2e fuzz test-fuzz test-formal lint \
         fmt fmt-check clippy deploy-testnet seed reset reset-testnet docs spec \
-        changelog soroban-optimize health test-insurance test-invoice test-governance test-distribution
+        changelog soroban-optimize health test-insurance test-invoice test-governance test-distribution \
+        check-wasm-size check-benchmarks check-no-unwrap event-coverage release-gate coverage clean
 
 
 # Package manager for the TypeScript workspaces (sdk, indexer, notifications,
@@ -187,7 +77,10 @@ fuzz: ## Run the property/fuzz test suite
 test-fuzz: ## Run fuzz tests for the iln_fuzz crate
 	cargo test -p iln_fuzz
 
-lint: fmt-check clippy check-no-unwrap ## Lint everything (rustfmt check + clippy + panic-path gate)
+test-formal: ## Gate on formal counterexamples + proof obligations (#1100, #1101)
+	bash scripts/run-formal-verification.sh
+
+lint: fmt-check clippy check-no-unwrap event-coverage check-wasm-size ## Lint everything (rustfmt check + clippy + panic-path gate + event coverage + WASM size gate)
 
 fmt: ## Format all Rust code in place
 	cargo fmt --all
@@ -200,6 +93,16 @@ clippy: ## Run clippy with warnings denied
 
 check-no-unwrap: ## Gate: fail if unwrap()/expect() appears in non-test contract source (#845)
 	bash scripts/check-no-unwrap-in-contract-source.sh
+
+event-coverage: ## Gate: every state-mutating entrypoint emits an event or is an approved exemption (#858)
+	npx --no-install tsx --test scripts/check-event-coverage.test.ts
+	npx --no-install tsx scripts/check-event-coverage.ts --check
+
+check-wasm-size: ## Gate: fail if any contract's optimized WASM exceeds the size threshold (#1066)
+	bash scripts/check_wasm_size.sh
+
+check-benchmarks: ## Run execution-cost benchmarks and report against the recorded baseline (#76, warning-only)
+	bash scripts/check_benchmark_regression.sh
 
 deploy-testnet: ## Deploy all contracts to Stellar testnet
 	bash scripts/deploy-testnet.sh
@@ -250,3 +153,21 @@ spec: ## Generate the contract ABI/spec JSON (docs/contract-spec.json)
 #   make changelog TAG=v1.0.0 # generate up to a specific tag
 changelog: ## Generate CHANGELOG.md from conventional commits (git-cliff)
 	git cliff $(if $(TAG),--tag $(TAG)) --output CHANGELOG.md
+
+# Release gate for security-sensitive contract changes (Issue #1263).
+# Runs format, clippy, panic-path, tests, WASM build + size, ABI/access-matrix
+# drift and the mainnet deploy dry-run, and exits non-zero if any step fails.
+# See docs/release-gate.md for the step list, failure behavior and overrides.
+release-gate: ## Gate a release: lint + tests + ABI drift + WASM size + deploy dry-run (#1263)
+	bash scripts/release-gate.sh
+
+coverage: ## Run cargo-tarpaulin and produce an HTML coverage report (needs cargo-tarpaulin)
+	cargo tarpaulin \
+		--target x86_64-unknown-linux-gnu \
+		--workspace \
+		--exclude iln_fuzz \
+		--out Html \
+		--output-dir coverage/
+
+clean: ## Remove all build artefacts
+	cargo clean

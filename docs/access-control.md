@@ -2,6 +2,19 @@
 
 ## 1. Overview
 
+> **Machine-checked matrix:** the authoritative Instruction → gate table for all
+> five contracts is generated from `#[contractimpl]` source by
+> [`scripts/generate-access-control-matrix.py`](../scripts/generate-access-control-matrix.py)
+> into [`access-control-matrix.generated.md`](access-control-matrix.generated.md).
+> CI fails on drift. The tables below remain as narrative/role documentation;
+> if they disagree with the generated file on a function's gate, update the
+> narrative.
+
+> **Parameter safety:** For safe ranges of all adjustable parameters (fee rates,
+> discount rates, reputation thresholds, oracle windows, etc.), see
+> [Governance Operations Playbook § Adjustable Parameter Safe Ranges](governance-operations-playbook.md#adjustable-parameter-safe-ranges).
+
+
 The ILN-Smart-Contract implements a centralized access-control architecture to guarantee that all protocol operations are properly authorized. By centralizing permissions into shared guards, we achieve:
 - **Consistency**: All similar checks behave exactly the same way across different endpoints.
 - **Audibility**: Clear, easily reviewable access annotations on every public instruction.
@@ -42,6 +55,15 @@ Authorized to process default claims against the insurance pool (typically the l
 ### Anyone
 Publicly accessible read or state-transition functions that do not require specific authorization.
 - **Can**: Read contract stats, query scores, resolve fund queues, and expire timed-out invoices.
+
+### Oracle Feeder (Issue #1046)
+The operator key of a deployed payer-verification oracle. This role lives in the
+**external oracle contract**, not in `invoice_liquidity` — the ILN never calls
+the oracle's write path — but it is the authority that actually decides funding
+eligibility when `fund_invoice` is called with `require_oracle_verification = true`.
+- **Can**: Call the oracle's `update_verification(payer, verified)` to set a payer's verification status (requires the feeder's signature), and rotate itself via `set_feeder`.
+- **Cannot**: Be bypassed — `update_verification` rejects any caller that is not the configured feeder, and rejects the call outright when no feeder has been configured (fail closed).
+- **Note**: An unrestricted `update_verification` would let anyone mint funding eligibility for any payer, defeating the entire oracle gate. The requirement is specified on the `OracleInterface` trait (`contracts/invoice_liquidity/src/oracle_interface.rs`) and must be enforced by every oracle implementation (reference: `contracts/tests/mocks/mock_oracle.rs`); see [oracle-integration.md](oracle-integration.md#authorizing-the-feeder-issue-1046).
 
 ## 3. Invoice Liquidity Contract — Permission Matrix
 
@@ -84,7 +106,7 @@ Publicly accessible read or state-transition functions that do not require speci
 | `update_max_discount` | Admin | Updates the maximum allowed discount rate (rate-limited: ~30min) |
 | `update_decay_params` | Admin | Updates reputation decay rate and period |
 | `set_distribution_contract` | Admin | Updates the distribution contract address (rate-limited: ~10min) |
-| `update_fee_tiers` | Admin | Updates tiered fee structure for invoices by size |
+| `update_fee_tiers` | Admin | Updates tiered fee structure for invoices by size (max `MAX_FEE_TIERS` = 20 brackets; oversized lists return `TooManyFeeTiers`, Issue #1061) |
 | `get_fee_tiers` | Anyone | Reads the current tiered fee configuration |
 | `set_min_payer_reputation` | Admin | Sets minimum payer reputation threshold (rate-limited: ~30min) |
 | `add_token` | Admin | Adds a supported token to the protocol (rate-limited: ~10min) |
@@ -95,7 +117,8 @@ Publicly accessible read or state-transition functions that do not require speci
 | `upgrade` | Admin | Emits upgrade event for WASM hash change (rate-limited: ~2h) |
 | `get_version` | Anyone | Reads contract version string |
 | `get_storage_version` | Anyone | Reads storage schema version for migrations |
-| `migrate` | Admin | Executes storage migration logic for upgrades |
+| `migrate` | Admin | Executes storage migration logic for upgrades (not rate-limited: one-shot version-gated op — see docs/rate-limiting.md) |
+| `update_config` | Admin | Updates core economic config in one call (rate-limited: ~30min, Issue #859) |
 | `max_invoice_amount` | Anyone | Reads the per-invoice size cap for the staged mainnet rollout (Issue #655; 0 = uncapped) |
 | `set_max_invoice_amount` | Admin (routed through governance once `admin` = the governance contract) | Sets the per-invoice size cap; raised over time as rollout confidence grows (rate-limited: ~30min) |
 | `token_volume_cap` | Anyone | Reads the cumulative funded-volume cap for a token (Issue #655; 0 = uncapped) |
@@ -109,27 +132,85 @@ Publicly accessible read or state-transition functions that do not require speci
 | `get_price_oracle` | Anyone | Reads the current price oracle address |
 | `set_max_oracle_age` | Admin | Updates the maximum acceptable oracle data age in ledgers (rate-limited: ~10min) |
 | `get_max_oracle_age` | Anyone | Reads the current max oracle age setting |
-| `register_oracle` | Admin | Registers an oracle for a specific feed type (not rate-limited; governance-critical) |
-| `remove_oracle` | Admin | Removes oracle registration for a feed type (not rate-limited; governance-critical) |
-| `register_token_oracle` | Admin | Registers an oracle for a specific token (not rate-limited; governance-critical) |
-| `remove_token_oracle` | Admin | Removes oracle registration for a token (not rate-limited; governance-critical) |
+| `register_oracle` | Admin | Registers an oracle for a specific feed type (rate-limited: ~10min, Issue #859) |
+| `remove_oracle` | Admin | Removes oracle registration for a feed type (rate-limited: ~10min, Issue #859) |
+| `register_token_oracle` | Admin | Registers an oracle for a specific token (rate-limited: ~10min, Issue #859) |
+| `remove_token_oracle` | Admin | Removes oracle registration for a token (rate-limited: ~10min, Issue #859) |
 | `get_oracle_for_token` | Anyone | Reads the registered oracle address for a given token |
 | `get_oracle_health` | Anyone | Reads cached oracle health status (accessible while contract is paused) |
-| `check_oracle_health` | Anyone | Performs live oracle health check and caches result (accessible while paused) |
+| `check_oracle_health` | Anyone | Performs live oracle health check and caches result (accessible while paused); since Issue #1048 also drives half-open circuit-breaker auto-recovery |
+| `check_oracle_verification` | Anyone | Permissionless, never-erroring diagnostic that runs the **full** Identity gate (quorum + single-oracle) and returns a structured `IdentityVerificationOutcome`; its `oracle_stale_data_rejected` / `oracle_feeder_disagreement` failure events commit (Issue #1049) |
 | `is_oracle_circuit_tripped` | Anyone | Checks if an oracle's circuit breaker is activated |
-| `reset_oracle_circuit` | Admin | Resets a circuit-tripped oracle's status |
-| `add_price_source` | Admin | Adds a price feed source for an oracle feed type |
-| `remove_price_source` | Admin | Removes a price feed source |
+| `get_circuit_recovery_state` | Anyone | Reads the in-progress half-open recovery of a tripped breaker (tripping oracle, healthy-observation streak, start ledger) or `None` (Issue #1048) |
+| `reset_oracle_circuit` | Admin | Resets a circuit-tripped oracle's status, as the fast path; a tripped breaker also auto-recovers (Issue #1048). Also clears in-progress recovery progress (rate-limited: ~10min, Issue #859) |
+| `add_price_source` | Admin | Adds a price feed source for an oracle feed type (rate-limited: ~10min, Issue #859; capped at `MAX_PRICE_SOURCES_PER_FEED` = 20 sources per feed — further additions fail with `TooManyPriceSources`, Issue #1064) |
+| `remove_price_source` | Admin | Removes a price feed source (rate-limited: ~10min, Issue #859) |
 | `get_price_sources` | Anyone | Reads all registered price sources for a feed type |
-| `set_max_price_deviation_bps` | Admin | Sets maximum acceptable price deviation in basis points |
+| `set_max_price_deviation_bps` | Admin | Sets maximum acceptable price deviation in basis points (rate-limited: ~10min, Issue #859)
+| `set_twap_enabled` | Admin | Opts a feed into TWAP-windowed price reads (rate-limited: ~10min, Issue #859) |
+| `set_twap_window_ledgers` | Admin | Sets the TWAP averaging window in ledgers (rate-limited: ~10min, Issue #859) |
+| `record_twap_sample` | Admin/keeper | Pushes one TWAP price sample (not rate-limited: high-frequency keeper op — see docs/rate-limiting.md) | |
 | `get_max_price_deviation_bps` | Anyone | Reads the max price deviation setting |
 | `get_verified_price` | Anyone | Queries and verifies price data from oracle (with deviation checks) |
+| `add_identity_oracle` | Admin | Adds an Identity feeder to a feed type's multi-oracle quorum list (rate-limited: ~10min, Issue #1047; capped at `MAX_IDENTITY_ORACLES_PER_FEED` = 20 — further additions fail with `TooManyIdentityOracles`; re-adding an existing feeder is a no-op) |
+| `remove_identity_oracle` | Admin | Removes an Identity feeder from a feed type's quorum list (rate-limited: ~10min, Issue #1047) |
+| `set_identity_quorum` | Admin | Sets how many registered Identity feeders must agree a payer is verified before funding proceeds (the `N` in `N`-of-`M`; valid range `[1, 20]`, else `InvalidIdentityQuorum`; rate-limited: ~10min, Issue #1047) |
+| `get_identity_oracles` | Anyone | Reads the registered Identity feeders for a feed type |
+| `get_identity_quorum` | Anyone | Reads the configured Identity verification quorum (defaults to 1) |
+| `get_oracle_status` | Anyone | One-call aggregate of a feed + token's oracle configuration and recorded health — resolved oracle, cached health, breaker flag, half-open recovery, Identity feeders + threshold, price sources. **Local reads only** (no cross-contract calls, no writes), accessible while paused (Issue #1055) |
+| `check_identity_quorum_health` | Anyone | Live per-feeder health for a payer (`FeederHealth`: `Verified` / `Unverified` / `Stale` / `Unreachable`) plus `verified_count`, `required_quorum` and `quorum_met`; shares the funding gate's per-feeder predicate; permissionless, read-only, fan-out bounded by `MAX_IDENTITY_ORACLES_PER_FEED` (Issue #1055) |
+
+> **Feeder disagreement (Issue #1047).** When one or more Identity feeders are
+> registered, `fund_invoice`'s oracle gate queries **all** of them and requires
+> the configured quorum to agree the payer is verified with fresh data;
+> disagreement fails **closed** (`PayerUnverified`) and emits an
+> `oracle_feeder_disagreement` event. With an **empty** feeder list the gate
+> falls back to the unchanged single-oracle resolution chain. See
+> [oracle-integration.md](oracle-integration.md#handling-feeder-disagreement-issue-1047).
+
+> **External oracle write path (Issue #1046).** The rows above are the ILN's own
+> registry surface. The payer-verification oracle's `update_verification` — the
+> write that actually sets funding eligibility — is **not** an `invoice_liquidity`
+> instruction; it is enforced inside the registered oracle contract and gated on
+> that oracle's configured feeder (see [Oracle Feeder](#oracle-feeder-issue-1046)).
+
+> **Circuit-breaker recovery (Issue #1048).** Clearing a tripped oracle circuit
+> breaker is **not** admin-only any more: the permissionless `check_oracle_health`
+> keeper path auto-clears it once the *tripping* oracle serves a sustained run of
+> healthy observations (3 consecutive fresh, timestamp-advancing observations
+> spanning ≥120 ledgers). This grants no new privilege — it only lets the gate
+> re-open for an oracle that has *demonstrably* recovered, and a single fresh
+> query still cannot clear it. `reset_oracle_circuit` remains the admin fast path
+> (and additionally clears any in-progress recovery); `get_circuit_recovery_state`
+> is public so operators can observe a stuck recovery. See
+> [oracle-integration.md](oracle-integration.md#recovering-after-a-feeder-outage-issue-1048).
+
+> **Gate-failure observability (Issue #1049).** `fund_invoice` reports every
+> identity-gate rejection by returning `Err`, and Soroban rolls those events back,
+> so the failure reason is invisible on chain. The permissionless
+> `check_oracle_verification` diagnostic runs the *same* gate and returns an
+> `IdentityVerificationOutcome` instead of erroring, so its
+> `oracle_stale_data_rejected` (new) and `oracle_feeder_disagreement` events
+> commit. It requires **no** authorization, grants no privilege, and adds no
+> successful-path side effect beyond the oracle health snapshot. See
+> [oracle-integration.md](oracle-integration.md#observing-gate-failures-issue-1049).
+
+> **Health & quorum exposure (Issue #1055).** Reading oracle configuration and
+> health used to require fanning out across five entry points, and the live
+> health of a multi-oracle Identity quorum had no reader at all (in quorum mode
+> the single-oracle `OracleHealth` key is never written). `get_oracle_status`
+> collapses the configuration/health reads into one permissionless call and makes
+> no cross-contract calls or writes, so it is safe at any frequency and while
+> paused; `check_identity_quorum_health` adds the missing live quorum reader,
+> sharing the funding gate's per-feeder predicate so the two can never disagree.
+> Neither view takes `require_auth` or grants any privilege. See
+> [oracle-integration.md](oracle-integration.md#exposing-health-and-quorum-issue-1055).
 
 ### Insurance Pool Integration
 
 | Instruction | Allowed Role(s) | Description |
 | ----------- | --------------- | ----------- |
-| `set_insurance_pool` | Admin | Updates the insurance pool contract address |
+| `set_insurance_pool` | Admin | Updates the insurance pool contract address (rate-limited: ~10min) |
 | `get_insurance_pool` | Anyone | Reads the current insurance pool contract address |
 
 ### Insurance Pool Contract
@@ -208,6 +289,8 @@ This isolation ensures that the insurance pool cannot be drained except through 
 | `get_gov_token_total_supply` | Anyone | Reads current governance token total supply |
 | `set_execution_delay` | Admin | Sets timelock delay before proposal execution (in ledgers) |
 | `get_execution_delay` | Anyone | Reads current execution delay setting |
+| `get_timelock_status` | Anyone | Reads delay, veto-enabled flag, signer count and threshold in one call |
+| `get_proposal_eta` | Anyone | Reads the earliest executable ledger of a proposal (`0` until it has passed) |
 | `set_quadratic_voting_enabled` | Admin | Toggles quadratic voting mode on/off |
 | `is_quadratic_voting_enabled` | Anyone | Checks if quadratic voting is currently enabled |
 
@@ -278,6 +361,18 @@ Certain admin operations are sensitive to high-frequency invocation — an attac
 | `set_max_oracle_age` | 120 ledgers (~10min) | Infrastructure change |
 | `add_token` | 120 ledgers (~10min) | Token allowlist change |
 | `remove_token` | 120 ledgers (~10min) | Token allowlist change |
+| `update_config` | 360 ledgers (~30min) | Economic parameter manipulation (Issue #859) |
+| `update_fee_tiers` | 360 ledgers (~30min) | Economic parameter manipulation |
+| `register_oracle` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `remove_oracle` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `register_token_oracle` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `remove_token_oracle` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `reset_oracle_circuit` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `add_price_source` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `remove_price_source` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `set_max_price_deviation_bps` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `set_twap_enabled` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
+| `set_twap_window_ledgers` | 120 ledgers (~10min) | Oracle registry configuration (Issue #859) |
 
 ### Exempt Functions
 
@@ -287,11 +382,20 @@ Emergency functions are not rate-limited so they can be used immediately when a 
 - `resolve_appeal`
 - `resolve_dispute`
 
+Other documented exemptions (full matrix and rationale: [docs/rate-limiting.md](./rate-limiting.md)):
+- `migrate` — one-shot, version-gated; blocking it behind the upgrade cooldown would delay post-upgrade repairs
+- `record_twap_sample` — high-frequency keeper op; limiting it would starve the TWAP window
+- multisig `execute_proposal` — replaced by N-of-M threshold + proposal-expiry timelock
+- `check_oracle_health` — feeds the circuit breaker itself; limiting it would starve the breaker
+- `get_oracle_status` / `check_identity_quorum_health` — read-only observability views (permissionless, no write side effect); limiting them would blind the `/health` probe (Issue #1055)
+
 ### Implementation
 
 Rate limiting is implemented in `contracts/invoice_liquidity/src/access.rs`:
 
 - `check_rate_limit(env, fn_name, cooldown_ledgers)` checks the last ledger when the function was called. If insufficient ledgers have elapsed, it returns `ContractError::RateLimited`. Otherwise, it records the current ledger as the last call time.
+- A function's first-ever call always passes (no prior record exists to space out from); only *consecutive* calls are spaced. (Issue #859 fixed a cold-start quirk where `unwrap_or(0)` rejected the first call on low-sequence networks.)
+- Cross-contract coverage matrix for all five contracts: [docs/rate-limiting.md](./rate-limiting.md).
 - Storage key: `DataKey::RateLimit(Symbol::new(env, fn_name))` — per-function, instance storage.
 - The cooldown is measured in ledgers (not timestamps) to align with Soroban's deterministic execution model.
 - At ~5 seconds per ledger: 120 ledgers ≈ 10 min, 360 ≈ 30 min, 720 ≈ 1h, 1440 ≈ 2h.
@@ -450,3 +554,25 @@ independent of the per-action events (`AdminChanged`, `ParameterUpdated`, `Token
   and is not a substitute for the unbounded event log — it is a cheap on-chain
   "recent activity" view layered on top of it. Long-horizon audit trails should still be
   built from indexed events (see [event-types.md](event-types.md)).
+- **Ledger-entry budget (Issue #1060)**: both per-invocation costs of the log are bounded
+  by the same `ADMIN_ACTION_LOG_CAPACITY = 50` constant. The *write* stays O(1) — an
+  action overwrites slot `seq % ADMIN_ACTION_LOG_CAPACITY` in place and only the monotonic
+  `AdminActionCount` grows, so the log never grows past its cap. The *read* clamps the
+  caller-supplied `limit` to the cap and the retained total, so `get_recent_admin_actions`
+  consumes at most 50 ledger entries even when called with `limit = u32::MAX` — the
+  fan-out is bounded by the cap, not by the caller. The read-loop bound is declared as the
+  `governance_log_read_fanout` entry in `storage::RESOURCE_ENVELOPE` (alongside the
+  stored-slots bound `admin_action_log_entries`) and both costs are measured in
+  `benchmark_governance_ledger_entry_budget`; see
+  [storage-layout.md](storage-layout.md#the-safe-resource-envelope-issue-1065) and
+  [benchmarks.md](benchmarks.md) (§ Governance ledger-entry budget).
+- **Fee-tier configuration bound (Issue #1061)**: `update_fee_tiers` only accepts a
+  schedule of at most `MAX_FEE_TIERS = 20` brackets, returning `TooManyFeeTiers` (81)
+  otherwise. `effective_fee_rate` walks the whole stored list on every settlement
+  (`mark_paid`), so bounding the list at its source bounds the settlement tier-walk cost.
+  The length check runs after `require_admin` (authorization precedence) and before the
+  economic-parameter rate limit (a rejected config consumes no rate-limit window and
+  writes no state). The bound is declared as the `fee_tiers_entries` entry in
+  `storage::RESOURCE_ENVELOPE` and measured in `benchmark_fee_tier_budget`; see
+  [storage-layout.md](storage-layout.md#the-safe-resource-envelope-issue-1065) and
+  [benchmarks.md](benchmarks.md) (§ Fee-tier budget).
