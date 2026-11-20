@@ -292,15 +292,24 @@ latecomer cannot reset the open-at ledger and push the resolution gate back.
 `test_1057_displacing_insert_does_not_reset_queue_opened_at` guards this.
 
 **Queue-resolution cost bound (Issue #1058):** `resolve_fund_queue`'s cost is not
-O(1) — Issue #708's fair tie-break scans the contiguous top-score prefix
-(`queue[0..tied_count]`) before selecting, so resolution reads O(tied_count)
-entries. That loop is bounded by the queue length (worst case: every entry tied
+O(1) — Issue #708's fair tie-break must read the queue to find the current
+top score and its candidate group before selecting, so resolution reads
+O(queue length) entries. The group is *not* a contiguous prefix
+`queue[0..tied_count]` — since Issue #1019 the ranking key is each LP's
+*current* score while the queue's sort key is the join-time snapshot, so
+tied candidates can be scattered anywhere (Issue #1039 states and enforces
+this, replacing the earlier — false — contiguity claim). That scan is
+bounded by the queue length (worst case: every entry tied
 at the top score reads all `MAX_FUND_QUEUE_LEN` entries), and it is now declared
 as the `queue_resolution_tie_fanout` entry in `storage::RESOURCE_ENVELOPE` so the
 bound cannot silently drift. A caller cannot inflate the scan beyond the cap,
 because the cap is exactly what bounds the queue it scans; the two extremes
 (all-tied vs distinct scores) are measured in
-`benchmark_queue_resolution_cpu_cost_at_cap`.
+`benchmark_queue_resolution_cpu_cost_at_cap`. Since Issue #1039 the scan is a
+fused *single* pass (`queue_invariants::top_score_and_equal_candidates`): at
+the cap it costs 1 x `MAX_FUND_QUEUE_LEN` = 50 `get_lp_score` reads per
+resolution, versus 2 x cap = 100 before (#1040 records this static
+before/after).
 
 **Unresolved-request storage bound (Issue #1059):** an unresolved fund request
 retains `FundQueue(u64)` (up to `MAX_FUND_QUEUE_LEN` `LpFundRequest` records) plus

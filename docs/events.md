@@ -121,6 +121,7 @@ check fails if a row exists in one place but not the other.
 | [FundRequested](#fundrequested) | `join_fund_queue` |
 | [FundQueueResolved](#fundqueueresolved) | `resolve_fund_queue` |
 | [FundQueueRecovered](#fundqueuerecovered) | `recover_fund_queue` |
+| [FundQueueOrderingRejected](#fundqueueorderingrejected) | `resolve_fund_queue` (Issue #1036/#1039) |
 | [InvoiceFunded](#invoicefunded) | `fund_invoice` |
 | [InvoiceTransferred](#invoicetransferred) | `transfer_invoice` |
 | [LPPositionTransferred](#lppositiontransferred) | `transfer_lp_position` |
@@ -163,7 +164,7 @@ State-changing functions and their event coverage (✅ = emits an event,
 | `convert_invoice_token` | ✅ `InvoiceTokenChanged` |
 | `submit_invoices_batch` | ✅ `InvoiceSubmitted` per invoice |
 | `join_fund_queue` | ✅ `FundRequested` |
-| `resolve_fund_queue` | ✅ `FundQueueResolved` |
+| `resolve_fund_queue` | ✅ `FundQueueResolved` (+ `queue_resolve_attempt` per Issue #MEV-1; + `FundQueueOrderingRejected` on fail-closed verification failure, Issue #1036) |
 | `recover_fund_queue` | ✅ `FundQueueRecovered` |
 | `fund_invoice` | ✅ `InvoiceFunded` (+ `InvoiceExpired` if expiry detected, + `InvoiceNftTransferred`) |
 | `transfer_invoice` | ✅ `InvoiceTransferred` |
@@ -339,6 +340,57 @@ Topics: `["fund_queue_recovered", invoice_id]`
 | `evicted_lp` | `Option<Address>` | Stalled approved LP that was evicted, if any |
 | `remaining_lps` | `u32` | LPs left in the reopened queue (`0` when purged) |
 | `purged` | `bool` | `true` when the invoice was no longer fundable and all queue state was deleted |
+
+### FundQueueOrderingRejected
+
+Topics: `["fund_queue_ordering_rejected", invoice_id]`
+
+Emitted by `resolve_fund_queue` when the fail-closed structural verification
+of the persisted queue (Issue #1036) rejects it — monotonicity, LP uniqueness,
+or the `MAX_FUND_QUEUE_LEN` bound is violated — or when the equal-score
+candidate-group post-condition (Issue #1039) fires. A resolution that emits
+this event persisted no winner; the queue is left untouched for operators to
+inspect and repair via `recover_fund_queue`/rejoin, never silently repaired.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `invoice_id` | `u64` | Queue whose persisted state failed verification |
+| `index` | `u32` | Violation position: monotonicity pair start `i`; duplicate's later position; `0` sentinel for length; drawn `winner_index` for the #1039 post-condition |
+| `observed` | `u32` | Offending score (monotonicity), `2` (duplicate), `queue.len()` (length), `1` (#1039) |
+| `expected` | `u32` | Preceding score (monotonicity), `1` (dedupe), `MAX_FUND_QUEUE_LEN` (length), `0` (#1039) |
+
+#### Fairness measurement under burst deposits (Issue #1040)
+
+The three resolution-side events form the off-chain fairness observation
+surface for queues where many LPs join in a burst (all before the first
+resolution):
+
+* **`fund_queue_tie_broken`** (Issue #1027) — emitted only when the winner
+  was drawn by PRNG among `tied_count >= 2` equally-current-scored LPs,
+  carrying `tied_count` and the drawn `winner_index`. Indexers compute
+  **tie frequency** (share of resolutions emitting the event) and, per
+  invoice cohort, **per-LP win rates** within ties. A tie that never emits
+  the event, or a `winner_index` outside `[0, tied_count)` semantics, is a
+  bug signal.
+* **`fund_queue_ordering_rejected`** (Issues #1036/#1039) — emitted when a
+  resolution fails closed on persisted-state corruption or a
+  candidate-group post-condition violation. Bursts that surface this event
+  are excluded from win-share statistics (they awarded no winner) and paged
+  to operators instead; a rising rate is a state-integrity alarm, not a
+  fairness variance.
+* **`fund_queue_resolved`** — the successful outcome (winner + winning
+  score); join by `invoice_id` with the two events above to build the full
+  per-resolution ledger.
+
+Long-run per-LP win share for an equal-reputation burst of size `n` should
+converge to `1/n`. The deterministic in-test harness
+(`tests_fairness_burst_measurement.rs`) measures `max_win_share_deviation`
+against that expectation with an explicit tolerance; note that the on-chain
+draw uses the network-seeded PRNG, so **a single run is not a fairness
+proof** — the statistical claim is what the harness exists to make
+off-chain from event streams. No counters are persisted on-chain for this
+(avoided unbounded state growth by design): measurement lives in events +
+tests only.
 
 ### InvoiceFunded
 
