@@ -12,6 +12,11 @@ To regenerate: `cd sdk && git-cliff --config .cliff.toml`
 
 ## [Unreleased]
 
+### Added
+- Testnet smoke tests for `cancelInvoice`, `transferInvoice`, `transferLPPosition`, `submitInvoicesBatch`, `disputeInvoice`
+  and `enrollInsurancePool` that assert confirmed on-chain state, plus a registry and offline guard mapping every
+  public mutation to a smoke test or a documented deferral. See `docs/sdk-mutation-smoke-coverage.md`.
+
 ### Fixed
 - `subscribe()` reconnection: back-off now resets only when a reconnected stream delivers a message (it was reset as soon
   as `stream()` returned, so it never grew past 500 ms); callbacks from a retired stream are ignored, so a late error can no
