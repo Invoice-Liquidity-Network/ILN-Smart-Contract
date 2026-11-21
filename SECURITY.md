@@ -16,7 +16,7 @@ Please do not disclose suspected vulnerabilities publicly before maintainers hav
    If that page returns `404`, or the "Report a vulnerability" button is absent, private vulnerability reporting is not enabled on this repository yet — see [Enabling Private Vulnerability Reporting (Owner Only)](#enabling-private-vulnerability-reporting-owner-only).
 2. **Security email — currently unavailable.** No ILN-owned security mailbox is reachable today; see [Contact Status](#contact-status). Do not send a report to any address marked broken there — it will bounce silently and your report will be lost.
 
-If neither channel works for you, open an ordinary issue whose **title and body contain no detail about the finding at all** (for example: "Security report — please advise on a private channel") and ask a maintainer to point you at a working one. Never describe the vulnerability, the affected function, or the affected contract in anything public.
+If neither channel works for you, open the **[Private security channel request](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/new?template=security-private-channel.md)** issue. It is pre-filled so that it contains no detail about the finding. Fill in only your GitHub username. A maintainer will open a private draft advisory and add you to it (see [Opening a private channel for a reporter](#opening-a-private-channel-for-a-reporter-maintainers)). Never describe the vulnerability, the affected function, or the affected contract in anything public.
 
 ### What to include
 
@@ -40,9 +40,9 @@ The channel table below records what a contributor has actually checked, so that
 
 | Channel | Status | Verification note |
 |---------|--------|-------------------|
-| `https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new` | Correct URL, needs owner action | The URL is well-formed and this repository's advisory list is publicly reachable. What is missing is the ability to file one: a researcher signed in with a non-collaborator account reported a `404` on that page, which is what GitHub serves while private vulnerability reporting is disabled. An anonymous request is redirected to the sign-in page and therefore proves nothing — test it while logged in with an account that is not a collaborator. See the owner-only section below. |
+| `https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new` | Correct URL, needs owner action | The URL is well-formed and this repository's advisory list is publicly reachable. What is missing is the ability to file one: two independent researchers signed in with non-collaborator accounts reported a `404` on that page (#1139, #1152), which is what GitHub serves while private vulnerability reporting is disabled. Until an owner enables it, maintainers can still open a private channel per report: see [Opening a private channel for a reporter](#opening-a-private-channel-for-a-reporter-maintainers). An anonymous request is redirected to the sign-in page and therefore proves nothing — test it while logged in with an account that is not a collaborator. See the owner-only section below. |
 | `security@invoice-liquidity-network.local` | **Broken — do not use** | Published in the previous revision of this file. `.local` is reserved for multicast DNS and is never resolved by public DNS, so no mail server can accept mail for it. |
-| `security@invoiceliquidity.network` | **Broken — do not use** | Reported unreachable by a researcher. `invoiceliquidity.network` has no DNS records at all (`NXDOMAIN`, and therefore no `MX`), so mail to it cannot be routed. |
+| `security@invoiceliquidity.network` | **Broken — do not use** | Mail bounced for a researcher (#1152). `invoiceliquidity.network` has no DNS records at all (`NXDOMAIN`, and therefore no `MX`), so mail to it cannot be routed. |
 | `security@drips.network` | **Unconfirmed — owner must confirm or disown** | Previously published in [docs/upgrade-guide.md](docs/upgrade-guide.md), next to a link to the `drips-network` organization, which does not host this repository (`404`). The domain does resolve with mail exchangers, but no maintainer has said that ILN's security team reads that mailbox, so it must not be used for disclosures until they do. This revision points that document at this policy instead. |
 
 An owner should add one verified, ILN-owned security mailbox to this table (and to [docs/security.md](docs/security.md)) once mail delivery for it has been tested end to end. This document deliberately does not invent an address.
@@ -100,6 +100,20 @@ Rewards are funded directly from the ILN DAO Treasury multi-sig.
 Good faith security research that follows this disclosure policy will be considered authorized. We will not pursue civil or criminal action against researchers who comply with these guidelines.
 
 ----
+
+## Opening a private channel for a reporter (Maintainers)
+
+Private vulnerability reporting only controls whether an *outsider* can start an advisory. A maintainer with the repository **admin** or **security manager** role can always start one and invite the reporter, so a reporter is never stuck waiting for the owner-only switch below.
+
+When an issue asks for a private channel (for example #1139 or #1152, or one opened from the `security-private-channel` template):
+
+1. **Do not** ask for, or accept, any detail in the issue thread.
+2. Go to **Security → Advisories → New draft security advisory**. Use a placeholder title such as "Report from @<username> (pending triage)", set severity later, and save the draft.
+3. On the draft, use **Collaborators → Add** with the reporter's GitHub username. They are notified and can now write privately in the advisory and push a proof-of-concept or regression test to its temporary private fork.
+4. Reply on the issue with only: *"We've opened a private advisory and added you as a collaborator — please continue there."* Then close the issue as completed, or lock it if anyone starts discussing details.
+5. The 48-hour acknowledgment clock in [Response Commitments](#response-commitments) starts when the reporter posts in the advisory.
+
+If no maintainer with those roles is reachable within 48 hours, the reporter may ask the `@Keengfk/security-lead` team (see [MAINTAINERS.md](MAINTAINERS.md)) to escalate. They should still publish nothing.
 
 ## Enabling Private Vulnerability Reporting (Owner Only)
 

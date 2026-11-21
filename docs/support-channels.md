@@ -85,4 +85,7 @@ including the private GitHub Security Advisory channel, the
 acknowledgment window, and the embargo terms. ILN has no working security email
 at the time of writing — [Contact Status](../SECURITY.md#contact-status) records
 which addresses are broken and which one an owner still has to confirm, so do not
-mail a security address found in an older document.
+mail a security address found in an older document. If the private advisory page returns `404`, open the
+[Private security channel request](https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/issues/new?template=security-private-channel.md)
+issue. It asks only for your GitHub username, and a maintainer will add you to a
+private draft advisory.

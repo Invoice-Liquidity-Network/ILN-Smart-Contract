@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private advisory)
+    url: https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new
+    about: Preferred. If this page returns 404, use the "Private security channel request" template instead — never a public issue with details.
+  - name: Security policy
+    url: https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/blob/dev/SECURITY.md
+    about: Reporting channels, embargo, and which security contacts are verified to work.
