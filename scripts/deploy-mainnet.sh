@@ -215,6 +215,14 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   exit 0
 fi
 
+# Snapshot the previous records so verification can roll local pointers back.
+if [[ -f "${ENV_FILE}" ]]; then
+  cp -p "${ENV_FILE}" "${ENV_FILE}.previous"
+fi
+if [[ -f "${SUMMARY_FILE}" ]]; then
+  cp -p "${SUMMARY_FILE}" "${SUMMARY_FILE}.previous"
+fi
+
 cat > "${ENV_FILE}" <<EOF
 # Contract IDs for ${NETWORK} network
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")

@@ -26,6 +26,23 @@ export interface DecodedContractEvent {
   data: unknown;
 }
 
+/**
+ * Event shape emitted to live subscribers. Mirrors the WebSocket endpoint's
+ * `IndexedEvent`; kept structural so ingestion does not depend on the API
+ * layer. `id` lets the endpoint suppress duplicate replay overlap.
+ */
+export interface LiveIndexedEvent {
+  id: string;
+  transactionHash: string;
+  eventIndex: number;
+  type: string;
+  address?: string;
+  invoiceId?: number;
+  data: unknown;
+  ledger: number;
+  timestamp: number;
+}
+
 export interface EventListenerOptions {
   repository: EventRepository;
   horizonUrl: string;
@@ -287,6 +304,21 @@ export class EventListener {
         }
 
         this.repository.insertEvent(processed.rawEvent);
+
+        if (this.onEvent) {
+          const address = firstString(payload.address, payload.funder, payload.lp, payload.payer);
+          this.onEvent({
+            id: `${record.hash}:${index}`,
+            transactionHash: record.hash,
+            eventIndex: index,
+            type: processed.rawEvent.contract_event_type ?? processed.rawEvent.event_type,
+            ...(address !== undefined ? { address } : {}),
+            ...(invoiceId !== null ? { invoiceId } : {}),
+            data: payload,
+            ledger: record.ledger,
+            timestamp: processed.rawEvent.timestamp,
+          });
+        }
 
         this.logger.info(
           `processed ${processed.rawEvent.contract_event_type ?? processed.rawEvent.event_type} at ledger ${processed.rawEvent.ledger} (tx ${record.hash})`
@@ -704,6 +736,13 @@ function coerceString(value: unknown, fallback = ''): string {
   }
 
   return fallback;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
 }
 
 function coerceNullableString(value: unknown): string | null {
