@@ -86,7 +86,13 @@ The restore script:
 1. Resolves the requested manifest and verifies the archive's **SHA-256** before touching disk.
 2. Decompresses to a temporary file and runs SQLite `PRAGMA integrity_check`.
 3. Cross-checks every table's row count against the backup manifest.
-4. Atomically renames the verified file into the target path (refuses to clobber an existing target unless `--force-overwrite`).
+4. Checks the snapshot against the schema this indexer version expects (missing tables or columns, foreign-key
+   violations, non-numeric or negative amounts and counters). A snapshot with any such problem is **refused before
+   anything is installed**, and an existing target is left untouched. `--allow-incompatible` overrides this.
+5. Atomically renames the verified file into the target path (refuses to clobber an existing target unless `--force-overwrite`).
+
+On any failure the temporary restore file is removed. See
+[indexer-migration-safety.md](indexer-migration-safety.md) for the full failure matrix.
 
 ### 3.2 Post-restore API verification
 

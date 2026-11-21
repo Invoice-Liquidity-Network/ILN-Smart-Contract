@@ -79,56 +79,71 @@ export async function createBackup(options: BackupOptions = {}): Promise<BackupM
   const gzTarget = path.join(backupDir, `indexer-backup-${stamp}.db.gz`);
   const manifestPath = `${gzTarget}.json`;
 
-  // Online backup API: produces a transactionally consistent snapshot even
-  // while the live indexer holds write transactions on the source database.
-  const sourceDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+  // Any failure below must not leave a half-written snapshot, archive or manifest behind.
+  let manifest: BackupManifest;
   try {
-    await sourceDb.backup(tmpSnapshot);
-  } finally {
-    sourceDb.close();
-  }
-
-  const snapshotDb = new Database(tmpSnapshot, { readonly: true });
-  let tableCounts: Record<string, number>;
-  let lastLedger: number | null;
-  let lastCursor: string | null;
-  try {
-    const counts = snapshotDb
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-      )
-      .all() as Array<{ name: string }>;
-    tableCounts = {};
-    for (const { name } of counts) {
-      tableCounts[name] = (snapshotDb.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get() as { n: number }).n;
+    // Online backup API: produces a transactionally consistent snapshot even
+    // while the live indexer holds write transactions on the source database.
+    const sourceDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      await sourceDb.backup(tmpSnapshot);
+    } finally {
+      sourceDb.close();
     }
-    const ledgerRow = snapshotDb
-      .prepare(`SELECT state_value FROM indexer_state WHERE state_key = 'last_processed_ledger'`)
-      .get() as { state_value: string } | undefined;
-    lastLedger = ledgerRow ? Number(ledgerRow.state_value) : null;
-    const cursorRow = snapshotDb
-      .prepare(`SELECT state_value FROM indexer_state WHERE state_key = 'last_processed_cursor'`)
-      .get() as { state_value: string } | undefined;
-    lastCursor = cursorRow ? cursorRow.state_value : null;
-  } finally {
-    snapshotDb.close();
+
+    const snapshotDb = new Database(tmpSnapshot, { readonly: true });
+    let tableCounts: Record<string, number>;
+    let lastLedger: number | null;
+    let lastCursor: string | null;
+    try {
+      const counts = snapshotDb
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+        )
+        .all() as Array<{ name: string }>;
+      tableCounts = {};
+      for (const { name } of counts) {
+        tableCounts[name] = (snapshotDb.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get() as { n: number }).n;
+      }
+      // A database from before `indexer_state` existed (or any non-indexer
+      // SQLite file) has no checkpoint table: record "unknown" rather than
+      // failing the whole backup on a missing table.
+      const readState = (key: string): string | null =>
+        'indexer_state' in tableCounts
+          ? ((
+              snapshotDb
+                .prepare(`SELECT state_value FROM indexer_state WHERE state_key = ?`)
+                .get(key) as { state_value: string } | undefined
+            )?.state_value ?? null)
+          : null;
+      const ledgerValue = readState('last_processed_ledger');
+      lastLedger = ledgerValue !== null ? Number(ledgerValue) : null;
+      lastCursor = readState('last_processed_cursor');
+    } finally {
+      snapshotDb.close();
+    }
+
+    await gzipFile(tmpSnapshot, gzTarget);
+    await fs.unlink(tmpSnapshot);
+
+    manifest = {
+      file: path.basename(gzTarget),
+      sha256: await sha256File(gzTarget),
+      sizeBytes: (await fs.stat(gzTarget)).size,
+      created_at: createdAt.toISOString(),
+      source_db_path: path.resolve(dbPath),
+      last_processed_ledger: lastLedger,
+      last_processed_cursor: lastCursor,
+      table_counts: tableCounts,
+    };
+
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  } catch (error) {
+    await fs.rm(tmpSnapshot, { force: true });
+    await fs.rm(gzTarget, { force: true });
+    await fs.rm(manifestPath, { force: true });
+    throw error;
   }
-
-  await gzipFile(tmpSnapshot, gzTarget);
-  await fs.unlink(tmpSnapshot);
-
-  const manifest: BackupManifest = {
-    file: path.basename(gzTarget),
-    sha256: await sha256File(gzTarget),
-    sizeBytes: (await fs.stat(gzTarget)).size,
-    created_at: createdAt.toISOString(),
-    source_db_path: path.resolve(dbPath),
-    last_processed_ledger: lastLedger,
-    last_processed_cursor: lastCursor,
-    table_counts: tableCounts,
-  };
-
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
   return manifest;
 }

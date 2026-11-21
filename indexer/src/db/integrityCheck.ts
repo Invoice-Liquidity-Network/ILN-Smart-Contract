@@ -154,10 +154,19 @@ export function checkSchemaIntegrity(db: Database.Database): IntegrityViolation[
   const hasColumn = (table: string, column: string) => tableColumns(db, table).has(column);
 
   // 1. Foreign keys, independent of whether PRAGMA foreign_keys was ON when the rows were written.
-  const fkRows = db.prepare('PRAGMA foreign_key_check').all() as Array<{
-    table: string;
-    parent: string;
-  }>;
+  let fkRows: Array<{ table: string; parent: string }> = [];
+  try {
+    fkRows = db.prepare('PRAGMA foreign_key_check').all() as Array<{ table: string; parent: string }>;
+  } catch (error) {
+    // A foreign key whose parent table is missing makes the pragma itself fail.
+    violations.push({
+      check: 'foreign_key_check_failed',
+      severity: 'error',
+      table: '*',
+      count: 1,
+      detail: `PRAGMA foreign_key_check could not run: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
   const fkByTable = new Map<string, { parent: string; count: number }>();
   for (const row of fkRows) {
     const entry = fkByTable.get(row.table) ?? { parent: row.parent, count: 0 };
