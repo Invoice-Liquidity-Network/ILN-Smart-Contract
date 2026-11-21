@@ -211,4 +211,7 @@ pub enum ContractError {
     /// monolithic `Invoice` key, so rolling the WASM back would silently skip
     /// it. Repair the orphaned entries before a rollback is safe.
     RollbackUnsafe = 83,
+    /// Issue #1160: a protocol fee rate (flat, tier, or multisig proposal)
+    /// exceeds `MAX_PROTOCOL_FEE_BPS`.
+    InvalidFeeRate = 84,
 }

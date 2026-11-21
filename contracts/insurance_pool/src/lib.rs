@@ -24,6 +24,8 @@ mod claim_prioritization;
 mod insurance_interface;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tests_custody;
 
 pub use insurance_interface::{
     InsurancePoolInterface, InsurancePoolInterfaceClient, INSURANCE_INTERFACE_VERSION,

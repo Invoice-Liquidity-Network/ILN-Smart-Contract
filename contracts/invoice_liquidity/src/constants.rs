@@ -1,4 +1,10 @@
 pub const MAX_DISCOUNT_RATE: u32 = 5000;
+/// Issue #1160: upper bound on any configured protocol fee rate (flat, tiered
+/// or multisig). `mark_paid` pays `amount * rate / 10_000` to the fee
+/// recipient out of the contract's pooled balance, so a rate above 100% would
+/// pay out more than the settling invoice brought in. This is the accounting
+/// ceiling, not a policy target; governance may choose a far lower rate.
+pub const MAX_PROTOCOL_FEE_BPS: u32 = 10_000;
 pub const DEFAULT_PAYER_SCORE: u32 = 50;
 pub const DEFAULT_LP_SCORE: u32 = 50;
 pub const TOP_PAYERS_CAPACITY: u32 = 50;

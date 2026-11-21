@@ -1115,3 +1115,5 @@ pub fn accrue_settlement(
 
 #[cfg(test)]
 mod tests_distribution_proptest;
+#[cfg(test)]
+mod tests_custody;

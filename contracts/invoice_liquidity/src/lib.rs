@@ -23,7 +23,8 @@ use access::{check_rate_limit, lock_reentrancy, unlock_reentrancy};
 pub mod constants;
 use constants::{
     ADMIN_CHANGE_COOLDOWN_LEDGERS, DEFAULT_RATE_LIMIT_LEDGERS, ECONOMIC_PARAM_COOLDOWN_LEDGERS,
-    MAX_FEE_TIERS, QUEUE_DELAY_LEDGERS, UPGRADE_COOLDOWN_LEDGERS,
+    MAX_DISCOUNT_RATE, MAX_FEE_TIERS, MAX_PROTOCOL_FEE_BPS, QUEUE_DELAY_LEDGERS,
+    UPGRADE_COOLDOWN_LEDGERS,
 };
 pub mod oracle_interface;
 pub mod oracle_registry;
@@ -283,6 +284,7 @@ pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
 /// Access: Admin only
 pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
+        validate_fee_rate(rate)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_rate");
 
@@ -325,6 +327,7 @@ pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
 /// Access: Admin only
 pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
+        validate_max_discount(rate)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_max_discount");
 
@@ -1330,6 +1333,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         proposer: Address,
         rate: u32,
     ) -> Result<u64, ContractError> {
+        validate_fee_rate(rate)?;
         multisig::propose(&env, &proposer, multisig::AdminAction::SetFeeRate(rate))
     }
 
@@ -1340,6 +1344,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         proposer: Address,
         rate: u32,
     ) -> Result<u64, ContractError> {
+        validate_max_discount(rate)?;
         multisig::propose(&env, &proposer, multisig::AdminAction::SetMaxDiscount(rate))
     }
 
@@ -1472,6 +1477,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                 );
             }
             multisig::AdminAction::SetFeeRate(rate) => {
+                validate_fee_rate(rate)?;
                 let old_rate: u32 = env
                     .storage()
                     .instance()
@@ -1494,6 +1500,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                 );
             }
             multisig::AdminAction::SetMaxDiscount(rate) => {
+                validate_max_discount(rate)?;
                 let old_rate: u32 = env
                     .storage()
                     .instance()
@@ -1760,6 +1767,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         // `require_admin` so authorization still takes precedence.
         if tiers.len() > MAX_FEE_TIERS {
             return Err(ContractError::TooManyFeeTiers);
+        }
+        for (_, rate) in tiers.iter() {
+            validate_fee_rate(rate)?;
         }
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_tiers");
@@ -4391,6 +4401,25 @@ fn token_client<'a>(env: &'a Env, token: &Address) -> TokenClient<'a> {
     TokenClient::new(env, token)
 }
 
+/// Issue #1160: every fee-setting path (direct admin, governance via
+/// `update_fee_rate` / `update_fee_tiers`, multisig) shares this bound.
+fn validate_fee_rate(rate: u32) -> Result<(), ContractError> {
+    if rate > MAX_PROTOCOL_FEE_BPS {
+        return Err(ContractError::InvalidFeeRate);
+    }
+    Ok(())
+}
+
+/// Issue #1160: the stored maximum discount gates `update_invoice` and
+/// batch submission, so it must not exceed the hard cap `submit_invoice`
+/// already enforces; a discount above 100% makes funding cost negative.
+fn validate_max_discount(rate: u32) -> Result<(), ContractError> {
+    if rate > MAX_DISCOUNT_RATE {
+        return Err(ContractError::InvalidDiscountRate);
+    }
+    Ok(())
+}
+
 fn discount_rate_as_i128(rate: u32) -> i128 {
     rate as i128
 }
@@ -4652,3 +4681,7 @@ mod tests_token_safety;
 mod tests_max_depth_extension;
 // Issue #1027: Focused tests for join-order tie-breaking replacement
 mod tests_tie_breaking;
+// Issue #1160: custody, payout and refund accounting regressions
+mod tests_custody_accounting;
+// Issue #1161: privileged-control (authority matrix) regression suite
+mod tests_authority_matrix;
