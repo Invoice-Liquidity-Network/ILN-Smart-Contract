@@ -2,7 +2,9 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol};
 use soroban_sdk::testutils::storage::Persistent as _;
 
 use crate::config::Config;
-use crate::invoice::{AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, ReputationScore};
+use crate::invoice::{
+    AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
+};
 use crate::multisig::AdminAction;
 
 #[contracttype]
@@ -55,9 +57,6 @@ pub enum DataKey {
     /// Issue #645: ring-buffer slot for the admin action audit log, indexed
     /// by `seq % ADMIN_ACTION_LOG_CAPACITY`.
     AdminActionLog(u32),
-    /// Issue #645: monotonically increasing sequence counter for the admin
-    /// action audit log (instance storage).
-    AdminActionCount,
 
     // Stats (Persistent)
     TotalInvoices,

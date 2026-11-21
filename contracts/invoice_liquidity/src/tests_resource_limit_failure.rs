@@ -54,7 +54,7 @@ const DUE_DATE_OFFSET: u64 = 86_400;
 /// Deliberately, obviously too small for any real contract call to fit —
 /// used wherever a test just needs *some* trap to fire, without caring
 /// about the exact boundary (see the dedicated boundary test for that).
-const HOSTILE_INSTRUCTION_LIMIT: u64 = 1_000;
+const HOSTILE_INSTRUCTION_LIMIT: i64 = 1_000;
 
 struct LimitTestEnv {
     env: Env,
@@ -257,7 +257,7 @@ fn test_resource_limit_boundary_one_instruction_short_fails_exact_amount_succeed
 
     let too_tight_env = setup_limit_env();
     let mut too_tight = InvocationResourceLimits::mainnet();
-    too_tight.instructions = exact_cost - 1;
+    too_tight.instructions = exact_cost as i64 - 1;
     too_tight_env
         .env
         .cost_estimate()
@@ -273,7 +273,7 @@ fn test_resource_limit_boundary_one_instruction_short_fails_exact_amount_succeed
 
     let exact_env = setup_limit_env();
     let mut exact = InvocationResourceLimits::mainnet();
-    exact.instructions = exact_cost;
+    exact.instructions = exact_cost as i64;
     exact_env.env.cost_estimate().enforce_resource_limits(exact);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

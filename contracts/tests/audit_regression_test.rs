@@ -19,7 +19,7 @@ use invoice_liquidity::{
     ContractError, DataKey, InvoiceLiquidityContract, InvoiceLiquidityContractClient, ReferralCode,
 };
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger},
+    testutils::{storage::Persistent as _, Address as _, Events as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };

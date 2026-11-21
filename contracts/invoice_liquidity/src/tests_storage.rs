@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::testutils::storage::Persistent as _;
 use crate::access::ADMIN_ACTION_LOG_CAPACITY;
 use crate::config::Config;
 use crate::constants::{
@@ -556,7 +557,8 @@ fn test_1057_head_insert_lands_at_index_zero_and_displaces_tail() {
     t.contract.join_fund_queue(&joiner, &id);
 
     let q = queue_entries(&t, id);
-    assert_eq!(q.len(), MAX_FUND_QUEUE_LEN, "a displacing join keeps the bound");
+    assert_eq!(
+        q.len() as u32, MAX_FUND_QUEUE_LEN, "a displacing join keeps the bound");
     assert_eq!(q[0].0, joiner, "a top score must land at the head");
     assert_eq!(q[0].1, 101);
     assert_eq!(
@@ -588,7 +590,8 @@ fn test_1057_middle_score_insert_lands_in_sorted_position() {
     t.contract.join_fund_queue(&joiner, &id);
 
     let q = queue_entries(&t, id);
-    assert_eq!(q.len(), MAX_FUND_QUEUE_LEN);
+    assert_eq!(
+        q.len() as u32, MAX_FUND_QUEUE_LEN);
     assert_eq!(q[24].1, 52, "the preceding entry keeps the next-higher score");
     assert_eq!(q[25].0, joiner, "score 51 must land at index 25");
     assert_eq!(q[25].1, 51);
@@ -617,7 +620,7 @@ fn test_1057_admission_boundary_tail_plus_one_is_admitted() {
 
     let q = queue_entries(&t, id);
     assert_eq!(
-        q.len(),
+        q.len() as u32,
         MAX_FUND_QUEUE_LEN,
         "score == tail + 1 must be admitted, keeping the bound"
     );
@@ -667,7 +670,8 @@ fn test_1057_displacing_head_insert_requires_lp_authorization() {
 
     // A rejected displacing join must not displace, evict, or reorder anything.
     let q = queue_entries(&t, id);
-    assert_eq!(q.len(), MAX_FUND_QUEUE_LEN);
+    assert_eq!(
+        q.len() as u32, MAX_FUND_QUEUE_LEN);
     assert_eq!(
         q[0].0, original[0],
         "the head must be untouched by a rejected join"
@@ -1136,12 +1140,12 @@ fn funded_invoice_with_fresh_payer(t: &TestEnv) -> (u64, Address) {
 /// must be read immediately after the settlement call, before any other
 /// contract invocation resets `env.events().all()`.
 fn last_paid_on_time(t: &TestEnv) -> bool {
-    let raw = t
+    let contract_events = t
         .env
         .events()
         .all()
-        .filter_by_contract(&t.contract.address)
-        .events();
+        .filter_by_contract(&t.contract.address);
+    let raw = contract_events.events();
     let last = raw.last().expect("mark_paid must emit a `paid` event");
     let body = match &last.body {
         xdr::ContractEventBody::V0(body) => body,
@@ -1172,7 +1176,7 @@ fn test_settle_batch_same_ledger_is_isolated() {
     // Per-invoice isolation: each invoice settled exactly once, and each fresh
     // payer's reputation reflects exactly its own settlement.
     for (invoice_id, payer) in invoices.iter() {
-        let invoice = t.contract.get_invoice(&invoice_id).unwrap();
+        let invoice = t.contract.get_invoice(&invoice_id);
         assert_eq!(
             invoice.status,
             InvoiceStatus::Paid,
@@ -1217,7 +1221,7 @@ fn test_settle_batch_across_ledger_boundary_stays_consistent() {
 
     for (invoice_id, _payer) in invoices.iter() {
         assert_eq!(
-            t.contract.get_invoice(&invoice_id).unwrap().status,
+            t.contract.get_invoice(&invoice_id).status,
             InvoiceStatus::Paid
         );
     }
@@ -1238,7 +1242,7 @@ fn test_partial_then_full_settlement_interleaved() {
     // completes — the interleaving must not confuse either invoice's tally.
     t.contract.mark_paid(&id_a, &half);
     assert_eq!(
-        t.contract.get_invoice(&id_a).unwrap().status,
+        t.contract.get_invoice(&id_a).status,
         InvoiceStatus::Funded,
         "a partial payment must not mark the invoice Paid"
     );
@@ -1247,11 +1251,11 @@ fn test_partial_then_full_settlement_interleaved() {
     t.contract.mark_paid(&id_a, &(INVOICE_AMOUNT - half));
 
     assert_eq!(
-        t.contract.get_invoice(&id_a).unwrap().status,
+        t.contract.get_invoice(&id_a).status,
         InvoiceStatus::Paid
     );
     assert_eq!(
-        t.contract.get_invoice(&id_b).unwrap().status,
+        t.contract.get_invoice(&id_b).status,
         InvoiceStatus::Paid
     );
     assert_eq!(
@@ -1280,7 +1284,7 @@ fn test_rejected_double_settlement_does_not_block_others() {
     // would surface here as a failure.
     t.contract.mark_paid(&id_b, &INVOICE_AMOUNT);
     assert_eq!(
-        t.contract.get_invoice(&id_b).unwrap().status,
+        t.contract.get_invoice(&id_b).status,
         InvoiceStatus::Paid
     );
     assert_eq!(t.contract.get_contract_stats().total_paid, 2);
@@ -1294,7 +1298,7 @@ fn test_settle_pending_invoice_is_rejected() {
     let res = t.contract.try_mark_paid(&id, &INVOICE_AMOUNT);
     assert_eq!(res, Err(Ok(ContractError::NotFunded)));
     assert_eq!(
-        t.contract.get_invoice(&id).unwrap().status,
+        t.contract.get_invoice(&id).status,
         InvoiceStatus::Pending
     );
 }
@@ -1311,7 +1315,7 @@ fn test_overpayment_rejected_and_invoice_stays_settleable() {
     // still settleable for exactly its face value.
     t.contract.mark_paid(&id, &INVOICE_AMOUNT);
     assert_eq!(
-        t.contract.get_invoice(&id).unwrap().status,
+        t.contract.get_invoice(&id).status,
         InvoiceStatus::Paid
     );
 }
@@ -1335,7 +1339,7 @@ fn test_mark_paid_requires_payer_authorization() {
     // The unauthorized attempt must not have settled the invoice (reading a
     // view needs no authorization).
     assert_eq!(
-        t.contract.get_invoice(&id).unwrap().status,
+        t.contract.get_invoice(&id).status,
         InvoiceStatus::Funded
     );
 }
@@ -1347,7 +1351,7 @@ fn test_paid_on_time_flips_at_due_date_boundary() {
     let t = setup();
     let (id_on_time, _payer_on_time) = funded_invoice_with_fresh_payer(&t);
     let (id_late, _payer_late) = funded_invoice_with_fresh_payer(&t);
-    let due_date = u64::from(t.contract.get_invoice(&id_on_time).unwrap().due_date);
+    let due_date = u64::from(t.contract.get_invoice(&id_on_time).due_date);
 
     // Exactly at the due date: `timestamp <= due_date` => on time.
     let mut ledger = t.env.ledger().get();

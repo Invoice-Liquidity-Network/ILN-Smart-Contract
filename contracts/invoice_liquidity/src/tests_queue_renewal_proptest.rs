@@ -30,6 +30,7 @@
 #![cfg(test)]
 
 use super::*;
+use soroban_sdk::testutils::storage::Persistent as _;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},

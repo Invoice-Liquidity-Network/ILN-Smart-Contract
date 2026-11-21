@@ -9,6 +9,7 @@
 //! 4. Oracle health recording (staleness) after a query.
 
 use super::*;
+use soroban_sdk::testutils::Events as _;
 use crate::oracle_registry::{FeederHealth, OracleFeedType};
 use crate::test::setup;
 use soroban_sdk::{
@@ -1405,7 +1406,7 @@ fn test_identity_quorum_ledger_boundary_excludes_stale_feeder() {
     // after the rate-limit advances that registration performs.
     let a = deploy_mock_oracle(&t, true, 0);
     let b = deploy_mock_oracle(&t, true, 0);
-    add_identity_oracles(&t, &[a, b]);
+    add_identity_oracles(&t, &[a.clone(), b.clone()]);
     t.contract.set_identity_quorum(&2);
 
     let current = t.env.ledger().sequence();
@@ -2354,7 +2355,7 @@ fn test_1054_compromised_majority_requires_governance_removal() {
     let rogue_a = deploy_mock_oracle(&t, true, seq);
     let rogue_b = deploy_mock_oracle(&t, true, seq);
     let honest = deploy_mock_oracle(&t, false, seq);
-    add_identity_oracles(&t, &[rogue_a, rogue_b, honest]);
+    add_identity_oracles(&t, &[rogue_a.clone(), rogue_b, honest]);
     t.contract.set_identity_quorum(&2);
 
     // The gate alone cannot stop a compromised majority: 2 of 3 agree.
@@ -2645,9 +2646,9 @@ fn test_1055_status_view_unconfigured_feed_is_empty() {
         .get_oracle_status(&OracleFeedType::Identity, &t.token.address);
 
     assert_eq!(status.resolved_oracle, None);
-    assert!(status.health.is_none(), "never queried → no health recorded");
+    assert!(status.health.is_empty(), "never queried → no health recorded");
     assert!(!status.circuit_tripped);
-    assert!(status.recovery.is_none());
+    assert!(status.recovery.is_empty());
     assert!(status.identity_oracles.is_empty());
     assert_eq!(
         status.identity_quorum,
@@ -2670,7 +2671,7 @@ fn test_1055_status_view_reports_recorded_health_after_query() {
         .contract
         .get_oracle_status(&OracleFeedType::Identity, &t.token.address);
     assert_eq!(before.resolved_oracle, Some(oracle.clone()));
-    assert!(before.health.is_none());
+    assert!(before.health.is_empty());
 
     t.contract
         .check_oracle_health(&OracleFeedType::Identity, &t.token.address, &t.payer);
@@ -2678,11 +2679,11 @@ fn test_1055_status_view_reports_recorded_health_after_query() {
     let after = t
         .contract
         .get_oracle_status(&OracleFeedType::Identity, &t.token.address);
-    let health = after.health.expect("health must be readable after a query");
+    let health = after.health.get(0).expect("health must be readable after a query");
     assert_eq!(health.oracle, oracle);
     assert!(!health.is_stale);
     assert!(!after.circuit_tripped);
-    assert!(after.recovery.is_none());
+    assert!(after.recovery.is_empty());
 }
 
 #[test]
@@ -2705,6 +2706,7 @@ fn test_1055_status_view_exposes_open_circuit_and_recovery_progress() {
     // can see *which* oracle is on the hook to recover it without a second call.
     let recovery = status
         .recovery
+        .get(0)
         .expect("a tripped breaker pins its tripped oracle for recovery");
     assert_eq!(recovery.tripped_oracle, stale_oracle);
     assert_eq!(

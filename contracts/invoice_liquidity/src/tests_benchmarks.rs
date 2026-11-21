@@ -162,6 +162,62 @@ fn measure<F: FnOnce()>(env: &Env, name: &str, action: F) -> (u64, u64) {
     (cpu, mem)
 }
 
+/// Issue #1068: fraction of an absolute ceiling at which a measurement
+/// counts as "near the limit" — still passing, but close enough to warrant
+/// attention before it actually regresses past the hard ceiling. Mirrors
+/// the early-warning idea behind Issue #1015's fund-queue TTL margins:
+/// the earlier drift is visible, the more of #1066's ~4x (CPU) / ~1000x
+/// (memory) headroom is left to react before a measurement actually fails.
+const NEAR_LIMIT_WARNING_RATIO: f64 = 0.70;
+
+/// `max * NEAR_LIMIT_WARNING_RATIO`, as an integer. Kept as its own
+/// function (rather than inlined) so the boundary tests below can assert
+/// on it directly instead of recomputing the cast/rounding by hand.
+fn near_limit_warning_threshold(max: u64) -> u64 {
+    ((max as f64) * NEAR_LIMIT_WARNING_RATIO) as u64
+}
+
+/// Assert `(cpu, mem)` is within the absolute resource ceilings, and warn
+/// (without failing) when either is already past the near-limit threshold.
+///
+/// Pure comparison/reporting logic, deliberately separated from the actual
+/// measurement so it can be unit-tested at its exact boundaries (see the
+/// `test_resource_budget_boundary_*` / `test_near_limit_warning_*` tests
+/// below) independent of how many instructions any given contract call
+/// happens to cost on a given toolchain/day.
+///
+/// The warning is intentionally *not* a `ContractError` or an on-chain
+/// event: Soroban gives deployed contract code no runtime-queryable way to
+/// introspect its own CPU/memory usage so far (`cost_estimate()`/`budget()`
+/// are `testutils`-only, host-side instrumentation — there is no mainnet
+/// equivalent a live contract could call to check "how close am I to the
+/// limit?"). This kind of monitoring can only happen where the resources
+/// actually *are* measurable: here, in the test/CI harness, immediately
+/// after each invocation.
+fn assert_within_resource_budget(name: &str, cpu: u64, mem: u64, max_cpu: u64, max_mem: u64) {
+    assert!(
+        cpu <= max_cpu,
+        "{name} exceeded the absolute CPU instruction budget: {cpu} > {max_cpu}"
+    );
+    assert!(
+        mem <= max_mem,
+        "{name} exceeded the absolute memory budget: {mem} > {max_mem}"
+    );
+
+    let cpu_warn = near_limit_warning_threshold(max_cpu);
+    let mem_warn = near_limit_warning_threshold(max_mem);
+    if cpu > cpu_warn {
+        std::println!(
+            "NEAR_LIMIT_WARNING {name} resource=cpu measured={cpu} warn_threshold={cpu_warn} max={max_cpu}"
+        );
+    }
+    if mem > mem_warn {
+        std::println!(
+            "NEAR_LIMIT_WARNING {name} resource=mem measured={mem} warn_threshold={mem_warn} max={max_mem}"
+        );
+    }
+}
+
 fn submit_bench_invoice(bench: &BaseBenchEnv) -> u64 {
     let due_date = bench.env.ledger().timestamp() + 86_400;
     bench.contract.submit_invoice(
@@ -178,8 +234,9 @@ fn submit_bench_invoice(bench: &BaseBenchEnv) -> u64 {
 #[test]
 fn benchmark_submit_invoice() {
     let bench = setup_benchmark_env();
+    let due_date = bench.env.ledger().timestamp() + BENCH_DUE_DATE_OFFSET;
 
-    measure(&bench.env, "submit_invoice", || {
+    let (cpu, mem) = measure(&bench.env, "submit_invoice", || {
         bench.contract.submit_invoice(
             &bench.freelancer,
             &bench.payer,
@@ -311,9 +368,10 @@ fn benchmark_extension_cost_at_maximum_depth() {
 
 #[test]
 fn benchmark_all_functions_summary() {
-    let mut results: std::vec::Vec<(&str, (u64, u64))> = std::vec::Vec::new();
+    let mut results: std::vec::Vec<(u64, u64)> = std::vec::Vec::new();
 
     let bench = setup_benchmark_env();
+    let due_date = bench.env.ledger().timestamp() + BENCH_DUE_DATE_OFFSET;
 
     results.push(measure(&bench.env, "submit_invoice", || {
         bench.contract.submit_invoice(
@@ -488,7 +546,7 @@ fn test_near_limit_warning_does_not_fire_for_the_current_measured_baselines() {
 // Tests for get_contract_stats with multiple tokens (Issue #485)
 // ================================================================
 
-use soroban_sdk::{contract, contractimpl, token::Client as TokenClient};
+use soroban_sdk::token::Client as TokenClient;
 
 #[contract]
 struct MockPriceOracle;
@@ -553,7 +611,7 @@ fn setup_multi_token() -> MultiTokenBenchEnv {
         env,
         contract,
         usdc: usdc.address(),
-        usdc_client,
+        usdc_client: usdc_token,
         xlm: xlm.address(),
         eurc: eurc.address(),
         freelancer,
@@ -1778,7 +1836,7 @@ fn benchmark_fund_invoice_oracle_freshness_gate() {
     bench.env.ledger().set(ledger);
 
     let max_age: u64 = 10;
-    bench.contract.set_max_oracle_age(&max_age).unwrap();
+    bench.contract.set_max_oracle_age(&max_age);
 
     let id = submit_invoice_bench(&bench);
 
@@ -1788,7 +1846,7 @@ fn benchmark_fund_invoice_oracle_freshness_gate() {
 
     let oracle_id = bench.env.register_contract(None, BenchTimestampedOracle);
     BenchTimestampedOracleClient::new(&bench.env, &oracle_id).set_timestamp(&oracle_ts);
-    bench.contract.set_price_oracle(&oracle_id).unwrap();
+    bench.contract.set_price_oracle(&oracle_id);
 
     let (cpu, mem) = measure(&bench.env, "fund_invoice_oracle_gate_fresh", || {
         bench
@@ -1834,7 +1892,7 @@ fn benchmark_fund_invoice_oracle_timestamp_monotonicity_gate() {
 
     let oracle_id = bench.env.register_contract(None, BenchTimestampedOracle);
     BenchTimestampedOracleClient::new(&bench.env, &oracle_id).set_timestamp(&oracle_ts);
-    bench.contract.set_price_oracle(&oracle_id).unwrap();
+    bench.contract.set_price_oracle(&oracle_id);
 
     // Seed the monotonicity baseline so the predicate reads and compares a
     // stored snapshot rather than short-circuiting.
@@ -1892,7 +1950,7 @@ fn benchmark_fund_invoice_oracle_duplicate_frequency_gate() {
 
     let oracle_id = bench.env.register_contract(None, BenchTimestampedOracle);
     BenchTimestampedOracleClient::new(&bench.env, &oracle_id).set_timestamp(&oracle_ts);
-    bench.contract.set_price_oracle(&oracle_id).unwrap();
+    bench.contract.set_price_oracle(&oracle_id);
 
     // `MAX_CONSECUTIVE_DUPLICATE_UPDATES` identical reads leave the streak at
     // cap - 1, so the benchmarked read is accepted (not the rejection path).
@@ -2063,7 +2121,7 @@ impl BenchQuorumOracle {
 /// so back-to-back `add_identity_oracle` registrations don't trip `RateLimited`.
 fn advance_benchmark_ledger(env: &Env) {
     let mut info = env.ledger().get();
-    info.sequence_number += DEFAULT_RATE_LIMIT_LEDGERS + 30;
+    info.sequence_number += (DEFAULT_RATE_LIMIT_LEDGERS + 30) as u32;
     info.timestamp += (DEFAULT_RATE_LIMIT_LEDGERS + 30) as u64 * 5;
     env.ledger().set(info);
 }
@@ -2092,7 +2150,7 @@ fn benchmark_identity_quorum_verification_cost() {
     });
 
     // Multi-oracle quorum (#1047): three Identity feeders, all agreeing.
-    let mut oracles = [Address::generate(&bench.env); 3];
+    let mut oracles: [Address; 3] = core::array::from_fn(|_| Address::generate(&bench.env));
     for (i, oracle) in oracles.iter_mut().enumerate() {
         if i > 0 {
             advance_benchmark_ledger(&bench.env);
@@ -2161,11 +2219,11 @@ fn benchmark_oracle_circuit_auto_recovery() {
 
     // Small explicit window so the boundary ages are easy to reason about.
     let max_age: u64 = 10;
-    bench.contract.set_max_oracle_age(&max_age).unwrap();
+    bench.contract.set_max_oracle_age(&max_age);
 
     let oracle_id = bench.env.register_contract(None, BenchTimestampedOracle);
     let oracle_client = BenchTimestampedOracleClient::new(&bench.env, &oracle_id);
-    bench.contract.set_price_oracle(&oracle_id).unwrap();
+    bench.contract.set_price_oracle(&oracle_id);
 
     // Baseline: a keeper observation with the breaker *closed* — no recovery
     // bookkeeping runs, matching the pre-#1048 path exactly.
@@ -2282,7 +2340,7 @@ fn benchmark_oracle_circuit_auto_recovery() {
 fn benchmark_oracle_verification_diagnostic_events() {
     let bench = setup_benchmark_env();
     let max_age: u64 = 10;
-    bench.contract.set_max_oracle_age(&max_age).unwrap();
+    bench.contract.set_max_oracle_age(&max_age);
 
     // Baseline: fresh, verified single oracle → Verified, no failure event.
     let oracle = bench.env.register_contract(None, BenchTimestampedOracle);
@@ -2383,7 +2441,7 @@ fn benchmark_compromised_feeder_rejection_paths() {
     bench.env.ledger().set(ledger);
 
     let max_age: u64 = 10;
-    bench.contract.set_max_oracle_age(&max_age).unwrap();
+    bench.contract.set_max_oracle_age(&max_age);
 
     let mut outcome = IdentityVerificationOutcome::Verified;
 
@@ -2597,7 +2655,7 @@ fn benchmark_oracle_status_and_quorum_exposure() {
     bench.env.ledger().set(ledger);
 
     let max_age: u64 = 10;
-    bench.contract.set_max_oracle_age(&max_age).unwrap();
+    bench.contract.set_max_oracle_age(&max_age);
 
     // Row 1 — unconfigured feed: nothing registered, so the aggregate view is
     // all-empty. The floor cost of the one-call read.
@@ -2607,9 +2665,9 @@ fn benchmark_oracle_status_and_quorum_exposure() {
                 .contract
                 .get_oracle_status(&OracleFeedType::Identity, &bench.token);
             assert!(view.resolved_oracle.is_none());
-            assert!(view.health.is_none());
+            assert!(view.health.is_empty());
             assert!(!view.circuit_tripped);
-            assert!(view.recovery.is_none());
+            assert!(view.recovery.is_empty());
             assert!(view.identity_oracles.is_empty());
             assert!(view.price_sources.is_empty());
         });
@@ -2629,9 +2687,9 @@ fn benchmark_oracle_status_and_quorum_exposure() {
             .contract
             .get_oracle_status(&OracleFeedType::Identity, &bench.token);
         assert_eq!(view.resolved_oracle, Some(healthy.clone()));
-        assert!(view.health.is_some());
+        assert!(!view.health.is_empty());
         assert!(!view.circuit_tripped);
-        assert!(view.recovery.is_none());
+        assert!(view.recovery.is_empty());
     });
 
     // Row 3 — open breaker + in-progress recovery: a per-token override serving
@@ -2656,9 +2714,9 @@ fn benchmark_oracle_status_and_quorum_exposure() {
                 .contract
                 .get_oracle_status(&OracleFeedType::Identity, &stale_token);
             assert!(view.circuit_tripped);
-            assert!(view.recovery.is_some());
+            assert!(!view.recovery.is_empty());
             assert_eq!(
-                view.recovery.as_ref().unwrap().tripped_oracle,
+                view.recovery.get(0).unwrap().tripped_oracle,
                 stale_oracle
             );
         });
@@ -2681,7 +2739,7 @@ fn benchmark_oracle_status_and_quorum_exposure() {
                 .add_identity_oracle(&OracleFeedType::Identity, &id);
             feeders_added += 1;
         }
-        let name = format!("identity_quorum_health_fanout_{target}");
+        let name = std::format!("identity_quorum_health_fanout_{target}");
         let (cpu, mem) = measure(&bench.env, &name, || {
             let health = bench.contract.check_identity_quorum_health(
                 &OracleFeedType::Identity,

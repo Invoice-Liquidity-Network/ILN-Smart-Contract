@@ -52,7 +52,7 @@ use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
     DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved,
-    FundRequested,
+    FundQueueTieBroken, FundRequested, RollbackRehearsalCompleted, TokenDecimalsCorrected,
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
@@ -2547,7 +2547,8 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 tied.push_back(i);
             }
         }
-        let winner_index: u32 = if tied.len() > 1 {
+        let tied_count = tied.len();
+        let winner_index: u32 = if tied_count > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
             // version — generate as u64, then narrow (safe: tied.len() is
             // bounded by MAX_FUND_QUEUE_LEN).
@@ -2704,6 +2705,16 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             },
         );
         Ok(Some(winner))
+    }
+
+    /// Issue #1015: report the current TTL (and margin above the pre-upgrade
+    /// safety threshold) for `invoice_id`'s fund-queue-related persistent
+    /// keys, so off-chain monitors can alert on TTL drift before it causes
+    /// an upgrade rejection (Issue #1082) or a `QueueStateArchived` failure
+    /// in `resolve_fund_queue` (Issue #1013).
+    /// Access: Anyone
+    pub fn get_fund_queue_ttl_margins(env: Env, invoice_id: u64) -> FundQueueTtlMargins {
+        crate::invoice::get_fund_queue_ttl_margins(&env, invoice_id)
     }
 
     // ------------------------------------------------------------
