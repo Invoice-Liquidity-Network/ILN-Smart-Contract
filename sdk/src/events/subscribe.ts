@@ -383,7 +383,8 @@ export function matchesFilter(event: ILNEvent, filter: EventFilter): boolean {
  *
  * Handles stream disconnection with exponential back-off (500 ms → 30 s).
  * The returned `Unsubscribe` function closes the stream and cancels any
- * pending reconnection timer.
+ * pending reconnection timer. See `docs/sdk-event-reconnection.md` for the
+ * full reconnect / cursor / dedupe contract.
  *
  * @param horizon         - Horizon server instance (use `new Server(horizonUrl)`)
  * @param contractId      - Deployed invoice-liquidity contract address
@@ -411,6 +412,11 @@ export function subscribe(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closeStream: (() => void) | null = null;
   let backoffMs = INITIAL_BACKOFF_MS;
+  // Identifies the currently active stream. Callbacks from a superseded
+  // (errored / closed) stream carry an older id and are ignored, so a late
+  // `onerror` or `onmessage` can never spawn a second parallel stream or
+  // deliver events out of a stale subscription.
+  let streamGeneration = 0;
 
   let lastProcessedLedger: number | undefined = filter.fromLedger ? filter.fromLedger - 1 : undefined;
   let lastProcessedCursor: string | undefined = undefined;
@@ -435,6 +441,9 @@ export function subscribe(
   function connect(): void {
     if (stopped) return;
 
+    const generation = ++streamGeneration;
+    let receivedMessage = false;
+
     try {
       // Horizon's contractEvents() returns an EventSource-like stream.
       // The SDK builder pattern: horizon.contractEvents(contractId).stream(...)
@@ -449,7 +458,14 @@ export function subscribe(
 
       closeStream = builder.stream({
         async onmessage(raw: any) {
-          if (stopped) return;
+          if (stopped || generation !== streamGeneration) return;
+          // The connection is only considered healthy once data arrives;
+          // resetting on a bare `stream()` call would pin back-off at the
+          // initial value for a server that accepts then drops the stream.
+          if (!receivedMessage) {
+            receivedMessage = true;
+            backoffMs = INITIAL_BACKOFF_MS;
+          }
           try {
             const event = parseContractEvent(raw);
             if (!event) return;
@@ -495,7 +511,9 @@ export function subscribe(
           }
         },
         onerror(err: unknown) {
-          if (stopped) return;
+          if (stopped || generation !== streamGeneration) return;
+          // Retire this stream so any further callbacks from it are ignored.
+          streamGeneration++;
           onError?.(err);
           // Close current stream and schedule reconnect
           closeStream?.();
@@ -504,16 +522,24 @@ export function subscribe(
         },
       }) as () => void;
 
-      // Successful connection → reset back-off
-      backoffMs = INITIAL_BACKOFF_MS;
+      // The stream may have errored (or been unsubscribed) synchronously
+      // while `stream()` was still running. In that case the handle we just
+      // received belongs to a dead stream: close it instead of leaking it.
+      if (stopped || generation !== streamGeneration || reconnectTimer !== null) {
+        closeStream?.();
+        closeStream = null;
+      }
     } catch (err) {
+      if (stopped || generation !== streamGeneration) return;
       onError?.(err);
       scheduleReconnect();
     }
   }
 
   function scheduleReconnect(): void {
-    if (stopped) return;
+    // One pending reconnect at a time: a second schedule would orphan the
+    // first timer and eventually open two concurrent streams.
+    if (stopped || reconnectTimer !== null) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
