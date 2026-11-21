@@ -3270,3 +3270,98 @@ fn test_1056_fail_closed_does_not_bypass_funder_authorization() {
         InvoiceStatus::Funded
     );
 }
+
+// ── Issue #1190: registration, removal & feeder-removal audit ────────────────
+//
+// The canonical invariants these tests pin are stated in
+// `oracle_registry.rs`'s module docs (see the "Registration, removal &
+// feeder-removal invariants (Issue #1190)" block) and mirrored in
+// `docs/oracle-design.md`. The price-side counterparts live in
+// `tests_price_deviation.rs`.
+
+/// Removal cannot silently weaken the gate. With two honest feeders and a
+/// quorum of 2 funding succeeds; removing one feeder leaves the threshold
+/// unreachable (`get_identity_quorum() > feeders.len()`) because
+/// `remove_identity_oracle` does not re-validate it — so the *next* funding
+/// call fails closed even though the surviving feeder still reports the payer
+/// verified. Lowering the quorum back to the surviving count restores funding.
+#[test]
+fn test_1190_remove_feeder_leaving_quorum_unreachable_fails_closed() {
+    let t = setup();
+    let seq = t.env.ledger().sequence();
+    let a = deploy_mock_oracle(&t, true, seq);
+    let b = deploy_mock_oracle(&t, true, seq);
+    add_identity_oracles(&t, &[a, b]);
+    t.contract.set_identity_quorum(&2);
+
+    // Both feeders agree: the quorum is met and funding succeeds.
+    let invoice_id = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded
+    );
+
+    // Governance removes one (honest) feeder. The configured quorum is not
+    // re-validated, so 2 > 1 remains and the threshold is now unreachable.
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract
+        .remove_identity_oracle(&OracleFeedType::Identity, &a);
+    assert_eq!(
+        t.contract
+            .get_identity_oracles(&OracleFeedType::Identity)
+            .len(),
+        1
+    );
+    assert_eq!(t.contract.get_identity_quorum(), 2);
+
+    // The surviving feeder is honest and verified, but one agreement can never
+    // satisfy a quorum of 2 — the gate fails closed rather than silently
+    // falling back to the survivor.
+    let invoice_id = make_invoice(&t);
+    let res = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        res,
+        Err(Ok(ContractError::PayerUnverified)),
+        "an unreachable quorum must fail closed, not fall back to the survivor"
+    );
+
+    // Lowering the quorum to the remaining feeder count restores funding.
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract.set_identity_quorum(&1);
+    let invoice_id = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded
+    );
+}
+
+/// `remove_identity_oracle` is admin-gated: a non-admin caller cannot remove a
+/// feeder, and so cannot manipulate quorum membership.
+#[test]
+fn test_1190_remove_identity_oracle_requires_admin() {
+    let (env, _admin, _token, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+    let feeder = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "remove_identity_oracle",
+            args: (OracleFeedType::Identity, feeder.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_remove_identity_oracle(&OracleFeedType::Identity, &feeder);
+    assert!(
+        res.is_err(),
+        "remove_identity_oracle should fail for a non-admin caller"
+    );
+}

@@ -4530,3 +4530,12 @@ mod tests_config_parameter_bounds;
 mod tests_token_safety;
 // Issue #1069: audit/correct a bootstrap token's unvalidated decimals.
 mod tests_token_decimals_audit;
+// Issue #price-deviation / #1190: multi-source price deviation checking and the
+// price-side registration/removal invariants. Previously ORPHANED (file present
+// but never declared), so its CRUD + deviation suite never ran.
+mod tests_price_deviation;
+// Issues #93 / #1050 / #1052 / #1053 / #1046 / #1191: oracle data freshness,
+// ledger-boundary staleness, monotonic/duplicate timestamp bounds,
+// feeder-authorization, and circuit tripping + half-open recovery.
+// Previously ORPHANED (file present but never declared), so none of it ran.
+mod tests_oracle_freshness;

@@ -328,6 +328,98 @@ for the operator view and
 [`benchmarks.md`](benchmarks.md#oracle-health--quorum-exposure-cost-issue-1055)
 for the measured cost.
 
+## Registration, Removal & Feeder-Removal Invariants (Issue #1190)
+
+Issue #1190 asks a bounded question: **can registration, removal, quorum
+changes, stale data, or a rogue feeder alter a *verified price*
+(`get_verified_price`) or weaken the funding gate?** This section records the
+verified answer and separates it from residual risk. The canonical form of these
+invariants lives in `oracle_registry.rs`'s module docs; this is the
+operator-facing mirror.
+
+### Verified behaviour
+
+**List separation is the core guarantee.** Three registries live on three
+distinct, non-aliasing storage keys:
+
+| Registry | `DataKey` | Consumers |
+|---|---|---|
+| Single-oracle resolution chain | `OracleRegistry(feed)` / `TokenOracle(feed, token)` | Identity gate (`resolve_oracle_for_verification`) |
+| Multi-source price list | `PriceSources(feed)` | `get_verified_price` **only** |
+| Identity feeder quorum | `IdentityOracles(feed)` + `IdentityQuorum` | `check_identity_quorum` **only** |
+
+`get_verified_price` / `get_price_sources` are a pure function of
+`PriceSources(feed)`. Registering, removing or reordering Identity feeders — and
+changing the quorum — therefore **cannot** add, drop or reorder a price source,
+so they cannot alter a verified price. Only `add_price_source` /
+`remove_price_source` change the price sample (and
+`set_max_price_deviation_bps` is the only other input); both are admin-gated and
+rate-limited.
+
+**Registration is admin-only.** Every mutating entry point begins with
+`require_admin()` (failing `Unauthorized` before any write) and is rate-limited
+with `DEFAULT_RATE_LIMIT_LEDGERS`. In production the stored admin is the
+governance contract, so each change is a proposal. `register_oracle` /
+`register_token_oracle` additionally handshake the interface version
+(`IncompatibleInterfaceVersion`); `add_price_source` / `add_identity_oracle`
+deliberately do not — an inert member can only *fail to contribute*, never force
+a result.
+
+**Removal fails closed, never open.** Removal entry points are unconditional
+no-ops when the address is absent (and still emit the `*_removed` event).
+`remove_oracle` / `remove_token_oracle` fall resolution through to the next
+priority level (or to unconfigured, the legacy fail-open path).
+`remove_price_source` shrinks the sample — zero sources → `NoPriceSource` (fail
+closed), one source → returned unchecked. `remove_identity_oracle` **does not
+re-validate the quorum** against the remaining list, so removal can leave
+`get_identity_quorum() > get_identity_oracles().len()` (an unreachable
+threshold). That is **fail-closed**, not a bypass: the gate can never reach `N`,
+so funding fails `PayerUnverified` until governance restores a reachable set or
+lowers the quorum. The condition is observable via `OracleStatusView.identity_quorum`
+vs `identity_oracles.len()` and via `check_identity_quorum_health`.
+
+**Stale data cannot set a verified price.** `get_verified_price` gates on
+`require_healthy_price_feed` first — an open breaker → `OracleCircuitOpen`, a
+recorded stale snapshot → `OracleDataStale` — before reading any source, and
+freshness is the single shared predicate `is_oracle_data_stale` (#1050).
+
+**A rogue feeder cannot alter a verified price.** It can only be added by admin,
+it affects only the Identity gate (separate list from `PriceSources`), and within
+that gate an unreachable/reverting feeder degrades to "no opinion" — which can
+never satisfy the quorum (see [Multi-Oracle Identity Quorum](#multi-oracle-identity-quorum-issue-1047)).
+
+### Verification table
+
+| Invariant | Pinned by (compiled tests) |
+|---|---|
+| Registration/removal/quorum mutations are admin-only | `test_register_oracle_unauthorized_caller`, `test_remove_oracle_unauthorized_caller`, `test_add_identity_oracle_unauthorized_caller`, `test_set_identity_quorum_unauthorized_caller`, `test_1190_remove_identity_oracle_requires_admin`, `test_1190_remove_price_source_requires_admin` |
+| Add paths are idempotent and bounded | `test_add_identity_oracle_bounded_and_idempotent`, `test_add_price_source_is_idempotent` |
+| Quorum value bounds `[1, 20]` | `test_set_identity_quorum_rejects_out_of_range` |
+| Identity/feeder/quorum mutations cannot alter price sources or a verified price | `test_1190_identity_mutations_do_not_touch_price_sources` |
+| Removing a feeder below the quorum fails closed | `test_1190_remove_feeder_leaving_quorum_unreachable_fails_closed`, `test_1054_compromised_majority_requires_governance_removal` |
+| Empty feeder list defers to the single-oracle chain | `test_empty_identity_quorum_list_uses_single_oracle_path` |
+| Price-source removal shrinks the sample (→ `NoPriceSource`) | `test_remove_price_source`, `test_1190_removing_all_price_sources_yields_no_price_source` |
+| Stale data / open breaker rejects a price read | `test_get_verified_price_rejects_stale_health`, `test_get_verified_price_rejects_tripped_circuit` |
+| A rogue feeder cannot force verification | `test_1054_rogue_feeder_cannot_join_quorum_without_admin`, `test_1054_compromised_feeder_cannot_lone_mint_eligibility`, `test_1054_compromised_feeder_silence_does_not_block_honest_quorum` |
+
+### Not enforced on-chain (residual risk)
+
+- **Single-source price feeds are trusted unchecked** — cross-source protection
+  requires ≥2 independent sources (≥3 to single out one outlier). This is a
+  property of the data, not something this module can enforce.
+- **A compromised majority of Identity feeders satisfies the quorum** and is
+  indistinguishable on-chain from honest agreement; remediation is the
+  governance `remove_identity_oracle` action, not an on-chain rule.
+- **A stale `OracleCircuitTripped` flag** can persist if a tripped oracle is
+  replaced without `reset_oracle_circuit`; funding behaviour is still correct
+  (the replacement is never the excluded address) — only the flag is stale. See
+  `resolve_oracle_for_verification`.
+- **`DataKey::MinPriceQuorum`** is declared in `storage.rs` but no entry point
+  reads or writes it; it has no effect on `get_verified_price` today (out of
+  scope for #1190).
+
+---
+
 ## Security Considerations
 
 - The oracle is a **read-only dependency** — it cannot initiate token transfers or modify ILN state.
