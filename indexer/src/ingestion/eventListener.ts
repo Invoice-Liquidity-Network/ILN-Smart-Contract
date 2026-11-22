@@ -17,6 +17,7 @@ export interface HorizonTransactionRecord {
   created_at: string;
   paging_token: string;
   result_meta_xdr: string;
+  successful?: boolean;
 }
 
 export interface DecodedContractEvent {
@@ -270,9 +271,12 @@ export class EventListener {
 
     let decodedEvents: DecodedContractEvent[];
     try {
-      decodedEvents = this.decodeTransactionEvents(record).filter(
-        (event) => event.contractId === this.contractAddress
-      );
+      decodedEvents =
+        record.successful === false
+          ? []
+          : this.decodeTransactionEvents(record).filter(
+              (event) => event.contractId === this.contractAddress
+            );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`failed to process transaction ${record.hash}: ${message}`);
@@ -292,8 +296,7 @@ export class EventListener {
         this.persistEvent(decodedEvents[index]!, record, index);
       }
       if (this.persistLiveCursor) {
-        this.repository.setState(LAST_CURSOR_STATE_KEY, record.paging_token);
-        this.repository.setState(LAST_LEDGER_STATE_KEY, String(record.ledger));
+        this.advanceLiveCursor(record);
       }
     });
 
@@ -447,6 +450,21 @@ export class EventListener {
       // The halt latch stays set on failure: ingestion remains blocked until
       // a recovery succeeds rather than resuming on a broken chain.
     }
+  }
+
+  private advanceLiveCursor(record: HorizonTransactionRecord): void {
+    const currentCursor = this.repository.getState(LAST_CURSOR_STATE_KEY);
+    if (
+      currentCursor !== undefined &&
+      isNumericCursor(currentCursor) &&
+      isNumericCursor(record.paging_token) &&
+      BigInt(record.paging_token) <= BigInt(currentCursor)
+    ) {
+      return;
+    }
+
+    this.repository.setState(LAST_CURSOR_STATE_KEY, record.paging_token);
+    this.repository.setState(LAST_LEDGER_STATE_KEY, String(record.ledger));
   }
 }
 
@@ -877,6 +895,10 @@ function parseRecordTimestamp(record: HorizonTransactionRecord): number {
   }
 
   return record.ledger;
+}
+
+function isNumericCursor(cursor: string): boolean {
+  return /^\d+$/.test(cursor);
 }
 
 function canonicalEventType(rawEventType: string): string {
