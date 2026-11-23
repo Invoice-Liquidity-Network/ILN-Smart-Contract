@@ -9,7 +9,7 @@
  * Run:
  *   npx tsx scripts/generate-sdk.ts --spec docs/contract-spec.json
  *   npx tsx scripts/generate-sdk.ts --inspect-json docs/fixtures/stellar-inspect-invoice_liquidity.sample.json
- *   npx tsx scripts/generate-sdk.ts --contract-id CD3TE3IAHM737P236XZL2OYU275ZKD6MN7YH7PYYAXYIGEH55OPEWYJC --network testnet
+ *   npx tsx scripts/generate-sdk.ts --check
  *
  * Issue #382 research spike — generates skeleton stubs only; business logic stays hand-written.
  */
@@ -317,6 +317,159 @@ ${simBlock}
 `;
 }
 
+export interface SdkDriftOptions {
+  spec: NormalizedSpec;
+  generatedDir: string;
+  contractSourcePath: string;
+  only?: string[];
+}
+
+function camelToSnake(name: string): string {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function rustParamsFromSource(source: string, fnName: string): SpecParam[] | null {
+  const marker = new RegExp(`\\bpub\\s+fn\\s+${escapeRegExp(fnName)}\\s*\\(`);
+  const match = marker.exec(source);
+  if (!match) return null;
+
+  const open = source.indexOf("(", match.index);
+  const close = matchingParen(source, open);
+  if (close < 0) return null;
+
+  return splitParamList(source.slice(open + 1, close))
+    .map((raw) => raw.trim())
+    .filter(Boolean)
+    .map((param) => {
+      const colon = param.indexOf(":");
+      if (colon < 0) return null;
+      const name = param.slice(0, colon).replace(/^mut\s+/, "").trim();
+      const type = param.slice(colon + 1).replace(/^&\s*(mut\s+)?/, "").trim();
+      return name ? { name, type } : null;
+    })
+    .filter((p): p is SpecParam => p !== null && p.name !== "env");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchingParen(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function splitParamList(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let buf = "";
+  for (const ch of value) {
+    if ("<([{".includes(ch)) depth++;
+    else if (">)]}".includes(ch)) depth--;
+    if (ch === "," && depth === 0) {
+      out.push(buf.trim());
+      buf = "";
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+function generatedParams(source: string, camelName: string): string[] | null {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.includes(`export async function ${camelName}(`));
+  if (start < 0) return null;
+
+  const signature: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    signature.push(lines[i]!);
+    if (/^\)\s*:/.test(lines[i]!)) break;
+  }
+
+  const fixed = new Set(["server", "contractAddress", "networkPassphrase", "sourceAccount", "signTransaction"]);
+  return signature
+    .map((line) => /^\s*([A-Za-z_]\w*)\s*:/.exec(line)?.[1])
+    .filter((name): name is string => !!name && !fixed.has(name));
+}
+
+export function checkSdkContractDrift(options: SdkDriftOptions): string[] {
+  const drift: string[] = [];
+  const indexPath = path.join(options.generatedDir, "index.generated.ts");
+  if (!fs.existsSync(indexPath)) return [`generated SDK index missing: ${indexPath}`];
+  const index = fs.readFileSync(indexPath, "utf8");
+
+  const generated = new Map<string, string>();
+  const exportPattern = /export\s*\{\s*([A-Za-z_]\w*)\s*\}\s*from\s*["']\.\/([A-Za-z_]\w*)\.generated\.js["'];?/g;
+  for (const match of index.matchAll(exportPattern)) {
+    generated.set(camelToSnake(match[1]!), match[1]!);
+  }
+
+  const specByName = new Map(options.spec.functions.map((f) => [f.name, f]));
+  const required = options.only?.length ? options.only : [...generated.keys()];
+  const names = [...new Set([...required, ...generated.keys()])].sort();
+
+  const contractSource = fs.readFileSync(options.contractSourcePath, "utf8");
+  for (const name of names) {
+    const camel = snakeToCamel(name);
+    if (!generated.has(name)) {
+      drift.push(`generated SDK export missing for contract entrypoint ${name}`);
+      continue;
+    }
+    if (generated.get(name) !== camel) {
+      drift.push(`generated SDK export ${generated.get(name)} does not match contract entrypoint ${name}`);
+    }
+
+    const specFn = specByName.get(name);
+    if (!specFn) {
+      drift.push(`contract spec entry missing for generated SDK method ${name}`);
+      continue;
+    }
+
+    const rustParams = rustParamsFromSource(contractSource, name);
+    if (!rustParams) {
+      drift.push(`Rust contract entrypoint missing for generated SDK method ${name}`);
+      continue;
+    }
+
+    const expectedParams = rustParams.map((p) => `${snakeToCamel(p.name)}: ${mapRustTypeToTs(p.type)}`);
+    const specParams = specFn.parameters.map((p) => `${snakeToCamel(p.name)}: ${mapRustTypeToTs(p.type)}`);
+    if (JSON.stringify(expectedParams) !== JSON.stringify(specParams)) {
+      drift.push(
+        `contract spec/Rust signature drift for ${name}: Rust ${expectedParams.join(", ")} vs spec ${specParams.join(", ")}`
+      );
+    }
+
+    const stubPath = path.join(options.generatedDir, `${camel}.generated.ts`);
+    if (!fs.existsSync(stubPath)) {
+      drift.push(`generated SDK stub missing: ${stubPath}`);
+      continue;
+    }
+    const stub = fs.readFileSync(stubPath, "utf8");
+    if (!stub.includes(`"${name}"`)) {
+      drift.push(`generated SDK stub ${camel} does not call contract entrypoint ${name}`);
+    }
+    const actualParams = generatedParams(stub, camel);
+    if (!actualParams) {
+      drift.push(`generated SDK stub signature missing: ${camel}`);
+    } else if (JSON.stringify(actualParams) !== JSON.stringify(rustParams.map((p) => snakeToCamel(p.name)))) {
+      drift.push(
+        `SDK/Rust param drift for ${name}: SDK ${actualParams.join(", ")} vs Rust ${rustParams.map((p) => snakeToCamel(p.name)).join(", ")}`
+      );
+    }
+  }
+
+  return drift;
+}
+
 export function generateSdkFiles(
   spec: NormalizedSpec,
   outputDir: string,
@@ -375,10 +528,14 @@ function parseArgs(argv: string[]): {
   inspectJson?: string;
   outputDir: string;
   only: string[];
+  check: boolean;
+  contractSource: string;
 } {
   const out: ReturnType<typeof parseArgs> = {
     outputDir: path.join(REPO_ROOT, "sdk/src/generated"),
     only: [],
+    check: false,
+    contractSource: path.join(REPO_ROOT, "contracts/invoice_liquidity/src/lib.rs"),
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -390,6 +547,8 @@ function parseArgs(argv: string[]): {
     else if (arg === "--inspect-json") out.inspectJson = argv[++i];
     else if (arg === "--output") out.outputDir = path.isAbsolute(argv[++i]!) ? argv[i]! : path.join(REPO_ROOT, argv[i]!);
     else if (arg === "--only") out.only = argv[++i]!.split(",").map((s) => s.trim()).filter(Boolean);
+    else if (arg === "--check") out.check = true;
+    else if (arg === "--contract-source") out.contractSource = argv[++i]!;
     else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: npx tsx scripts/generate-sdk.ts [options]
 
@@ -400,6 +559,8 @@ function parseArgs(argv: string[]): {
   --network <name>        testnet | mainnet | local
   --output <dir>          output directory (default: sdk/src/generated)
   --only <a,b,c>          generate only these snake_case function names
+  --check                 read-only ABI/SDK drift gate; exits non-zero on drift
+  --contract-source <p>   Rust contract source for --check
 `);
       process.exit(0);
     }
@@ -418,6 +579,23 @@ function parseArgs(argv: string[]): {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const spec = loadSpecFromCli(opts);
+
+  if (opts.check) {
+    const drift = checkSdkContractDrift({
+      spec,
+      generatedDir: opts.outputDir,
+      contractSourcePath: opts.contractSource,
+      only: opts.only,
+    });
+    if (drift.length) {
+      for (const message of drift) console.error(`❌ ${message}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`✅ Generated SDK matches the contract ABI (${spec.functions.length} spec entrypoints)`);
+    return;
+  }
+
   const { files, count } = generateSdkFiles(spec, opts.outputDir, opts.only);
   console.log(`✅ Generated ${count} method stub(s) in ${opts.outputDir}`);
   for (const f of files) console.log(`   ${path.relative(REPO_ROOT, f)}`);
