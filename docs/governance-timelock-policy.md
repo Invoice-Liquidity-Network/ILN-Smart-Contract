@@ -18,7 +18,7 @@ Decision record: [ADR-005](adr/ADR-005-governance-timelock.md) (amended).
 
 - `MIN_ACTIVE_TIMELOCK_LEDGERS = 17_280` (~24 h at ~5 s/ledger), exported as a
   public constant.
-- `disable_veto_power()` → `TimelockNotActive` (error 29) unless
+- `disable_veto_power()` → `TimelockNotActive` (error 47) unless
   `execution_delay >= MIN_ACTIVE_TIMELOCK_LEDGERS`. On failure no state changes.
 - After the veto is disabled, `set_execution_delay(d)` with
   `d < MIN_ACTIVE_TIMELOCK_LEDGERS` → `TimelockNotActive`. Raising is allowed.

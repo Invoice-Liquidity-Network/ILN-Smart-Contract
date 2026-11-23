@@ -218,14 +218,12 @@ fn differential_quorum_denominator_is_not_caller_controlled() {
     h.gov.cast_vote(&h.small, &id, &true);
     advance_past_voting(&h);
 
-    // NOTE: a client `try_*` call rolls back the callee's storage on a returned
-    // `Err`, so the persisted `Rejected` status is only observable through a
-    // direct in-contract call (`as_contract`), matching the repo's existing
-    // `test_execute_quorum_not_met_fails_without_executing`.
+    // Issue #1007: a quorum miss commits `Rejected` and returns `Ok` (a returned
+    // `Err` would be rolled back by Soroban).
     let res = h.env.as_contract(&h.gov.address, || {
         GovContract::execute_proposal(h.env.clone(), id)
     });
-    assert_eq!(res, Err(GovernanceError::QuorumNotReached));
+    assert_eq!(res, Ok(()));
     assert_eq!(h.gov.get_proposal(&id).status, ProposalStatus::Rejected);
 
     // The stored denominator is fixed at the initialised value and cannot be
@@ -363,6 +361,9 @@ fn differential_veto_disable_is_irreversible() {
 
     // Disable veto power (ILN-gated; mocked here). After this the flag is
     // permanently false — there is no setter that re-enables it.
+    // Issue #981: an active timelock is a precondition for retiring the veto.
+    h.gov
+        .set_execution_delay(&h.admin, &MIN_ACTIVE_TIMELOCK_LEDGERS);
     h.gov.disable_veto_power();
     assert!(!h.gov.is_veto_power_enabled());
 
