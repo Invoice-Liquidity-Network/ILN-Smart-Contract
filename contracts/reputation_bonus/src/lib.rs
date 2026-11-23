@@ -7,7 +7,9 @@ pub mod invoice;
 pub mod rate_logic;
 pub mod reputation;
 
-use crate::config::{get_config, set_admin, set_config, update_config, Config};
+use crate::config::{
+    get_config, has_admin, require_admin, set_admin, set_config, update_config, Config,
+};
 use crate::errors::ContractError;
 use crate::events::{emit_config_set, emit_initialized};
 use crate::invoice::{handle_default, mark_paid, submit_invoice, Invoice};
@@ -19,18 +21,40 @@ pub struct ReputationBonusContract;
 
 #[contractimpl]
 impl ReputationBonusContract {
-    /// `init` contract entry point.
-///
-/// Access: Anyone
-pub fn init(env: Env, admin: Address) {
+    /// Stores the admin. Callable exactly once; later calls fail with
+    /// `AlreadyInitialized` and change nothing.
+    ///
+    /// Not signature-gated: the admin is normally the governance contract,
+    /// which cannot sign a top-level call. Deploy and `init` together so
+    /// nobody else can claim the admin slot first.
+    ///
+    /// Access: Anyone (once)
+    pub fn init(env: Env, admin: Address) -> Result<(), ContractError> {
+        if has_admin(&env) {
+            return Err(ContractError::AlreadyInitialized);
+        }
         set_admin(&env, &admin);
         emit_initialized(&env, &admin);
+        Ok(())
     }
 
-    /// `set_config` contract entry point.
-///
-/// Access: Anyone
-pub fn set_config(env: Env, config: Config) -> Result<(), ContractError> {
+    /// Replaces the full bonus config. Requires the stored admin's signature.
+    ///
+    /// # Arguments
+    /// * `env` — host environment
+    /// * `config` — new config; bounds are validated before it is stored
+    ///
+    /// # Returns
+    /// * `Ok(())` once the config is stored and `config_set` is emitted
+    ///
+    /// # Errors
+    /// * `ConfigErrorUnauthorized` before `init`
+    /// * `ConfigErrorInvalidHighRepThreshold`, `ConfigErrorInvalidBonusBps`,
+    ///   `ConfigErrorInvalidMinDiscountRate` for out-of-range fields
+    ///
+    /// Access: Admin only
+    pub fn set_config(env: Env, config: Config) -> Result<(), ContractError> {
+        require_admin(&env).map_err(|_| ContractError::ConfigErrorUnauthorized)?;
         set_config(&env, &config).map_err(|e| match e {
             crate::config::ConfigError::InvalidHighRepThreshold => ContractError::ConfigErrorInvalidHighRepThreshold,
             crate::config::ConfigError::InvalidBonusBps => ContractError::ConfigErrorInvalidBonusBps,
@@ -53,10 +77,10 @@ pub fn get_config(env: Env) -> Result<Config, ContractError> {
         get_config(&env).map_err(|_| ContractError::ConfigErrorUnauthorized)
     }
 
-    /// `update_config` contract entry point.
-///
-/// Access: Anyone
-pub fn update_config(
+    /// Updates the bonus config. `caller` must sign and equal the stored admin.
+    ///
+    /// Access: Admin only
+    pub fn update_config(
         env: Env,
         caller: Address,
         high_rep_threshold: u32,
@@ -85,10 +109,10 @@ pub fn get_reputation(env: Env, address: Address) -> ReputationScore {
         read_reputation(&env, &address)
     }
 
-    /// `submit_invoice` contract entry point.
-///
-/// Access: Anyone
-pub fn submit_invoice(
+    /// Records an invoice. Requires the freelancer's signature.
+    ///
+    /// Access: Freelancer only
+    pub fn submit_invoice(
         env: Env,
         freelancer: Address,
         payer: Address,
@@ -106,17 +130,18 @@ pub fn submit_invoice(
         )
     }
 
-    /// `mark_paid` contract entry point.
-///
-/// Access: Anyone
-pub fn mark_paid(env: Env, invoice_id: u64) -> Result<(), ContractError> {
+    /// Marks an invoice paid. Requires the invoice payer's signature.
+    ///
+    /// Access: Payer only
+    pub fn mark_paid(env: Env, invoice_id: u64) -> Result<(), ContractError> {
         mark_paid(&env, invoice_id)
     }
 
-    /// `handle_default` contract entry point.
-///
-/// Access: Anyone
-pub fn handle_default(env: Env, invoice_id: u64) -> Result<(), ContractError> {
+    /// Marks an overdue invoice as defaulted. Permissionless, but fails with
+    /// `InvoiceNotOverdue` until the ledger timestamp is past `due_date`.
+    ///
+    /// Access: Anyone
+    pub fn handle_default(env: Env, invoice_id: u64) -> Result<(), ContractError> {
         handle_default(&env, invoice_id)
     }
 }

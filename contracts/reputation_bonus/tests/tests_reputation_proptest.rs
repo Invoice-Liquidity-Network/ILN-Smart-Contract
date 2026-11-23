@@ -3,7 +3,10 @@
 use proptest::prelude::*;
 use reputation_bonus::config::Config;
 use reputation_bonus::{ReputationBonusContract, ReputationBonusContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepBonusEvent {
@@ -94,6 +97,8 @@ proptest! {
                         );
                         inv.id
                     };
+                    // Past the 1_800_000_000 due date used above.
+                    env.ledger().set_timestamp(1_800_000_001);
                     let _ = client.handle_default(&id);
                 }
             }
