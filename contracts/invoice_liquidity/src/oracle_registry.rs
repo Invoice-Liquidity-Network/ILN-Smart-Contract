@@ -148,7 +148,7 @@ use crate::errors::ContractError;
 use crate::events::{
     IdentityOracleAdded, IdentityOracleRemoved, OracleCircuitRecovered, OracleCircuitReset,
     OracleCircuitTripped, OracleDataStaleRejected, OracleFeederDisagreement, OracleHealthRecorded,
-    OracleRegistered, OracleUnregistered, PriceOutlierRejected, PriceSourceAdded,
+    OracleRegistered, OracleUnregistered, ParameterUpdated, PriceOutlierRejected, PriceSourceAdded,
     PriceSourceRemoved, TwapEnabledForFeed, TwapInsufficientData, TwapWindowUpdated,
 };
 use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
@@ -1254,9 +1254,32 @@ pub fn set_identity_quorum(env: &Env, quorum: u32) -> Result<(), ContractError> 
     if quorum == 0 || quorum > MAX_IDENTITY_ORACLES_PER_FEED {
         return Err(ContractError::InvalidIdentityQuorum);
     }
+    let old_quorum = get_identity_quorum(env.clone());
     env.storage()
         .instance()
         .set(&DataKey::IdentityQuorum, &quorum);
+
+    // Audit (docs/event-topic-audit.md, docs/events.md): the quorum changes
+    // who can unblock oracle-gated funding, so the change must be observable.
+    // Emitted with the shared `parameter_updated` topic, discriminated by
+    // `param_name = "identity_quorum"`, exactly like the other governance knobs.
+    // `require_admin` above guarantees an admin exists.
+    if let Some(updated_by) = crate::storage::get_admin(env) {
+        let pn = Symbol::new(env, "identity_quorum");
+        env.events().publish(
+            (
+                Symbol::new(env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value: old_quorum as i128,
+                new_value: quorum as i128,
+                updated_by,
+            },
+        );
+    }
     Ok(())
 }
 

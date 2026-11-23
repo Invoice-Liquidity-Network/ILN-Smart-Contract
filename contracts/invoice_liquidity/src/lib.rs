@@ -4925,3 +4925,5 @@ mod tests_nft_transfer_consistency;
 // Issue #1159: invoice lifecycle state-machine and accounting invariants
 // (see docs/invoice-lifecycle-invariants.md).
 mod tests_lifecycle_invariants;
+// Audit: event topic / payload stability (see docs/event-topic-audit.md).
+mod tests_event_topics;

@@ -1,3 +1,30 @@
+//! Event payload schemas for the invoice liquidity contract.
+//!
+//! # Stability contract (audited — see `docs/event-topic-audit.md`)
+//!
+//! * **Topic 0** is always a `Symbol` naming the event (`"funded"`,
+//!   `"paid"`, ...). Optional topics that follow are scoping keys
+//!   (`invoice_id`, `lp`/`funder`, `feed_type`, ...), never payload data.
+//! * A topic symbol identifies exactly one payload type, and a payload type is
+//!   emitted under exactly one topic symbol. The only deliberate fan-in is
+//!   several *call sites* emitting the same (topic, payload) pair, e.g.
+//!   `parameter_updated` (discriminated by `ParameterUpdated::param_name`) or
+//!   `expired` (emitted by `expire_invoice` and by inline expiry detection).
+//! * Payload structs are `#[contracttype]` maps keyed by field name. Fields
+//!   must not be renamed or removed; additions are a breaking change for
+//!   strict decoders and must be announced in `CHANGELOG.md`.
+//! * Events are only observable if the emitting invocation succeeds: Soroban
+//!   discards the events of any call that returns `Err`. A rejection "event"
+//!   emitted before an `Err` return (e.g. `queue_resolve_attempt` with
+//!   `success = false`) is therefore never visible on-chain.
+//! * The ledger sequence/close time of an event comes from the Soroban event
+//!   envelope (RPC `getEvents` `ledger` / `ledgerClosedAt`); payload
+//!   `timestamp`-style fields are an additional convenience, not the source
+//!   of truth.
+//!
+//! `src/tests_event_topics.rs` pins the topic -> payload registry and the
+//! lifecycle payload field lists so any drift fails CI.
+
 use soroban_sdk::{contracttype, Address, BytesN, Symbol};
 
 use crate::invoice::{InvoiceStatus, ReferralCode};
@@ -588,7 +615,9 @@ pub struct FundQueueResolved {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FundQueueResolutionAttempted {
     pub invoice_id: u64,
-    /// Caller that triggered the resolution attempt.
+    /// Ledger sequence at which the invoice's fund queue was opened
+    /// (`0` when that record is missing). Despite the name this is *not* a
+    /// caller address; the field name is kept for wire compatibility.
     pub caller_ledger: u32,
     /// Ledger sequence when the attempt was made.
     pub attempted_at_ledger: u32,
