@@ -4955,6 +4955,9 @@ mod tests_economic_security;
 mod tests_lp_priority_queue;
 // Issue #848: ADR-011 reputation cross-contract consistency audit
 mod tests_reputation_state_isolation;
+// Issue: payer reputation history / top-payer ranking vs lifecycle events.
+// Previously ORPHANED (file present but never declared), so it never ran.
+mod tests_reputation_proptest;
 // Issue #849: ADR-004 lazy reputation decay multi-year idle coverage
 mod tests_reputation_decay_long_idle;
 // Issue #850: ADR-007 NFT event emission verification
