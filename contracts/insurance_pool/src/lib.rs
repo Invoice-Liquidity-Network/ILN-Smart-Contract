@@ -24,6 +24,11 @@ mod claim_prioritization;
 mod insurance_interface;
 #[cfg(test)]
 mod test;
+// Issue #1196: edge-case coverage for the coverage gate — tier thresholds,
+// pool availability, stale review/solvency state and denied funding. See
+// docs/insurance-coverage-gate.md.
+#[cfg(test)]
+mod tests_coverage_gate;
 
 pub use insurance_interface::{
     InsurancePoolInterface, InsurancePoolInterfaceClient, INSURANCE_INTERFACE_VERSION,
