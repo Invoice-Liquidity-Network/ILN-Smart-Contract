@@ -29,7 +29,25 @@ export const config = {
    * forwarding headers. Accepts `true`/`false`, a hop count, or a subnet list.
    */
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+  /**
+   * Historical catch-up range [CATCHUP_FROM_LEDGER, CATCHUP_TO_LEDGER). Unset
+   * FROM disables catch-up; unset TO means "up to the earliest indexed ledger".
+   */
+  catchupFromLedger: parseLedger(process.env.CATCHUP_FROM_LEDGER),
+  catchupToLedger: parseLedger(process.env.CATCHUP_TO_LEDGER),
+  catchupBatchSize: parseInt(process.env.CATCHUP_BATCH_SIZE || '1000', 10),
 };
+
+function parseLedger(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+  const ledger = Number(value);
+  if (!Number.isSafeInteger(ledger) || ledger < 0) {
+    throw new Error(`invalid ledger sequence: ${value}`);
+  }
+  return ledger;
+}
 
 function parseCsv(value: string | undefined): string[] {
   return (value || '')

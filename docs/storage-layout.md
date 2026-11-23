@@ -81,7 +81,7 @@ parameterized by a unique id/address, no collisions occur.
 | `TotalVolumeEurc` | `i128` | Global protocol stat |
 | `TotalVolumeXlm` | `i128` | Global protocol stat |
 | `TokenVolume(Address)` | `i128` | Per-token volume stat |
-| `ReferralCount(BytesN<32>)` | `u32` | Referral counts keyed by fixed-size code |
+| `ReferralCount(BytesN<32>)` | `u64` | Referral counts keyed by fixed-size code |
 | `Dispute(u64)` | dispute record | Dispute record for an invoice |
 | `SubmitterInvoices(Address)` | `Vec<u64>` | Invoice ids submitted by a freelancer |
 | `LpInvoices(Address)` | `Vec<u64>` | Invoice ids funded by an LP |

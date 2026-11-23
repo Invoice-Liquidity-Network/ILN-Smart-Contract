@@ -1,12 +1,21 @@
 #!/usr/bin/env node
-import { rpc, Keypair, TransactionBuilder, Networks, Contract, Address, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { readFileSync, existsSync, writeFileSync, unlinkSync } from "fs";
+import {
+  rpc,
+  Keypair,
+  TransactionBuilder,
+  Networks,
+  Contract,
+  Address,
+  StrKey,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
+import { readFileSync, existsSync, writeFileSync, unlinkSync, copyFileSync } from "fs";
 import { resolve, join } from "path";
+import { pathToFileURL } from "url";
 import { createHash } from "crypto";
 import { execSync } from "child_process";
 import { tmpdir } from "os";
-
-const NETWORK = process.env.NETWORK || "testnet";
 
 // Defaults are keyed off NETWORK so that setting NETWORK=mainnet without also
 // overriding SOROBAN_RPC_URL/NETWORK_PASSPHRASE does not silently fall back to
@@ -20,9 +29,52 @@ const DEFAULT_PASSPHRASES: Record<string, string> = {
   mainnet: Networks.PUBLIC,
 };
 
-const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || DEFAULT_RPC_URLS[NETWORK] || DEFAULT_RPC_URLS.testnet;
-const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE || DEFAULT_PASSPHRASES[NETWORK] || Networks.TESTNET;
+export interface NetworkConfig {
+  network: string;
+  rpcUrl: string;
+  passphrase: string;
+  error?: never;
+}
+export interface NetworkConfigError {
+  network: string;
+  error: string;
+  rpcUrl?: never;
+  passphrase?: never;
+}
+
+/**
+ * Resolves the effective RPC endpoint and passphrase. Unknown networks must
+ * supply both explicitly; silently inheriting testnet defaults would make a
+ * "custom network" verification inspect the wrong chain.
+ */
+export function resolveNetworkConfig(env: NodeJS.ProcessEnv = process.env): NetworkConfig | NetworkConfigError {
+  const network = env.NETWORK || "testnet";
+  const rpcUrl = env.SOROBAN_RPC_URL || DEFAULT_RPC_URLS[network];
+  const passphrase = env.NETWORK_PASSPHRASE || DEFAULT_PASSPHRASES[network];
+  if (!rpcUrl || !passphrase) {
+    return {
+      network,
+      error:
+        `Network '${network}' has no built-in defaults. ` +
+        "Set SOROBAN_RPC_URL and NETWORK_PASSPHRASE explicitly.",
+    };
+  }
+  return { network, rpcUrl, passphrase };
+}
+
+const networkConfig = resolveNetworkConfig();
+if ("error" in networkConfig) {
+  console.error(`Refusing to run: ${networkConfig.error}`);
+  process.exit(1);
+}
+
+const NETWORK = networkConfig.network;
+const SOROBAN_RPC_URL = networkConfig.rpcUrl;
+const NETWORK_PASSPHRASE = networkConfig.passphrase;
 const ENV_FILE = process.env.ENV_FILE || `.contracts-${NETWORK}.env`;
+const SUMMARY_FILE =
+  process.env.SUMMARY_FILE ||
+  (NETWORK === "mainnet" ? "deploy-summary-mainnet.json" : "deploy-summary.json");
 
 // Local WASM artifacts, used for the on-chain WASM hash match check. Kept in
 // sync with the CONTRACTS map in scripts/deploy.ts.
@@ -38,6 +90,72 @@ interface ContractInfo {
   name: string;
   id: string;
   hasContractStats: boolean;
+}
+
+interface CheckResult {
+  name: string;
+  passed: boolean;
+  error?: string;
+}
+
+export interface RollbackResult {
+  performed: boolean;
+  restoredFrom?: string;
+  summaryRestored?: boolean;
+  error?: string;
+}
+
+/** A contract ID must be a checksummed 56-character StrKey starting with `C`. */
+export function isValidContractId(id: string): boolean {
+  return typeof id === "string" && StrKey.isValidContract(id);
+}
+
+/**
+ * Returns human-readable problems for malformed or duplicated contract IDs.
+ * Duplicate IDs mean two logical contracts are being verified against the
+ * same deployment, which would otherwise pass every per-contract check.
+ */
+export function validateContractIds(contracts: ContractInfo[]): string[] {
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  for (const contract of contracts) {
+    if (!isValidContractId(contract.id)) {
+      problems.push(`${contract.name}: '${contract.id}' is not a valid contract ID`);
+      continue;
+    }
+    const previous = seen.get(contract.id);
+    if (previous) {
+      problems.push(`${contract.name}: reuses contract ID already assigned to ${previous}`);
+    } else {
+      seen.set(contract.id, contract.name);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Restores the previous local deployment records after a failed verification.
+ * On-chain contracts are immutable here; this only points `.contracts-*.env`
+ * and the deployment summary back at the last known-good deployment.
+ */
+export function rollbackDeploymentRecords(
+  envFile = ENV_FILE,
+  summaryFile = SUMMARY_FILE,
+): RollbackResult {
+  const envSnapshot = `${envFile}.previous`;
+  if (!existsSync(envSnapshot)) {
+    return {
+      performed: false,
+      error: `No rollback snapshot found at ${envSnapshot}; deploy script must be rerun to create one.`,
+    };
+  }
+  copyFileSync(envSnapshot, envFile);
+
+  const summarySnapshot = `${summaryFile}.previous`;
+  const summaryRestored = existsSync(summarySnapshot);
+  if (summaryRestored) copyFileSync(summarySnapshot, summaryFile);
+
+  return { performed: true, restoredFrom: envSnapshot, summaryRestored };
 }
 
 /**
@@ -111,7 +229,7 @@ function fetchDeployedWasmHash(contractId: string, network: string): string | nu
 function checkWasmHashMatch(
   contractName: string,
   contractId: string
-): { name: string; passed: boolean; error?: string } | null {
+): CheckResult | null {
   const localPath = LOCAL_WASM_PATHS[contractName];
   if (!localPath || !existsSync(resolve(localPath))) {
     return null;
@@ -254,8 +372,8 @@ async function invokeContract(
 async function checkConstructorArgs(
   server: rpc.Server,
   contract: ContractInfo
-): Promise<{ name: string; passed: boolean; error?: string }[]> {
-  const tests: { name: string; passed: boolean; error?: string }[] = [];
+): Promise<CheckResult[]> {
+  const tests: CheckResult[] = [];
 
   if (contract.name === "invoice_liquidity") {
     const tokenChecks: Array<[string, string | undefined]> = [
@@ -322,25 +440,124 @@ async function checkConstructorArgs(
   return tests;
 }
 
-function parseArgs(argv: string[]) {
+/**
+ * Proves each contract was initialized, rather than merely deployed and
+ * responsive. `get_version` succeeds on a fresh, uninitialized deployment, so
+ * it cannot be used as an initialization signal.
+ */
+async function checkInitialization(
+  server: rpc.Server,
+  contract: ContractInfo,
+): Promise<CheckResult[]> {
+  const tests: CheckResult[] = [];
+
+  const run = async (testName: string, probe: () => Promise<void>): Promise<void> => {
+    try {
+      await probe();
+      console.log(`  PASS  ${testName}`);
+      tests.push({ name: testName, passed: true });
+    } catch (err: any) {
+      console.log(`  FAIL  ${testName}  => ${err.message}`);
+      tests.push({ name: testName, passed: false, error: err.message });
+    }
+  };
+
+  if (contract.name === "invoice_liquidity") {
+    await run("initialized:get_config", async () => {
+      const sim = await simulateViewFunction(server, contract.id, "get_config");
+      const config = sim.result?.retval ? scValToNative(sim.result.retval) : null;
+      if (!config) throw new Error("no config returned; contract is not initialized");
+      const expected: Array<[string, string | undefined]> = [
+        ["usdc_sac_address", process.env.EXPECTED_USDC_TOKEN],
+        ["eurc_sac_address", process.env.EXPECTED_EURC_TOKEN],
+        ["xlm_sac_address", process.env.EXPECTED_XLM_TOKEN],
+      ];
+      for (const [field, value] of expected) {
+        if (value && config[field] !== value) {
+          throw new Error(`${field} is ${config[field]}, expected ${value}`);
+        }
+      }
+    });
+  }
+
+  if (contract.name === "iln_distribution") {
+    await run("initialized:is_initialized", async () => {
+      const sim = await simulateViewFunction(server, contract.id, "is_initialized");
+      const value = sim.result?.retval ? scValToNative(sim.result.retval) : false;
+      if (value !== true) throw new Error("contract reports not initialized");
+    });
+  }
+
+  if (contract.name === "reputation_bonus") {
+    await run("initialized:get_admin", async () => {
+      const sim = await simulateViewFunction(server, contract.id, "get_admin");
+      const admin = sim.result?.retval ? scValToNative(sim.result.retval) : null;
+      if (!admin) throw new Error("no admin returned; contract is not initialized");
+      const expected = process.env.EXPECTED_ADMIN_ADDRESS;
+      if (expected && admin !== expected) {
+        throw new Error(`admin is ${admin}, expected ${expected}`);
+      }
+    });
+  }
+
+  if (contract.name === "iln_governance") {
+    await run("initialized:gov_token_total_supply", async () => {
+      const sim = await simulateViewFunction(server, contract.id, "get_gov_token_total_supply");
+      const supply = sim.result?.retval ? scValToNative(sim.result.retval) : null;
+      if (supply === null || supply === undefined) {
+        throw new Error("no supply returned; contract is not initialized");
+      }
+      const expected = process.env.EXPECTED_GOV_TOKEN_TOTAL_SUPPLY;
+      if (expected !== undefined && String(supply) !== expected) {
+        throw new Error(`gov token supply is ${supply}, expected ${expected}`);
+      }
+      if (expected === undefined && String(supply) === "0") {
+        throw new Error("gov token supply is zero; contract is likely not initialized");
+      }
+    });
+  }
+
+  return tests;
+}
+
+export function parseArgs(argv: string[]) {
   let reportFile: string | undefined;
+  let rollbackOnFailure = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--report" && i + 1 < argv.length) reportFile = argv[++i];
+    if (argv[i] === "--rollback-on-failure") rollbackOnFailure = true;
   }
-  return { reportFile: reportFile || process.env.VERIFICATION_REPORT_FILE || `verification-report.${NETWORK}.json` };
+  return {
+    reportFile: reportFile || process.env.VERIFICATION_REPORT_FILE || `verification-report.${NETWORK}.json`,
+    rollbackOnFailure,
+  };
 }
 
 async function main() {
-  const { reportFile } = parseArgs(process.argv.slice(2));
+  const { reportFile, rollbackOnFailure } = parseArgs(process.argv.slice(2));
   assertNetworkConsistency();
 
-  const results: { name: string; tests: { name: string; passed: boolean; error?: string }[] }[] = [];
+  const results: { name: string; tests: CheckResult[] }[] = [];
   const server = new rpc.Server(SOROBAN_RPC_URL);
 
   const contracts = loadContractIds();
+  const idProblems = validateContractIds(contracts);
+  if (idProblems.length > 0) {
+    console.error("Contract ID validation failed:");
+    for (const problem of idProblems) console.error(`  - ${problem}`);
+    const rollback = rollbackOnFailure ? rollbackDeploymentRecords() : null;
+    if (rollback) {
+      if (rollback.performed) {
+        console.error(`Rolled local deployment records back to ${rollback.restoredFrom}.`);
+      } else {
+        console.error(`Rollback requested but not possible: ${rollback.error}`);
+      }
+    }
+    process.exit(1);
+  }
 
   for (const contract of contracts) {
-    const tests: { name: string; passed: boolean; error?: string }[] = [];
+    const tests: CheckResult[] = [];
     console.log(`\n--- ${contract.name} (${contract.id}) ---`);
 
     try {
@@ -363,6 +580,7 @@ async function main() {
       tests.push(wasmCheck);
     }
 
+    tests.push(...(await checkInitialization(server, contract)));
     tests.push(...(await checkConstructorArgs(server, contract)));
 
     if (contract.hasContractStats) {
@@ -499,6 +717,17 @@ async function main() {
   console.log(`\n  ${totalPassed} passed, ${totalFailed} failed`);
   console.log("=========================================");
 
+  let rollback: RollbackResult | null = null;
+  if (totalFailed > 0 && rollbackOnFailure) {
+    rollback = rollbackDeploymentRecords();
+    if (rollback.performed) {
+      console.error(`\nRolled local deployment records back to ${rollback.restoredFrom}.`);
+      console.error("On-chain contracts were not modified; only local deployment pointers changed.");
+    } else {
+      console.error(`\nRollback requested but not possible: ${rollback.error}`);
+    }
+  }
+
   const report = {
     network: NETWORK,
     sorobanRpcUrl: SOROBAN_RPC_URL,
@@ -506,6 +735,7 @@ async function main() {
     totalPassed,
     totalFailed,
     allPassed: totalFailed === 0,
+    rollback,
     contracts: results,
   };
   writeFileSync(resolve(reportFile), JSON.stringify(report, null, 2) + "\n");
@@ -514,7 +744,12 @@ async function main() {
   if (totalFailed > 0) process.exit(1);
 }
 
-main().catch((err) => {
-  console.error(`\n  FATAL  ${err.message}`);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`\n  FATAL  ${err.message}`);
+    process.exit(1);
+  });
+}

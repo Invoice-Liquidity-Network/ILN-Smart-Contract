@@ -25,6 +25,7 @@ import type { ReorgDivergence } from '../ingestion/reorgDetector.js';
 import {
   classifyReorgDepth,
   classifyReorgSeverity,
+  type AlertSeverity,
 } from '../services/alertRouter.js';
 
 export interface ReconciliationConfig {
@@ -68,6 +69,16 @@ export interface ReconciliationReport {
   chainInvoiceCount: number;
   countWithinTolerance: boolean;
   driftDetected: boolean;
+  /** Sampled invoices whose on-chain read failed (excluded from drift). */
+  chainReadFailures: number;
+  /** The on-chain invoice count could not be read this run. */
+  chainCountReadFailed: boolean;
+  /**
+   * True only when the run positively confirmed the index: no drift, no
+   * error, and every chain read succeeded. A run that could not compare is
+   * inconclusive (`healthy: false`), never a silent pass.
+   */
+  healthy: boolean;
   /** Stored ledger headers compared against the chain this run. */
   reorgHeadersChecked: number;
   /** Header reads that failed during the reorg check (infrastructure noise). */
@@ -83,7 +94,7 @@ export interface ReconciliationReport {
 export interface AlertDispatcher {
   (alert: {
     type: 'indexer_drift_detected' | 'indexer_reorg_detected';
-    severity: 'critical';
+    severity: AlertSeverity;
     summary: string;
     details: ReconciliationReport;
     firedAt: string;
@@ -184,6 +195,9 @@ export async function runReconciliation(
     chainInvoiceCount: 0,
     countWithinTolerance: true,
     driftDetected: false,
+    chainReadFailures: 0,
+    chainCountReadFailed: false,
+    healthy: false,
     reorgHeadersChecked: 0,
     reorgCheckErrors: 0,
     reorgDivergence: null,

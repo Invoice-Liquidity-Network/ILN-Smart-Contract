@@ -90,7 +90,11 @@ source .contracts-local.env
 | `V1_WASM` | `scripts/migrate-v1-v2.ts` | none | Path to the previous WASM when testing migrations. |
 | `V2_WASM` | `scripts/migrate-v1-v2.ts` | none | Path to the new WASM when testing migrations. |
 | `V2_WASM_HASH` | `scripts/migrate-v1-v2.ts` | none | Uploaded hash for the new WASM. |
-| `STELLAR_TESTNET_DEPLOYER_SECRET` | `scripts/deploy-testnet.sh`, deploy workflow | none | Testnet deployer secret key. Store only in shell secrets or GitHub Actions secrets. |
+| `STELLAR_TESTNET_DEPLOYER_SECRET` | `scripts/deploy-testnet.sh`, deploy workflow | none | Testnet deployer secret key. Store only in shell secrets or GitHub Actions secrets. The script keeps it out of child-process environments and uses the network-scoped `iln-testnet-deployer` identity. |
+| `ILN_ADMIN_ADDRESS` | `scripts/deploy-testnet.sh` | none | Explicit admin account passed to every contract's initialization. Required. |
+| `ILN_GOV_TOKEN_ADDRESS` | `scripts/deploy-testnet.sh` | none | Governance token SAC address. Required. |
+| `ILN_GOV_TOKEN_TOTAL_SUPPLY` | `scripts/deploy-testnet.sh` | none | Positive governance token supply used for quorum. Required. |
+| `TESTNET_USDC_SAC` / `TESTNET_EURC_SAC` / `TESTNET_XLM_SAC` | `scripts/deploy-testnet.sh` | none | Token SAC addresses passed to `invoice_liquidity.initialize`. Required. |
 | `TEST_SUBMITTER_SECRET` | SDK integration tests | none | Friendbot-funded testnet submitter secret. Integration tests skip when absent. |
 | `TEST_LP_SECRET` | SDK integration tests | none | Friendbot-funded testnet liquidity-provider secret. Integration tests skip when absent. |
 | `TEST_RPC_URL` | SDK integration tests | Stellar testnet RPC | Optional SDK integration RPC override. |

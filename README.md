@@ -155,14 +155,23 @@ same scripts out across the whole workspace.
 ## Deploying to Testnet
 
 ```bash
-export STELLAR_ACCOUNT=your-account-alias
+export STELLAR_TESTNET_DEPLOYER_SECRET="S..."
+export ILN_ADMIN_ADDRESS="G..."            # explicit admin, never a throwaway key
+export ILN_GOV_TOKEN_ADDRESS="C..."
+export ILN_GOV_TOKEN_TOTAL_SUPPLY="1000000000"
+export TESTNET_USDC_SAC="C..."
+export TESTNET_EURC_SAC="C..."
+export TESTNET_XLM_SAC="C..."
 make build
 make deploy-testnet
 ```
 
-`make deploy-testnet` builds all contracts and deploys them to Stellar testnet via
-[`scripts/deploy-testnet.sh`](scripts/deploy-testnet.sh). Use `make seed` to populate a fresh
-deployment with sample invoices, and `make reset-testnet` to reset local/testnet state.
+`make deploy-testnet` builds all contracts, deploys them to Stellar testnet, initializes each
+one with the supplied admin/token configuration, and verifies initialization before writing
+`.contracts-testnet.env` and `deploy-summary.json`. It also snapshots the previous records so
+`scripts/verify-deployment.ts --rollback-on-failure` can restore known-good local pointers.
+Use `make seed` to populate a fresh deployment with sample invoices, and
+`make reset-testnet` to reset local/testnet state.
 
 ---
 

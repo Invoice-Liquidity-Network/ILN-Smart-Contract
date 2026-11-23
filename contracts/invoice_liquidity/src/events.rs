@@ -1,3 +1,30 @@
+//! Event payload schemas for the invoice liquidity contract.
+//!
+//! # Stability contract (audited — see `docs/event-topic-audit.md`)
+//!
+//! * **Topic 0** is always a `Symbol` naming the event (`"funded"`,
+//!   `"paid"`, ...). Optional topics that follow are scoping keys
+//!   (`invoice_id`, `lp`/`funder`, `feed_type`, ...), never payload data.
+//! * A topic symbol identifies exactly one payload type, and a payload type is
+//!   emitted under exactly one topic symbol. The only deliberate fan-in is
+//!   several *call sites* emitting the same (topic, payload) pair, e.g.
+//!   `parameter_updated` (discriminated by `ParameterUpdated::param_name`) or
+//!   `expired` (emitted by `expire_invoice` and by inline expiry detection).
+//! * Payload structs are `#[contracttype]` maps keyed by field name. Fields
+//!   must not be renamed or removed; additions are a breaking change for
+//!   strict decoders and must be announced in `CHANGELOG.md`.
+//! * Events are only observable if the emitting invocation succeeds: Soroban
+//!   discards the events of any call that returns `Err`. A rejection "event"
+//!   emitted before an `Err` return (e.g. `queue_resolve_attempt` with
+//!   `success = false`) is therefore never visible on-chain.
+//! * The ledger sequence/close time of an event comes from the Soroban event
+//!   envelope (RPC `getEvents` `ledger` / `ledgerClosedAt`); payload
+//!   `timestamp`-style fields are an additional convenience, not the source
+//!   of truth.
+//!
+//! `src/tests_event_topics.rs` pins the topic -> payload registry and the
+//! lifecycle payload field lists so any drift fails CI.
+
 use soroban_sdk::{contracttype, Address, BytesN, Symbol};
 
 use crate::invoice::{InvoiceStatus, ReferralCode};
@@ -588,12 +615,41 @@ pub struct FundQueueResolved {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FundQueueResolutionAttempted {
     pub invoice_id: u64,
-    /// Caller that triggered the resolution attempt.
+    /// Ledger sequence at which the invoice's fund queue was opened
+    /// (`0` when that record is missing). Despite the name this is *not* a
+    /// caller address; the field name is kept for wire compatibility.
     pub caller_ledger: u32,
     /// Ledger sequence when the attempt was made.
     pub attempted_at_ledger: u32,
     /// Whether the resolution succeeded.
     pub success: bool,
+}
+
+/// Issue #1027: emitted by `resolve_fund_queue` only when more than one LP
+/// was tied at the top (current) score and the winner was drawn by
+/// `env.prng()`. Lets off-chain monitors measure tie frequency and per-LP
+/// tie-win rates.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueTieBroken {
+    pub invoice_id: u64,
+    /// Number of entries tied at the top score (always >= 2).
+    pub tied_count: u32,
+    /// Index of the winner within the queue.
+    pub winner_index: u32,
+    pub approved_lp: Address,
+}
+
+/// Issue #1095: emitted when a full fund queue admits a strictly
+/// higher-scored LP and displaces its lowest-scored entry.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueEntryDisplaced {
+    pub invoice_id: u64,
+    pub displaced_lp: Address,
+    pub displaced_score: u32,
+    pub new_lp: Address,
+    pub new_score: u32,
 }
 
 /// Emitted by `recover_fund_queue` (Issues #1020/#1021). `evicted_lp` is the
@@ -783,4 +839,44 @@ pub struct QueueTieScoreMarginUpdated {
     pub old_margin: u32,
     pub new_margin: u32,
     pub updated_by: Address,
+}
+
+// ── Issue #1165: invoice evidence commitment + verification events ────────────
+
+/// Emitted when a freelancer attaches a versioned content commitment to an
+/// invoice. `digest` is a SHA-256 commitment only — never the document or any
+/// PII. Topic: `symbol!("evidence_submitted")`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvidenceSubmitted {
+    pub invoice_id: u64,
+    pub submitter: Address,
+    /// Commitment scheme version the digest is encoded under.
+    pub version: u32,
+    pub digest: BytesN<32>,
+    pub submitted_at: u64,
+}
+
+/// Emitted when an authorized verifier marks an invoice's evidence verified.
+/// Topic: `symbol!("evidence_verified")`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvidenceVerified {
+    pub invoice_id: u64,
+    pub verifier: Address,
+    pub version: u32,
+    pub digest: BytesN<32>,
+    pub verified_at: u64,
+}
+
+/// Emitted when an authorized verifier rejects an invoice's evidence.
+/// Topic: `symbol!("evidence_rejected")`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvidenceRejected {
+    pub invoice_id: u64,
+    pub verifier: Address,
+    pub version: u32,
+    pub digest: BytesN<32>,
+    pub rejected_at: u64,
 }

@@ -11,6 +11,10 @@
  *   tsx indexer/scripts/restore.ts --latest
  *   tsx indexer/scripts/restore.ts --file ./backups/indexer-backup-2026-08-26T07-00-00-000Z.db.gz
  *   tsx indexer/scripts/restore.ts --latest --target ./restored/indexer.db
+ *
+ * A snapshot that is missing tables/columns or breaks schema invariants (see
+ * src/db/integrityCheck.ts) is refused before anything is installed, unless
+ * --allow-incompatible is passed.
  */
 
 import fs from 'node:fs/promises';
@@ -18,12 +22,20 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { sha256File, type BackupManifest } from './backup.js';
+import { checkSchemaIntegrity, findSchemaDrift } from '../src/db/integrityCheck.js';
 
 export interface RestoreOptions {
   file?: string;
   latest?: boolean;
   target?: string;
   force?: boolean;
+  /**
+   * Install the snapshot even when it is missing tables/columns the current
+   * indexer needs or contains rows that break schema invariants. Off by
+   * default: such a snapshot passes SQLite's own integrity_check but would
+   * make the indexer fail at startup or serve invalid accounting data.
+   */
+  allowIncompatible?: boolean;
   backupDir?: string;
 }
 
@@ -118,9 +130,36 @@ export async function runRestore(options: RestoreOptions = {}): Promise<string> 
         console.log(`    ${name}: ${n} row(s)`);
       }
 
-      const ledgerRow = db
-        .prepare(`SELECT state_value FROM indexer_state WHERE state_key = 'last_processed_ledger'`)
-        .get() as { state_value: string } | undefined;
+      // Schema compatibility: integrity_check and row counts say nothing about
+      // whether the snapshot matches the schema this indexer version expects.
+      // Drift is checked first because the row-level checks need the tables.
+      const drift = findSchemaDrift(db);
+      const driftErrors = drift.filter((v) => v.severity === 'error');
+      const rowViolations = driftErrors.length === 0 ? checkSchemaIntegrity(db) : [];
+      const violations = [...drift, ...rowViolations];
+      for (const v of violations.filter((x) => x.severity === 'warning')) {
+        console.warn(`  warning: ${v.detail}`);
+      }
+      const blocking = violations.filter((v) => v.severity === 'error');
+      if (blocking.length > 0) {
+        const summary = blocking.map((v) => v.detail).join('; ');
+        if (!options.allowIncompatible) {
+          throw new Error(
+            `Restored snapshot is incompatible with the current indexer schema (${blocking.length} problem(s)): ${summary}. ` +
+              `Nothing was installed. Use --allow-incompatible to override.`
+          );
+        }
+        console.warn(`  --allow-incompatible: installing despite ${blocking.length} problem(s): ${summary}`);
+      } else {
+        console.log('  schema check:      ok');
+      }
+
+      // An old-shape snapshot installed with --allow-incompatible has no checkpoint table.
+      const ledgerRow = counts.some((t) => t.name === 'indexer_state')
+        ? (db
+            .prepare(`SELECT state_value FROM indexer_state WHERE state_key = 'last_processed_ledger'`)
+            .get() as { state_value: string } | undefined)
+        : undefined;
       console.log(`  restored checkpoint ledger: ${ledgerRow?.state_value ?? 'none recorded'}`);
     } finally {
       db.close();
@@ -156,6 +195,7 @@ function parseArgs(argv: string[]): RestoreOptions {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--latest') args.latest = true;
     else if (argv[i] === '--force-overwrite') args.force = true;
+    else if (argv[i] === '--allow-incompatible') args.allowIncompatible = true;
     else if (argv[i] === '--file') { i += 1; args.file = argv[i]; }
     else if (argv[i] === '--target') { i += 1; args.target = argv[i]; }
   }

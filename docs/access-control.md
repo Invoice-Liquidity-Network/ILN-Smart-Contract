@@ -263,7 +263,7 @@ This isolation ensures that the insurance pool cannot be drained except through 
 | `get_delegate` | Anyone | Reads vote delegation target for an address |
 | `execute_proposal` | Anyone | Executes a passed proposal after timelock expires |
 | `veto_proposal` | Admin | Vetoes an active or passed proposal |
-| `disable_veto_power` | Admin | Permanently removes admin veto capability |
+| `disable_veto_power` | Admin | Permanently removes admin veto capability; requires `execution_delay >= MIN_ACTIVE_TIMELOCK_LEDGERS` (Issue #981) |
 | `is_veto_power_enabled` | Anyone | Checks if veto power is still active |
 
 ### Proposal Query & Status
@@ -287,7 +287,7 @@ This isolation ensures that the insurance pool cannot be drained except through 
 | `get_max_delegation_depth` | Anyone | Reads max delegation depth setting |
 | `set_gov_token_total_supply` | Admin (ILN Contract) | Updates total supply of governance token |
 | `get_gov_token_total_supply` | Anyone | Reads current governance token total supply |
-| `set_execution_delay` | Admin | Sets timelock delay before proposal execution (in ledgers) |
+| `set_execution_delay` | Admin | Sets timelock delay before proposal execution (in ledgers); cannot go below `MIN_ACTIVE_TIMELOCK_LEDGERS` once the veto is disabled; bumps the timelock policy version (Issues #981/#982) |
 | `get_execution_delay` | Anyone | Reads current execution delay setting |
 | `get_timelock_status` | Anyone | Reads delay, veto-enabled flag, signer count and threshold in one call |
 | `get_proposal_eta` | Anyone | Reads the earliest executable ledger of a proposal (`0` until it has passed) |

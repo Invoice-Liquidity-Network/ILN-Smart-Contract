@@ -356,9 +356,12 @@ impl IlnDistribution {
             .saturating_add(payer_reward)
     }
 
-/// Set LP reward rate (requires governance contract authorization).
+/// Set LP reward rate.
 ///
-/// Access: Anyone
+/// # Access
+/// * Restricted to the ILN core contract via `require_auth` — the same
+///   address that gates `accrue_lp`; there is no separate governance
+///   contract. See docs/distribution-funding-settlement.md.
 pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
@@ -379,9 +382,12 @@ pub fn set_lp_reward_rate(env: Env, new_rate: i128) {
         );
     }
 
-/// Set freelancer reward rate (requires governance contract authorization).
+/// Set freelancer reward rate.
 ///
-/// Access: Anyone
+/// # Access
+/// * Restricted to the ILN core contract via `require_auth` — the same
+///   address that gates `accrue_lp`; there is no separate governance
+///   contract. See docs/distribution-funding-settlement.md.
 pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env
@@ -402,9 +408,12 @@ pub fn set_freelancer_reward_rate(env: Env, new_rate: i128) {
         );
     }
 
-/// Set payer reward rate (requires governance contract authorization).
+/// Set payer reward rate.
 ///
-/// Access: Anyone
+/// # Access
+/// * Restricted to the ILN core contract via `require_auth` — the same
+///   address that gates `accrue_lp`; there is no separate governance
+///   contract. See docs/distribution-funding-settlement.md.
 pub fn set_payer_reward_rate(env: Env, new_rate: i128) {
         Self::require_governance_invoker(&env);
         let old_rate: i128 = env

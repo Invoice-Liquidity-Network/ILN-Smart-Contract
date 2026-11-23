@@ -19,6 +19,124 @@
 //! `add_token` are: gated by `require_admin`, with governance driving it via
 //! a cross-contract proposal execution where the ILN contract's stored admin
 //! is the governance contract's own address.
+//!
+//! ─────────────────────────────────────────────────────────────────────────
+//! Registration, removal & feeder-removal invariants (Issue #1190)
+//! ─────────────────────────────────────────────────────────────────────────
+//!
+//! This section is the canonical statement of what registration
+//! (`register_oracle`, `register_token_oracle`, `add_price_source`,
+//! `add_identity_oracle`), removal (`remove_oracle`, `remove_token_oracle`,
+//! `remove_price_source`, `remove_identity_oracle`), quorum configuration
+//! (`set_identity_quorum`) and the health/staleness machinery MUST preserve
+//! about *verified prices* (`get_verified_price`) and the funding gate. It
+//! documents *observed* behaviour of this implementation (each claim is backed
+//! by a code path or a compiled test) and separates it from residual risk that
+//! is not (and cannot be) enforced on-chain. Any change to these entry points
+//! MUST keep this list true or update it deliberately.
+//!
+//! ## List separation (why registration/removal of feeders cannot alter prices)
+//!
+//! * Three independent registries live on three distinct `DataKey`s and never
+//!   alias: the single-oracle resolution chain
+//!   `OracleRegistry(feed)` / `TokenOracle(feed, token)` (the boolean Identity
+//!   gate), the multi-source `PriceSources(feed)` list (the **only** input to
+//!   `get_verified_price`), and the `IdentityOracles(feed)` quorum list (the
+//!   **only** input to `check_identity_quorum`).
+//! * `register_oracle` / `remove_oracle` / `register_token_oracle` /
+//!   `remove_token_oracle` / `add_identity_oracle` / `remove_identity_oracle` /
+//!   `set_identity_quorum` therefore cannot add, remove or reorder a price
+//!   source: `get_price_sources` and `get_verified_price` are a pure function
+//!   of `PriceSources(feed)` alone. Only `add_price_source` /
+//!   `remove_price_source` change verified prices, and both are admin-gated.
+//! * Symmetrically, `add_price_source` / `remove_price_source` /
+//!   `set_max_price_deviation_bps` do not touch any Identity feeder list, so
+//!   they cannot change the funding gate's quorum decision.
+//!
+//! ## Registration (a rogue feeder cannot join without admin)
+//!
+//! * Every mutating entry point begins with `require_admin()` and fails
+//!   `Unauthorized` before any write, and is further gated by
+//!   `check_rate_limit(.., DEFAULT_RATE_LIMIT_LEDGERS)`. In production the
+//!   stored admin is the governance contract, so each change is a proposal.
+//! * `register_oracle` / `register_token_oracle` additionally perform an
+//!   interface-version handshake (`verify_oracle_interface_version`), rejecting
+//!   an incompatible/absent implementation with `IncompatibleInterfaceVersion`.
+//! * `add_price_source` / `add_identity_oracle` deliberately do **not**
+//!   handshake — sources and feeders are queried dynamically and
+//!   non-panicking, so an incompatible/inert member can only *fail to
+//!   contribute*, never force a result. Both are idempotent (re-adding an
+//!   existing member is a no-op) and bounded per feed
+//!   (`MAX_PRICE_SOURCES_PER_FEED` → `TooManyPriceSources`;
+//!   `MAX_IDENTITY_ORACLES_PER_FEED` → `TooManyIdentityOracles`).
+//!
+//! ## Removal (cannot silently weaken a gate)
+//!
+//! * Removal entry points are unconditional: removing an address that isn't
+//!   registered is a successful no-op (the list/registration is rewritten
+//!   without it) and still emits the `*_removed` event.
+//! * `remove_oracle` / `remove_token_oracle` clear a resolution-chain entry, so
+//!   resolution falls through to the next priority level — or to *unconfigured*
+//!   (the legacy fail-open path) if nothing remains.
+//! * `remove_identity_oracle` **does not re-validate the configured quorum**
+//!   against the remaining list, so removal can leave
+//!   `get_identity_quorum() > get_identity_oracles().len()` — an unreachable
+//!   threshold. This is **fail-closed**, not a bypass: the gate can never reach
+//!   the threshold, so funding fails `PayerUnverified` until governance removes
+//!   feeders down to a reachable set or lowers the quorum. The condition is
+//!   observable via `OracleStatusView.identity_quorum` vs `identity_oracles.len()`
+//!   and via `check_identity_quorum_health`.
+//! * `remove_price_source` shrinks the sample `get_verified_price` reads: a feed
+//!   dropped to zero sources returns `NoPriceSource` (fail-closed), and to one
+//!   source returns that source unchecked (the documented single-source risk).
+//!   Removing sources can never make a price *more* authoritative.
+//!
+//! ## Stale data (cannot set a verified price)
+//!
+//! * `get_verified_price` passes `require_healthy_price_feed` first: an open
+//!   circuit breaker → `OracleCircuitOpen`; a recorded stale snapshot →
+//!   `OracleDataStale`. Both fail closed before any source is read.
+//! * Freshness is the single shared predicate `is_oracle_data_stale`
+//!   (`age >= max_age`, with future-dated timestamps treated as stale and
+//!   `max_age == 0` disabling the check), also used by `record_oracle_health`
+//!   and the quorum gate, so the recorded snapshot and a gate decision cannot
+//!   disagree about freshness.
+//!
+//! ## Rogue feeders (cannot alter verified prices)
+//!
+//! * A rogue Identity feeder can be added only by admin; once present it
+//!   affects only the Identity gate, never `get_verified_price` (separate list).
+//! * In the quorum gate, a feeder that reverts/traps/returns an undecodable
+//!   payload degrades to `FeederHealth::Unreachable` via the non-panicking
+//!   `try_invoke_contract` — "no opinion", which can never *satisfy* the
+//!   quorum. Disagreement (fewer than `N` agree) fails closed
+//!   `PayerUnverified` and emits `OracleFeederDisagreement`.
+//! * A rogue *price* source (admin-registered) is bounded by the median +
+//!   `get_max_price_deviation_bps()` outlier filter, and its exclusion emits
+//!   `PriceOutlierRejected`; with only one source it is trusted unchecked (the
+//!   documented accepted risk).
+//!
+//! ## Residual risk (verified vs. not enforced on-chain)
+//!
+//! * Single-source price feeds are trusted unchecked — cross-source protection
+//!   needs ≥2 independent sources (≥3 to single out one outlier). Not
+//!   enforceable in this module.
+//! * A compromised **majority** of Identity feeders satisfies the quorum and is
+//!   indistinguishable on-chain from honest agreement; remediation is the
+//!   admin-governance `remove_identity_oracle` action, not an on-chain rule.
+//! * After removal, a stale `OracleCircuitTripped` flag can persist if a tripped
+//!   oracle is replaced without `reset_oracle_circuit`; funding behaviour is
+//!   still correct (the replacement is never the excluded address), only the
+//!   flag is stale — see `resolve_oracle_for_verification`.
+//! * `DataKey::MinPriceQuorum` is declared in `storage.rs` but no entry point in
+//!   this module reads or writes it (out of scope for #1190) — it has no effect
+//!   on `get_verified_price` today.
+//!
+//! Verified (compiled) by: `tests_oracle_registry.rs` (the `test_1190_*` and
+//! `test_1054_*` suites) and `tests_price_deviation.rs` (the `test_1190_*`
+//! suite and the price-source CRUD suite). See `docs/oracle-design.md`
+//! § "Registration, Removal & Feeder-Removal Invariants (Issue #1190)".
+//! ─────────────────────────────────────────────────────────────────────────
 
 use soroban_sdk::{contracttype, vec, Address, Env, IntoVal, Symbol};
 
@@ -30,7 +148,7 @@ use crate::errors::ContractError;
 use crate::events::{
     IdentityOracleAdded, IdentityOracleRemoved, OracleCircuitRecovered, OracleCircuitReset,
     OracleCircuitTripped, OracleDataStaleRejected, OracleFeederDisagreement, OracleHealthRecorded,
-    OracleRegistered, OracleUnregistered, PriceOutlierRejected, PriceSourceAdded,
+    OracleRegistered, OracleUnregistered, ParameterUpdated, PriceOutlierRejected, PriceSourceAdded,
     PriceSourceRemoved, TwapEnabledForFeed, TwapInsufficientData, TwapWindowUpdated,
 };
 use crate::oracle_interface::{OracleClient, ORACLE_INTERFACE_VERSION};
@@ -1136,9 +1254,32 @@ pub fn set_identity_quorum(env: &Env, quorum: u32) -> Result<(), ContractError> 
     if quorum == 0 || quorum > MAX_IDENTITY_ORACLES_PER_FEED {
         return Err(ContractError::InvalidIdentityQuorum);
     }
+    let old_quorum = get_identity_quorum(env.clone());
     env.storage()
         .instance()
         .set(&DataKey::IdentityQuorum, &quorum);
+
+    // Audit (docs/event-topic-audit.md, docs/events.md): the quorum changes
+    // who can unblock oracle-gated funding, so the change must be observable.
+    // Emitted with the shared `parameter_updated` topic, discriminated by
+    // `param_name = "identity_quorum"`, exactly like the other governance knobs.
+    // `require_admin` above guarantees an admin exists.
+    if let Some(updated_by) = crate::storage::get_admin(env) {
+        let pn = Symbol::new(env, "identity_quorum");
+        env.events().publish(
+            (
+                Symbol::new(env, "parameter_updated"),
+                pn.clone(),
+                updated_by.clone(),
+            ),
+            ParameterUpdated {
+                param_name: pn,
+                old_value: old_quorum as i128,
+                new_value: quorum as i128,
+                updated_by,
+            },
+        );
+    }
     Ok(())
 }
 
