@@ -1547,7 +1547,7 @@ mod proof_obligation_tests {
         };
         let invalid = ModelInvoice {
             funded: 101,
-            ..funded
+            ..funded.clone()
         };
 
         assert!(balances_valid(&funded) && status_balances_valid(&funded));

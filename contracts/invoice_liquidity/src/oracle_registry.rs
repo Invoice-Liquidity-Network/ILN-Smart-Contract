@@ -679,7 +679,7 @@ fn maybe_recover_oracle_circuit(
     previous: &Option<OracleHealthStatus>,
     current_ledger: u32,
 ) {
-    if !is_oracle_circuit_tripped(env, feed_type, token.clone()) {
+    if !is_oracle_circuit_tripped(env, feed_type, token) {
         return;
     }
     let recovery_key = DataKey::OracleCircuitRecovery(feed_type, token.clone());
@@ -1646,12 +1646,16 @@ pub struct OracleStatusView {
     /// quorum list is registered this stays `None` no matter how often
     /// verification runs. That blind spot is exactly what
     /// [`check_identity_quorum_health`] fills.
-    pub health: Option<OracleHealthStatus>,
+    ///
+    /// Encoded as a zero-or-one element `Vec` (empty = `None`): soroban-sdk
+    /// cannot convert an `Option` of a user-defined type inside a
+    /// `#[contracttype]` struct to XDR.
+    pub health: soroban_sdk::Vec<OracleHealthStatus>,
     /// Whether the circuit breaker is currently open for this feed + token.
     pub circuit_tripped: bool,
-    /// In-progress half-open recovery of an open breaker (Issue #1048), or
-    /// `None` when nothing is recovering.
-    pub recovery: Option<CircuitRecoveryState>,
+    /// In-progress half-open recovery of an open breaker (Issue #1048);
+    /// empty when nothing is recovering (zero-or-one element, see `health`).
+    pub recovery: soroban_sdk::Vec<CircuitRecoveryState>,
     /// Registered Identity quorum feeders, in registration order. Empty for
     /// non-`Identity` feeds and when the multi-oracle quorum is not in use (in
     /// which case the single-oracle chain above governs).
@@ -1676,19 +1680,34 @@ pub fn get_oracle_status(env: Env, feed_type: OracleFeedType, token: Address) ->
         feed_type,
         token: token.clone(),
         resolved_oracle: resolve_oracle(&env, feed_type, &token),
-        health: env
-            .storage()
-            .persistent()
-            .get(&DataKey::OracleHealth(feed_type, token.clone())),
+        health: optional_to_vec(
+            &env,
+            env.storage()
+                .persistent()
+                .get(&DataKey::OracleHealth(feed_type, token.clone())),
+        ),
         circuit_tripped: is_oracle_circuit_tripped(&env, feed_type, &token),
-        recovery: env
-            .storage()
-            .persistent()
-            .get(&DataKey::OracleCircuitRecovery(feed_type, token.clone())),
+        recovery: optional_to_vec(
+            &env,
+            env.storage()
+                .persistent()
+                .get(&DataKey::OracleCircuitRecovery(feed_type, token.clone())),
+        ),
         identity_oracles: get_identity_oracles(env.clone(), feed_type),
         identity_quorum: get_identity_quorum(env.clone()),
         price_sources: get_price_sources(env, feed_type),
     }
+}
+
+fn optional_to_vec<T>(env: &Env, value: Option<T>) -> soroban_sdk::Vec<T>
+where
+    T: soroban_sdk::IntoVal<Env, soroban_sdk::Val> + soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
+{
+    let mut out = soroban_sdk::Vec::new(env);
+    if let Some(v) = value {
+        out.push_back(v);
+    }
+    out
 }
 
 /// Issue #1055: the single per-feeder predicate shared by the funding gate

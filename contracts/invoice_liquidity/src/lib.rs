@@ -23,7 +23,8 @@ use access::{check_rate_limit, lock_reentrancy, unlock_reentrancy};
 pub mod constants;
 use constants::{
     ADMIN_CHANGE_COOLDOWN_LEDGERS, DEFAULT_RATE_LIMIT_LEDGERS, ECONOMIC_PARAM_COOLDOWN_LEDGERS,
-    MAX_FEE_TIERS, QUEUE_DELAY_LEDGERS, UPGRADE_COOLDOWN_LEDGERS,
+    MAX_DISCOUNT_RATE, MAX_FEE_TIERS, MAX_PROTOCOL_FEE_BPS, QUEUE_DELAY_LEDGERS,
+    UPGRADE_COOLDOWN_LEDGERS,
 };
 pub mod oracle_interface;
 pub mod oracle_registry;
@@ -52,8 +53,8 @@ use crate::storage::get_admin;
 use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
-    DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved, FundQueueTieBroken,
-    FundRequested,
+    DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved,
+    FundQueueTieBroken, FundRequested, RollbackRehearsalCompleted, TokenDecimalsCorrected,
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
     InvoiceTransferred, InvoiceUpdated, LPPositionTransferred, ParameterUpdated,
@@ -370,6 +371,7 @@ pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
 /// Access: Admin only
 pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
+        validate_fee_rate(rate)?;
         check_rate_limit(&env, "update_fee_rate", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_rate");
 
@@ -412,6 +414,7 @@ pub fn update_fee_rate(env: Env, rate: u32) -> Result<(), ContractError> {
 /// Access: Admin only
 pub fn update_max_discount(env: Env, rate: u32) -> Result<(), ContractError> {
         require_admin(&env)?;
+        validate_max_discount(rate)?;
         check_rate_limit(&env, "update_max_discount", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_max_discount");
 
@@ -1415,6 +1418,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         proposer: Address,
         rate: u32,
     ) -> Result<u64, ContractError> {
+        validate_fee_rate(rate)?;
         multisig::propose(&env, &proposer, multisig::AdminAction::SetFeeRate(rate))
     }
 
@@ -1425,6 +1429,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
         proposer: Address,
         rate: u32,
     ) -> Result<u64, ContractError> {
+        validate_max_discount(rate)?;
         multisig::propose(&env, &proposer, multisig::AdminAction::SetMaxDiscount(rate))
     }
 
@@ -1557,6 +1562,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                 );
             }
             multisig::AdminAction::SetFeeRate(rate) => {
+                validate_fee_rate(rate)?;
                 let old_rate: u32 = env
                     .storage()
                     .instance()
@@ -1579,6 +1585,7 @@ pub fn unpause(env: Env) -> Result<(), ContractError> {
                 );
             }
             multisig::AdminAction::SetMaxDiscount(rate) => {
+                validate_max_discount(rate)?;
                 let old_rate: u32 = env
                     .storage()
                     .instance()
@@ -1845,6 +1852,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         // `require_admin` so authorization still takes precedence.
         if tiers.len() > MAX_FEE_TIERS {
             return Err(ContractError::TooManyFeeTiers);
+        }
+        for (_, rate) in tiers.iter() {
+            validate_fee_rate(rate)?;
         }
         check_rate_limit(&env, "update_fee_tiers", ECONOMIC_PARAM_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "update_fee_tiers");
@@ -2679,7 +2689,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 tied.push_back(i);
             }
         }
-        let tied_count: u32 = tied.len();
+        let tied_count = tied.len();
         let winner_index: u32 = if tied_count > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
             // version — generate as u64, then narrow (safe: tied.len() is
@@ -2837,6 +2847,16 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             },
         );
         Ok(Some(winner))
+    }
+
+    /// Issue #1015: report the current TTL (and margin above the pre-upgrade
+    /// safety threshold) for `invoice_id`'s fund-queue-related persistent
+    /// keys, so off-chain monitors can alert on TTL drift before it causes
+    /// an upgrade rejection (Issue #1082) or a `QueueStateArchived` failure
+    /// in `resolve_fund_queue` (Issue #1013).
+    /// Access: Anyone
+    pub fn get_fund_queue_ttl_margins(env: Env, invoice_id: u64) -> FundQueueTtlMargins {
+        crate::invoice::get_fund_queue_ttl_margins(&env, invoice_id)
     }
 
     // ------------------------------------------------------------
@@ -4550,6 +4570,25 @@ fn token_client<'a>(env: &'a Env, token: &Address) -> TokenClient<'a> {
     TokenClient::new(env, token)
 }
 
+/// Issue #1160: every fee-setting path (direct admin, governance via
+/// `update_fee_rate` / `update_fee_tiers`, multisig) shares this bound.
+fn validate_fee_rate(rate: u32) -> Result<(), ContractError> {
+    if rate > MAX_PROTOCOL_FEE_BPS {
+        return Err(ContractError::InvalidFeeRate);
+    }
+    Ok(())
+}
+
+/// Issue #1160: the stored maximum discount gates `update_invoice` and
+/// batch submission, so it must not exceed the hard cap `submit_invoice`
+/// already enforces; a discount above 100% makes funding cost negative.
+fn validate_max_discount(rate: u32) -> Result<(), ContractError> {
+    if rate > MAX_DISCOUNT_RATE {
+        return Err(ContractError::InvalidDiscountRate);
+    }
+    Ok(())
+}
+
 fn discount_rate_as_i128(rate: u32) -> i128 {
     rate as i128
 }
@@ -4922,8 +4961,15 @@ mod tests_reputation_decay_long_idle;
 mod tests_nft_event_emission;
 // Issue #851: NFT transfer reputation and insurance consistency
 mod tests_nft_transfer_consistency;
-// Issue #1159: invoice lifecycle state-machine and accounting invariants
-// (see docs/invoice-lifecycle-invariants.md).
-mod tests_lifecycle_invariants;
-// Audit: event topic / payload stability (see docs/event-topic-audit.md).
-mod tests_event_topics;
+// Issues #914, #915, #916, #918: Configuration parameter bounds validation
+mod tests_config_parameter_bounds;
+// Issues #1070–#1073: token decimals, SAC authorization, frozen accounts, clawback
+mod tests_token_safety;
+// Issue #1025: Benchmark extension cost at maximum depth and queue TTL / pause controls
+mod tests_max_depth_extension;
+// Issue #1027: Focused tests for join-order tie-breaking replacement
+mod tests_tie_breaking;
+// Issue #1160: custody, payout and refund accounting regressions
+mod tests_custody_accounting;
+// Issue #1161: privileged-control (authority matrix) regression suite
+mod tests_authority_matrix;

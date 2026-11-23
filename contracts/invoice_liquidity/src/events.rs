@@ -665,6 +665,33 @@ pub struct FundQueueRecovered {
     pub purged: bool,
 }
 
+/// Issue #1092: emitted by `resolve_fund_queue` only when more than one LP
+/// was tied at the top score and the winner was drawn by `env.prng()`.
+/// Lets off-chain monitors measure tie frequency and per-LP tie-win rates
+/// (see docs/formal-verification-cross-contract.md, assumption Q-A3).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueTieBroken {
+    pub invoice_id: u64,
+    /// Number of entries tied at the top score (always >= 2).
+    pub tied_count: u32,
+    /// Index of the winner within the queue.
+    pub winner_index: u32,
+    pub approved_lp: Address,
+}
+
+/// Issue #1091: emitted when a full fund queue admits a strictly
+/// higher-scored LP and displaces its lowest-scored entry.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundQueueEntryDisplaced {
+    pub invoice_id: u64,
+    pub displaced_lp: Address,
+    pub displaced_score: u32,
+    pub new_lp: Address,
+    pub new_score: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvoiceExpired {

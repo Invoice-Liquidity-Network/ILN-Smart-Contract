@@ -119,7 +119,7 @@ mod tests {
         let proposal_id = t.contract.propose_pause(&t.admin1);
 
         // Only admin1 has signed (needs 2)
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
 
         // Threshold not reached yet
         let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
@@ -139,8 +139,7 @@ mod tests {
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
 
-        // First signature
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
 
         // Second signature - threshold reached
         t.contract.sign_proposal(&t.admin2, &proposal_id);
@@ -181,8 +180,7 @@ mod tests {
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
 
-        // First signature
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
 
         // Same address tries to sign again
         let result = t.contract.try_sign_proposal(&t.admin1, &proposal_id);
@@ -215,7 +213,7 @@ mod tests {
         t.contract.initialize_multisig_admin(&three_signers(&t), &2);
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
 
         // Try to execute with only 1 signature (need 2)
         let result = t.contract.try_execute_proposal(&t.admin1, &proposal_id);
@@ -250,7 +248,7 @@ mod tests {
         t.contract.initialize_multisig_admin(&three_signers(&t), &2);
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
         t.contract.sign_proposal(&t.admin2, &proposal_id);
 
         // Execute once
@@ -293,13 +291,13 @@ mod tests {
 
         // First pause
         let pause_id = t.contract.propose_pause(&t.admin1);
-        t.contract.sign_proposal(&t.admin1, &pause_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
         t.contract.sign_proposal(&t.admin2, &pause_id);
         t.contract.execute_proposal(&t.admin1, &pause_id);
 
         // Then unpause
         let unpause_id = t.contract.propose_unpause(&t.admin1);
-        t.contract.sign_proposal(&t.admin1, &unpause_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
         t.contract.sign_proposal(&t.admin2, &unpause_id);
         t.contract.execute_proposal(&t.admin1, &unpause_id);
 
@@ -318,7 +316,7 @@ mod tests {
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
 
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
         t.contract.sign_proposal(&t.admin2, &proposal_id);
 
         // Should fail with only 2 signatures
@@ -342,7 +340,7 @@ mod tests {
         let t = setup_multisig();
         t.contract.initialize_multisig_admin(&three_signers(&t), &2);
 
-        let proposal_id = t.contract.propose_pause(&t.admin1);
+        let proposal_id = t.contract.propose_pause(&t.admin2);
 
         // Sign in reverse order
         t.contract.sign_proposal(&t.admin3, &proposal_id);
@@ -366,8 +364,7 @@ mod tests {
 
         let proposal_id = t.contract.propose_pause(&t.admin1);
 
-        // First signer signs
-        t.contract.sign_proposal(&t.admin1, &proposal_id);
+        // propose_* already recorded admin1 (the proposer) as an approval.
 
         // Advance ledger past the multisig window (17_280 ledgers)
         let mut ledger = t.env.ledger().get();

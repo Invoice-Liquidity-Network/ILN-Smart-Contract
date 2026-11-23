@@ -10,7 +10,7 @@ ILN uses **GitHub Organization teams** under `@Keengfk` rather than personal log
 | Area | CODEOWNERS team | Primary paths | Emergency contact method |
 |------|-----------------|---------------|--------------------------|
 | Contracts | `@Keengfk/contracts-team` | `contracts/` | GitHub team mention + private Security Advisory if funds at risk |
-| Security | `@Keengfk/security-lead` | `SECURITY.md`, security docs | `security@invoice-liquidity-network.local` / GitHub Security Advisory ([SECURITY.md](SECURITY.md)) |
+| Security | `@Keengfk/security-lead` | `SECURITY.md`, security docs | Private GitHub Security Advisory ([SECURITY.md](SECURITY.md)). No security mailbox is currently working; see [Contact Status](SECURITY.md#contact-status) |
 | Infrastructure / DevOps | `@Keengfk/devops` | `scripts/`, `.github/workflows/` | GitHub team mention; pager/on-call per [incident-response-runbook](docs/incident-response-runbook.md) |
 | Documentation | `@Keengfk/docs-lead` | `docs/` | GitHub team mention |
 | Community / default | `@Keengfk/maintainers` | everything else (`*`) | GitHub team mention; public support via [support-channels.md](docs/support-channels.md) |

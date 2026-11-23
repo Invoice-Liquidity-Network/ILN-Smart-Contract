@@ -51,6 +51,7 @@ Source of truth: [`contracts/invoice_liquidity/src/errors.rs`](../contracts/invo
 | 38 | `AmountTooSmall` | The invoice amount is below the configurable minimum threshold. | The submitted invoice amount is too low to be economically viable. | Increase the invoice amount to meet the minimum required by the contract configuration. |
 | 47 | `QueueFull` | The invoice's fund queue already holds `MAX_FUND_QUEUE_LEN` (50) LPs. | An additional LP tried to `join_fund_queue`. | Wait for the queue to be resolved/recovered, or fund directly if no resolution exists. |
 | 48 | `QueueNotStalled` | `recover_fund_queue` found nothing to recover. | No queue entries, winner not yet resolved, or the recovery grace period has not elapsed. | Retry after `QUEUE_RESOLUTION_TTL_LEDGERS` (or `QUEUE_DELAY_LEDGERS` when the invoice is within 24h of its due date). |
+| 84 | `InvalidFeeRate` | A protocol fee rate exceeds `MAX_PROTOCOL_FEE_BPS` (10 000 bps). | `update_fee_rate`, `update_fee_tiers`, `propose_set_fee_rate`, or executing a stored multisig `SetFeeRate` proposal with a rate above 100%. | Use a rate between 0 and 10 000 bps. See [custody-and-payout-matrix.md](custody-and-payout-matrix.md) F-01. |
 
 ---
 

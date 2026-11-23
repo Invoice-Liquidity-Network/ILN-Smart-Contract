@@ -118,8 +118,23 @@ pub fn has_signed(proposal: &MultisigProposal, signer: &Address) -> bool {
 }
 
 /// Check if proposal has reached the approval threshold
-pub fn threshold_reached(proposal: &MultisigProposal, threshold: u32) -> bool {
-    proposal.signers_approved.len() as u32 >= threshold
+/// Issue #1161: only approvals from addresses that are *currently* signers
+/// count. Approvals recorded before an `UpdateMultisig` or a finalized signer
+/// rotation removed the approver are ignored, so a removed key cannot keep
+/// contributing to the threshold.
+pub fn threshold_reached(
+    env: &Env,
+    proposal: &MultisigProposal,
+    signers: &Vec<Address>,
+    threshold: u32,
+) -> bool {
+    let mut current: u32 = 0;
+    for approver in proposal.signers_approved.iter() {
+        if is_signer(env, signers, &approver) {
+            current += 1;
+        }
+    }
+    current >= threshold
 }
 
 /// Check if proposal has expired
@@ -297,7 +312,7 @@ pub fn execute(
         env.storage().persistent().set(&proposal_key, &proposal);
         return Err(ContractError::ProposalExpired);
     }
-    if !threshold_reached(&proposal, config.threshold) {
+    if !threshold_reached(env, &proposal, &config.signers, config.threshold) {
         return Err(ContractError::ThresholdNotReached);
     }
 

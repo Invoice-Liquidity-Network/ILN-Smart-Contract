@@ -2,7 +2,9 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol};
 use soroban_sdk::testutils::storage::Persistent as _;
 
 use crate::config::Config;
-use crate::invoice::{AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, ReputationScore};
+use crate::invoice::{
+    AppealRecord, Invoice, InvoiceCore, InvoiceMetadata, LpFundRequest, ReputationScore,
+};
 use crate::multisig::AdminAction;
 
 #[contracttype]

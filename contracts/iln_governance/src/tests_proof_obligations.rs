@@ -200,6 +200,8 @@ fn proof_obligations_registry_is_consistent() {
             );
         }
     }
+}
+
 // Pure model of governance authorization and execution obligations.
 // Inputs are ballots with weights fixed at cast time, stored total supply,
 // configured quorum basis points, veto power/threshold, delegation edges, and

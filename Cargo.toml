@@ -15,6 +15,9 @@ exclude = [
 
 [workspace.dependencies]
 soroban-sdk = "29.0.1"
+# Must stay on the same version soroban-sdk resolves to (see Cargo.lock);
+# invoice_liquidity's dev-dependencies inherit it for `testutils`.
+soroban-env-host = "29.0.1"
 proptest = "1"
 rand = "0.10.1"
 
