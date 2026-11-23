@@ -37,16 +37,13 @@ Competing concerns:
 
 ## Decision
 
-**No timelock delay in v1.** `execute_proposal` is callable by anyone
-immediately after the 3-day voting window closes, provided quorum and majority
-criteria are met. The admin veto power serves as the emergency brake during the
-early phase.
+**No timelock delay in v1; configurable timelock activated in Phase 3 / Wave 9.**
+Initially in v1, `execute_proposal` was callable immediately after the 3-day voting window closed, provided quorum and majority criteria were met, with admin veto power serving as an emergency brake.
 
-The `TimelockNotExpired` error code is reserved in the error enum for a future
-timelock implementation.
-
-A timelock **must be introduced before the admin veto power is disabled**
-(which must happen before mainnet launch per the governance documentation).
+Per the protocol roadmap, timelock enforcement was activated prior to disabling admin veto power. In Wave 9 (Issues #978, #979, #980), timelock mechanics were hardened against audit failure modes:
+1. **Immutable Proposal Delay (#978)**: Delay configuration is snapshotted into `StorageKey::ProposalExecutionDelay(id)` at proposal creation (`create_proposal`). Global changes via `set_execution_delay` apply only to future proposals and cannot retroactively compress or extend the delay of in-flight proposals.
+2. **Current-Ledger Execution Rejection (#979)**: Execution where `current_ledger <= proposal.eta_ledger` is strictly rejected with `TimelockNotExpired`. Proposals cannot execute in the same ledger where ETA is set or reached; execution strictly requires `current_ledger > proposal.eta_ledger`, guaranteeing at least one discrete ledger boundary after ETA.
+3. **Auditable Lifecycle Events (#980)**: Transitions emit dedicated indexing events: `TimelockScheduled(proposal_id, eta_ledger, execution_delay)` when entering timelock (`Active -> Passed`), and `TimelockExecuted(proposal_id, eta_ledger, execution_ledger)` alongside `ProposalExecuted` upon execution (`Passed -> Executed`).
 
 ## Alternatives Considered
 
@@ -74,8 +71,5 @@ A timelock **must be introduced before the admin veto power is disabled**
   decentralised protocol.
 - The absence of a timelock is a known deviation from DeFi governance best
   practices (MakerDAO, Compound, Uniswap all use timelocks of 2–7 days).
-- **Action required:** A timelock must be implemented and activated via a
-  governance upgrade before `disable_veto_power()` is called. Failure to do
-  so leaves the protocol without any execution delay after full decentralisation.
-- The `TimelockNotExpired` error is reserved but unimplemented; contributors
-  must not assume it is enforced.
+- **Action required (Completed):** A configurable timelock has been implemented, hardened, and activated. Enforcement of `TimelockNotExpired` is live on `execute_proposal` with immutable per-proposal delay binding (#978), strict post-ETA boundary verification (#979), and auditable event emission (#980).
+- The `TimelockNotExpired` error is actively enforced; execution attempts with `current_ledger <= eta_ledger` are rejected.

@@ -236,6 +236,24 @@ pub struct VotesUndelegated {
     pub delegator: Address,
 }
 
+/// Issue #980: emitted when a passed proposal is scheduled into the timelock.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelockScheduled {
+    pub proposal_id: u64,
+    pub eta_ledger: u32,
+    pub execution_delay: u32,
+}
+
+/// Issue #980: emitted when a timelocked proposal is executed.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelockExecuted {
+    pub proposal_id: u64,
+    pub eta_ledger: u32,
+    pub execution_ledger: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProposalExecuted {
@@ -418,6 +436,8 @@ pub enum StorageKey {
     /// Issue #814: `true` once a proposal's deposit has been settled
     /// (refunded or forfeited) — guards against double-refund.
     ProposalDepositSettled(u64),
+    /// Issue #978: execution delay snapshotted for a proposal at creation time.
+    ProposalExecutionDelay(u64),
 }
 
 // ================================================================
@@ -496,7 +516,10 @@ impl GovContract {
         env.storage()
             .instance()
             .set(&StorageKey::MinQuorumBps, &DEFAULT_MIN_QUORUM_BPS);
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &DEFAULT_MAX_DELEGATION_DEPTH);
+        env.storage().instance().set(
+            &StorageKey::MaxDelegationDepth,
+            &DEFAULT_MAX_DELEGATION_DEPTH,
+        );
         env.storage()
             .instance()
             .set(&StorageKey::ProposalCount, &0_u64);
@@ -534,15 +557,23 @@ impl GovContract {
     }
 
     pub fn get_max_delegation_depth(env: Env) -> u32 {
-        env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH)
     }
 
     pub fn set_max_delegation_depth(env: Env, max_depth: u32) -> Result<(), GovernanceError> {
         let iln_contract = Self::get_iln_contract(&env)?;
         iln_contract.require_auth();
         let old_value: u32 = Self::get_max_delegation_depth(env.clone());
-        env.storage().instance().set(&StorageKey::MaxDelegationDepth, &max_depth);
-        env.events().publish((Symbol::new(&env, "max_delegation_depth_updated"),), (old_value, max_depth));
+        env.storage()
+            .instance()
+            .set(&StorageKey::MaxDelegationDepth, &max_depth);
+        env.events().publish(
+            (Symbol::new(&env, "max_delegation_depth_updated"),),
+            (old_value, max_depth),
+        );
         Ok(())
     }
 
@@ -694,6 +725,13 @@ impl GovContract {
             &proposer_balance,
         );
 
+        // Issue #978: Snapshot and bind the execution delay to the proposal at
+        // creation time, making its delay configuration immutable for its lifecycle.
+        let proposal_delay = Self::get_execution_delay(env.clone());
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ProposalExecutionDelay(id), &proposal_delay);
+
         env.storage()
             .persistent()
             .set(&StorageKey::Proposal(id), &proposal);
@@ -780,7 +818,9 @@ impl GovContract {
     /// Returns the configured forfeiture sink (treasury address), if any.
     /// When unset, forfeited deposits stay locked in this contract.
     pub fn get_proposal_deposit_sink(env: Env) -> Option<Address> {
-        env.storage().instance().get(&StorageKey::ProposalDepositSink)
+        env.storage()
+            .instance()
+            .get(&StorageKey::ProposalDepositSink)
     }
 
     /// Sets (or, when `sink` is `None`, clears) the forfeiture destination.
@@ -856,7 +896,9 @@ impl GovContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let token_addr = Self::get_gov_token(env)?;
+        let Ok(token_addr) = Self::get_gov_token(env) else {
+            return false;
+        };
         let token = TokenClient::new(env, &token_addr);
         let this = env.current_contract_address();
         token.transfer(&this, proposer, &amount);
@@ -899,9 +941,14 @@ impl GovContract {
         env.storage()
             .persistent()
             .remove(&StorageKey::ProposalDeposit(proposal_id));
-        let sink: Option<Address> = env.storage().instance().get(&StorageKey::ProposalDepositSink);
+        let sink: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ProposalDepositSink);
         if let Some(dest) = sink.clone() {
-            let token_addr = Self::get_gov_token(env)?;
+            let Ok(token_addr) = Self::get_gov_token(env) else {
+                return false;
+            };
             let token = TokenClient::new(env, &token_addr);
             let this = env.current_contract_address();
             token.transfer(&this, &dest, &amount);
@@ -977,11 +1024,7 @@ impl GovContract {
         let mut lo: i128 = 0;
         let mut hi: i128 = n;
         while lo < hi {
-            let mid = lo.saturating_add(
-                hi.saturating_sub(lo)
-                    .saturating_add(1)
-                    .saturating_div(2)
-            );
+            let mid = lo.saturating_add(hi.saturating_sub(lo).saturating_add(1).saturating_div(2));
             match mid.checked_mul(mid) {
                 Some(sq) if sq <= n => lo = mid,
                 _ => hi = mid.saturating_sub(1),
@@ -989,7 +1032,6 @@ impl GovContract {
         }
         lo
     }
-
 
     /// Returns the configured minimum proposer balance.
     pub fn get_min_proposal_balance(env: Env) -> i128 {
@@ -1288,6 +1330,31 @@ impl GovContract {
             .unwrap_or(0)
     }
 
+    /// Issue #978: Return the immutable execution delay captured for a proposal at creation time.
+    pub fn get_proposal_execution_delay(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<u32, GovernanceError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&StorageKey::Proposal(proposal_id))
+        {
+            return Err(GovernanceError::ProposalNotFound);
+        }
+        let delay = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ProposalExecutionDelay(proposal_id))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .instance()
+                    .get(&StorageKey::ExecutionDelay)
+                    .unwrap_or(0_u32)
+            });
+        Ok(delay)
+    }
+
     // ── execute_proposal ─────────────────────────────────────────
 
     pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
@@ -1350,16 +1417,33 @@ impl GovContract {
 
             proposal.status = ProposalStatus::Passed;
 
+            // Issue #978: Use the immutable execution delay captured at proposal creation time.
             let delay = env
                 .storage()
-                .instance()
-                .get(&StorageKey::ExecutionDelay)
-                .unwrap_or(0_u32);
+                .persistent()
+                .get(&StorageKey::ProposalExecutionDelay(proposal_id))
+                .unwrap_or_else(|| {
+                    env.storage()
+                        .instance()
+                        .get(&StorageKey::ExecutionDelay)
+                        .unwrap_or(0_u32)
+                });
             proposal.eta_ledger = env.ledger().sequence().saturating_add(delay);
 
             env.storage()
                 .persistent()
                 .set(&StorageKey::Proposal(proposal_id), &proposal);
+
+            // Issue #980: emit auditable timelock schedule event.
+            env.events().publish(
+                (Symbol::new(&env, "timelock_scheduled"), proposal_id),
+                TimelockScheduled {
+                    proposal_id,
+                    eta_ledger: proposal.eta_ledger,
+                    execution_delay: delay,
+                },
+            );
+
             // Issue #814: passed — refund the deposit (idempotent, so the
             // later Passed -> Executed call does not double-pay).
             Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer);
@@ -1368,7 +1452,9 @@ impl GovContract {
 
         if proposal.status == ProposalStatus::Passed {
             let current_ledger = env.ledger().sequence();
-            if current_ledger < proposal.eta_ledger {
+            // Issue #979: Reject execution whose eta is in the current ledger (or future).
+            // Execution requires current_ledger > eta_ledger.
+            if current_ledger <= proposal.eta_ledger {
                 return Err(GovernanceError::TimelockNotExpired);
             }
 
@@ -1528,6 +1614,16 @@ impl GovContract {
             // Issue #814: executed — ensure refund (no-op if already
             // refunded at Passed time; covers zero-deposit proposals).
             Self::refund_proposal_deposit(&env, proposal_id, &proposal.proposer);
+
+            // Issue #980: emit auditable timelock execution event.
+            env.events().publish(
+                (Symbol::new(&env, "timelock_executed"), proposal_id),
+                TimelockExecuted {
+                    proposal_id,
+                    eta_ledger: proposal.eta_ledger,
+                    execution_ledger: current_ledger,
+                },
+            );
 
             env.events().publish(
                 (Symbol::new(&env, "proposal_executed"), proposal_id),
@@ -1891,7 +1987,11 @@ impl GovContract {
 
     /// Walk forward pointers to find the terminal node (one with no further delegate).
     fn resolve_terminal(env: &Env, start: &Address) -> Address {
-        let max_depth = env.storage().instance().get(&StorageKey::MaxDelegationDepth).unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
+        let max_depth = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MaxDelegationDepth)
+            .unwrap_or(DEFAULT_MAX_DELEGATION_DEPTH);
         let mut current = start.clone();
         let mut depth = 0u32;
         loop {

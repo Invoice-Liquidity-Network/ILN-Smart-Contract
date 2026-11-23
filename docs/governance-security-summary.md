@@ -47,9 +47,12 @@ Every mitigation available *today* against a compromised admin is an **off-chain
 
 These are known, documented, and consciously carried into mainnet. They are listed here so a reviewer does not have to reconstruct them from six sources.
 
-### 3.1 No execution timelock
+### 3.1 Execution timelock (Hardened in Wave 9)
 
-`execute_proposal` runs in the same transaction as the call that triggers it, immediately after the voting window closes ([ADR-005](adr/ADR-005-governance-timelock.md), [`governance.md` §7](governance.md#7-execution-mechanics)). The stated substitute is the admin veto, which can block any `Active`/`Passed` proposal. **Accepted because:** at launch the token distribution is concentrated enough that a long timelock would slow necessary parameter tuning without a real decentralization benefit, and the veto covers the "malicious proposal" case. **Exit:** ADR-012 Phase 3 implements and activates a real timelock via governance upgrade *before* the veto is retired.
+`execute_proposal` previously had no mandatory delay in v1 ([ADR-005](adr/ADR-005-governance-timelock.md)). Under Phase 3 / Wave 9 (Issues #978, #979, #980), timelock execution mechanics were hardened:
+- **Proposal Delay Immutability (#978)**: Execution delay is locked into storage at proposal creation time, preventing retroactive delay shortening for in-flight proposals.
+- **Strict Post-ETA Boundary (#979)**: Execution within the current ledger where `eta_ledger` resides is rejected with `TimelockNotExpired` (`current_ledger <= proposal.eta_ledger`), ensuring at least one discrete ledger boundary after ETA.
+- **Auditable Lifecycle Events (#980)**: Emits `TimelockScheduled` upon passing into timelock and `TimelockExecuted` upon successful execution.
 
 ### 3.2 Flash-loan vote manipulation if the governance token becomes composable
 

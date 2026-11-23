@@ -28,9 +28,11 @@ The `GovContract` (`contracts/iln_governance`) orchestrates voting; when a
 proposal passes it cross-contract-calls the `InvoiceLiquidityContract` to apply
 the change atomically.
 
-There is currently **no timelock delay** between a proposal passing and its
-execution.  `execute_proposal` is callable by anyone once the voting period ends
-and quorum/majority criteria are met.
+A **configurable timelock delay** protects the protocol between a proposal passing and its
+execution. When a proposal is created, the current execution delay (in ledgers) is snapshotted
+immutably. When the proposal passes, its execution `eta_ledger` is scheduled. Execution strictly
+requires that the current ledger has advanced past the ETA (`current_ledger > eta_ledger`), preventing
+same-ledger execution. Dedicated `TimelockScheduled` and `TimelockExecuted` events provide auditable tracking.
 
 During the early protocol phase an **admin veto power** exists as an emergency
 brake.  This power is time-limited and can be permanently disabled by a
@@ -199,8 +201,9 @@ synchronously.  If the cross-contract call reverts, `execute_proposal`
 also reverts, leaving the proposal status unchanged (`Passed`).  It can be
 retried once the root cause is fixed.
 
-There is **no timelock delay** — execution happens in the same transaction as
-the `execute_proposal` call, immediately after the voting window closes.
+Execution is governed by a **two-phase timelock**:
+1. When `execute_proposal` is first called after the voting window closes (and quorum/majority are met), the proposal transitions from `Active` to `Passed`, its `eta_ledger` is scheduled based on the proposal's immutable snapshotted delay (`current_ledger + delay`), and a `TimelockScheduled` event is emitted.
+2. Once the ledger advances strictly past `eta_ledger` (`current_ledger > eta_ledger`), `execute_proposal` can be called again to execute the cross-contract call. Attempts to execute while `current_ledger <= eta_ledger` return `TimelockNotExpired`. Upon successful execution, `TimelockExecuted` and `ProposalExecuted` events are emitted.
 
 ---
 
