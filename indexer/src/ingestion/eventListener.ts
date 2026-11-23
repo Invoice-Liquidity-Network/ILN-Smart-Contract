@@ -27,6 +27,23 @@ export interface DecodedContractEvent {
   data: unknown;
 }
 
+/**
+ * Event shape emitted to live subscribers. Mirrors the WebSocket endpoint's
+ * `IndexedEvent`; kept structural so ingestion does not depend on the API
+ * layer. `id` lets the endpoint suppress duplicate replay overlap.
+ */
+export interface LiveIndexedEvent {
+  id: string;
+  transactionHash: string;
+  eventIndex: number;
+  type: string;
+  address?: string;
+  invoiceId?: number;
+  data: unknown;
+  ledger: number;
+  timestamp: number;
+}
+
 export interface EventListenerOptions {
   repository: EventRepository;
   horizonUrl: string;
@@ -816,6 +833,13 @@ function coerceString(value: unknown, fallback = ''): string {
   }
 
   return fallback;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
 }
 
 function coerceNullableString(value: unknown): string | null {

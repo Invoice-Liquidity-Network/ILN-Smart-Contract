@@ -272,6 +272,40 @@ describe('event ingestion listener', () => {
     expect(logger.info).toHaveBeenCalled();
   });
 
+  it('emits live indexed events with stable ids after persisting them', async () => {
+    const repository = new MemoryRepository();
+    const contractId = 'CDUMMYCONTRACT';
+    const emitted: any[] = [];
+    const listener = new EventListener({
+      repository,
+      horizonUrl: 'http://horizon.test',
+      contractAddress: contractId,
+      decodeTransactionEvents: () => makeDecodedEvents(contractId).slice(0, 2),
+      onEvent: (event) => emitted.push(event),
+    });
+
+    await listener.processTransaction({
+      hash: 'tx-live',
+      ledger: 400,
+      created_at: '2026-06-29T12:00:00Z',
+      paging_token: '400',
+      result_meta_xdr: 'ignored',
+    });
+
+    expect(repository.events).toHaveLength(2);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toMatchObject({
+      id: 'tx-live:0',
+      transactionHash: 'tx-live',
+      eventIndex: 0,
+      type: 'InvoiceSubmitted',
+      invoiceId: 1,
+      address: 'GPAYER',
+      ledger: 400,
+    });
+    expect(emitted[1].id).toBe('tx-live:1');
+  });
+
   it('resumes from the last processed cursor after restart', async () => {
     const repository = new MemoryRepository();
     repository.setState('last_processed_cursor', '9000');

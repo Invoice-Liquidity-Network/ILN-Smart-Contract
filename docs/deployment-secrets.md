@@ -31,7 +31,7 @@ Testnet deployment uses a single secret stored in GitHub Actions:
 
 ### Custody chain
 
-1. **Generation:** Testnet deployer key generated locally with `stellar keys generate --global testnet-deployer`.
+1. **Generation:** Testnet deployer key generated locally with `stellar keys generate --global iln-testnet-deployer`. `scripts/deploy-testnet.sh` uses the same network-scoped name and refuses to reuse an existing identity whose secret differs, so a key created for another network cannot be used silently.
 2. **GitHub storage:** Secret key stored in GitHub Actions repository secrets (encrypted at rest, decrypted only for Actions workflows).
 3. **Workflow access:** Only the `deploy-testnet.yml` workflow can read this secret.
 4. **Logs:** GitHub Actions logs are protected; secret values are masked and not displayed even in verbose output.
@@ -50,24 +50,24 @@ Testnet deployment uses a single secret stored in GitHub Actions:
 
 ```bash
 # 1. Generate a new testnet deployer keypair
-stellar keys generate --global testnet-deployer-new
+stellar keys generate --global iln-testnet-deployer-new
 
 # 2. Fund the new account with XLM (e.g., from an existing account or faucet)
-stellar network fund testnet-deployer-new --network testnet
+stellar network fund iln-testnet-deployer-new --network testnet
 
 # 3. Test the new key works (optional, but recommended)
 stellar contract deploy \
-  --source testnet-deployer-new \
+  --source iln-testnet-deployer-new \
   --network testnet \
   --wasm /path/to/test-contract.wasm
 
 # 4. Update the GitHub secret
 #    - Go to Settings → Secrets and variables → Actions
 #    - Edit STELLAR_TESTNET_DEPLOYER_SECRET
-#    - Set value to output of: stellar keys show testnet-deployer-new
+#    - Set value to output of: stellar keys secret iln-testnet-deployer-new
 
 # 5. Delete the old key from local stellar config (after confirming new one works)
-stellar keys rm testnet-deployer
+stellar keys rm iln-testnet-deployer
 
 # 6. Announce rotation in #deployments Slack channel
 # Record in deployment log: "Testnet deployer key rotated, valid from 2026-09-26"

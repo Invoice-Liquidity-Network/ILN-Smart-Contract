@@ -153,10 +153,6 @@ const eventListener = createEventListener({
   onReorgDetected: recoveryHook,
 });
 
-const httpServer = createServer(app);
-const wsEndpoint = new EventWebSocketEndpoint({ server: httpServer, path: '/events' });
-wsEndpoint.start();
-
 if (config.contractId) {
   if (config.ingestionEnabled) {
     // Hold the ingestion lease for the lifetime of the loop: recovery

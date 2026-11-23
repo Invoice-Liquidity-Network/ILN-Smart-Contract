@@ -66,11 +66,19 @@ npx tsx scripts/verify-deployment.ts
 ```
 
 This produces `verification-report.mainnet.json`. The report checks:
+- Contract IDs are valid, non-duplicated Stellar contract addresses
 - All four contracts exist on-chain
-- Contracts are initialized and responsive
+- Contracts are initialized and responsive (`get_config` / `is_initialized` / admin / supply)
+- The effective RPC URL and network passphrase match the target network
+- WASM hashes match local release artefacts when both are available
 - Admin is set correctly
 - SAC tokens are configured
 - No unexpected state divergence
+
+To restore the previous local deployment records when verification fails, run with
+`--rollback-on-failure`. This restores `.contracts-mainnet.env` and the deployment summary
+from the `.previous` snapshot written by `scripts/deploy-mainnet.sh`; it does not modify
+on-chain contracts.
 
 **Do not proceed to Step 4 if verification fails.**
 
