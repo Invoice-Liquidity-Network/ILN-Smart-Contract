@@ -95,4 +95,21 @@ pub enum ContractError {
     /// Issue #1020: `recover_fund_queue` was called but there is nothing to
     /// recover yet (no stalled resolution, or the grace period has not elapsed).
     QueueNotStalled = 48,
+    // ── Issue #1165: invoice evidence commitment lifecycle ─────────
+    /// No evidence commitment is on record for the invoice.
+    EvidenceNotFound = 49,
+    /// The evidence commitment has already been verified or rejected, so it
+    /// can no longer be re-attached or re-reviewed.
+    EvidenceAlreadyReviewed = 50,
+    /// The supplied content commitment is already attached to a *different*
+    /// invoice — the same off-chain evidence cannot be financed twice.
+    DuplicateEvidenceCommitment = 51,
+    /// The supplied commitment is unusable: a zero digest commits to nothing,
+    /// and version `0` is not a supported scheme version.
+    InvalidEvidenceCommitment = 52,
+    // ── Issue #1166: initialize write-sequence hardening ───────────
+    /// `initialize` finished its writes but the instance is not fully and
+    /// consistently initialized (authority or one of the three bootstrap
+    /// tokens is missing). The call reverts, so no partial state is committed.
+    InitializationInconsistent = 53,
 }

@@ -12,8 +12,9 @@ Please do not disclose suspected vulnerabilities publicly before maintainers hav
 
 1. **GitHub Security Advisory — preferred.** Open a private draft advisory against this repository at
    <https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new>.
+   You can also reach it from the repository's **Security** tab → **Report a vulnerability**, or from **New issue** → **Report a security vulnerability**.
    A private advisory is visible only to you and the repository's maintainers, keeps the discussion and any proof-of-concept out of the public issue tracker, and produces a publishable CVE-backed advisory at the end.
-   If that page returns `404`, or the "Report a vulnerability" button is absent, private vulnerability reporting is not enabled on this repository yet — see [Enabling Private Vulnerability Reporting (Owner Only)](#enabling-private-vulnerability-reporting-owner-only).
+   Private vulnerability reporting is **enabled** on this repository (see [Contact Status](#contact-status)). You must be signed in to GitHub. If the page nevertheless returns `404`, the setting has been switched off again — open a detail-free issue as described below and a maintainer will re-enable it ([owner steps](#enabling-private-vulnerability-reporting-owner-only)).
 2. **Security email — currently unavailable.** No ILN-owned security mailbox is reachable today; see [Contact Status](#contact-status). Do not send a report to any address marked broken there — it will bounce silently and your report will be lost.
 
 If neither channel works for you, open an ordinary issue whose **title and body contain no detail about the finding at all** (for example: "Security report — please advise on a private channel") and ask a maintainer to point you at a working one. Never describe the vulnerability, the affected function, or the affected contract in anything public.
@@ -40,7 +41,7 @@ The channel table below records what a contributor has actually checked, so that
 
 | Channel | Status | Verification note |
 |---------|--------|-------------------|
-| `https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new` | Correct URL, needs owner action | The URL is well-formed and this repository's advisory list is publicly reachable. What is missing is the ability to file one: a researcher signed in with a non-collaborator account reported a `404` on that page, which is what GitHub serves while private vulnerability reporting is disabled. An anonymous request is redirected to the sign-in page and therefore proves nothing — test it while logged in with an account that is not a collaborator. See the owner-only section below. |
+| `https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new` | **Working — preferred** | Private vulnerability reporting was disabled until 2026-11-21, which is why researchers signed in with non-collaborator accounts received `404` (issues #1155, #1156). A repository admin enabled it on 2026-11-21 (`PUT /repos/{owner}/{repo}/private-vulnerability-reporting` → `204`), and `GET` on the same endpoint now returns `{"enabled":true}`. An anonymous request is still redirected to sign-in, so test while logged in. |
 | `security@invoice-liquidity-network.local` | **Broken — do not use** | Published in the previous revision of this file. `.local` is reserved for multicast DNS and is never resolved by public DNS, so no mail server can accept mail for it. |
 | `security@invoiceliquidity.network` | **Broken — do not use** | Reported unreachable by a researcher. `invoiceliquidity.network` has no DNS records at all (`NXDOMAIN`, and therefore no `MX`), so mail to it cannot be routed. |
 | `security@drips.network` | **Unconfirmed — owner must confirm or disown** | Previously published in [docs/upgrade-guide.md](docs/upgrade-guide.md), next to a link to the `drips-network` organization, which does not host this repository (`404`). The domain does resolve with mail exchangers, but no maintainer has said that ILN's security team reads that mailbox, so it must not be used for disclosures until they do. This revision points that document at this policy instead. |
@@ -103,7 +104,16 @@ Good faith security research that follows this disclosure policy will be conside
 
 ## Enabling Private Vulnerability Reporting (Owner Only)
 
-Contributors cannot enable this; only an owner or a maintainer with repository-admin rights can. Until it is enabled, a signed-in non-collaborator opening the advisory URL in [Contact Status](#contact-status) receives `404`, so reporters have no private channel at all.
+Contributors cannot enable this; only an owner or a maintainer with repository-admin rights can. While it is disabled, a signed-in non-collaborator opening the advisory URL in [Contact Status](#contact-status) receives `404`, so reporters have no private channel at all. It is currently **enabled**; these steps are for re-enabling it or verifying it after a settings change.
+
+Fastest path — one API call with an admin token, then verify:
+
+```sh
+gh api -X PUT repos/Invoice-Liquidity-Network/ILN-Smart-Contract/private-vulnerability-reporting   # 204 No Content
+gh api repos/Invoice-Liquidity-Network/ILN-Smart-Contract/private-vulnerability-reporting           # {"enabled":true}
+```
+
+Equivalent UI path and related settings:
 
 1. On GitHub, as a repository admin: **Settings → Advanced security → Code security and analysis** (the same group is reachable from the repository **Security** tab → the settings badge) → enable **Secret scanning alerts** if you want them, and tick **Private vulnerability reporting**.
 2. API equivalents exist only for the *other* switches. `PATCH /repos/{owner}/{repo}` accepts `security_and_analysis` with the keys `advanced_security`, `secret_scanning`, `secret_scanning_push_protection`, and `dependabot_security_updates`, each with status `enable`/`disable`/`auto`; Dependabot security updates also have a dedicated endpoint:
@@ -123,7 +133,7 @@ Contributors cannot enable this; only an owner or a maintainer with repository-a
    ```
 
    Two gotchas worth knowing before you trust a scripted "fix": the endpoint silently ignores keys it does not recognize (`secret_scanning_alerts` is a GraphQL name, not a REST one, and `has_vulnerability_alerts` in `PATCH -f has_vulnerability_alerts=true` is not a documented parameter of this endpoint at all — both return HTTP 200 while changing nothing), and `advanced_security` answers HTTP 400 "Invalid value for Advanced Security status" on forks or where GHAS is not licensed, in which case use `"auto"` to inherit the organization setting.
-3. There is no REST or GraphQL field that turns on private vulnerability reporting; step 1 is the only way. Verify it took effect with an account that is **not** a collaborator, signed in to github.com, by opening
+3. Private vulnerability reporting is *not* part of `security_and_analysis`; it has its own endpoint (`PUT`/`DELETE`/`GET /repos/{owner}/{repo}/private-vulnerability-reporting`), shown at the top of this section. Verify it took effect with an account that is **not** a collaborator, signed in to github.com, by opening
    <https://github.com/Invoice-Liquidity-Network/ILN-Smart-Contract/security/advisories/new>:
    disabled renders `404`, enabled renders the "Report a vulnerability" form. Do not test this with `curl` from an unauthenticated shell — GitHub redirects anonymous requests for that page to sign-in, which answers `200` either way and therefore proves nothing.
 4. If the checkbox is greyed out, an organization owner has to allow private vulnerability reporting at the organization level first (**org Settings → Code security and analysis**), and the repository must be public.

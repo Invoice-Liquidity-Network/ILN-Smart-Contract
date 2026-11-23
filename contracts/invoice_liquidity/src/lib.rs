@@ -34,11 +34,12 @@ use oracle_registry::OracleFeedType;
 use twap_accumulator::{get_twap, record_observation, TWAPError};
 
 pub use crate::invoice::{
-    AppealRecord, FundQueueTtlMargins, Invoice, InvoiceParams, InvoiceStatus, LpFundRequest,
-    ReferralCode, ReputationProfile, ReputationScore, TopPayerEntry,
+    AppealRecord, EvidenceRecord, EvidenceStatus, FundQueueTtlMargins, Invoice, InvoiceEvidenceView,
+    InvoiceParams, InvoiceStatus, LpFundRequest, ReferralCode, ReputationProfile, ReputationScore,
+    TopPayerEntry,
 };
 pub use crate::nft::InvoiceNftMetadata;
-pub use crate::storage::DataKey;
+pub use crate::storage::{DataKey, InitializationState};
 pub use config::{Config, ConfigError};
 pub use errors::ContractError;
 pub use events::RollbackRehearsalReport;
@@ -51,7 +52,7 @@ use crate::storage::get_admin;
 use events::{
     AdminChanged, AppealResolved, ContractInitialized, ContractPaused, ContractUnpaused,
     ContractUpgraded, DefaultAppealed, DisputeResolved, DisputeUpheldPayerRefund,
-    DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved,
+    DistributionContractUpdated, FundQueueRecovered, FundQueueResolutionAttempted, FundQueueResolved, FundQueueTieBroken,
     FundRequested,
     InsuranceClaimAttempted, InvoiceCancelled, InvoiceDefaulted, InvoiceDisputed, InvoiceExpired,
     InvoiceFunded, InvoicePaid, InvoicePartiallyPaid, InvoiceSubmitted, InvoiceTokenChanged,
@@ -62,13 +63,15 @@ use events::{
 use invoice::get_last_pause_timestamp;
 use invoice::{
     add_invoice_to_lp, add_invoice_to_submitter, add_volume, get_appeal, get_contract_stats,
-    get_dispute, get_fund_queue, get_fund_queue_opened_at, get_invoice_funders, get_lp_invoices,
+    get_dispute, get_evidence, get_evidence_commitment, get_fund_queue, get_fund_queue_opened_at,
+    get_invoice_funders, get_lp_invoices,
     get_lp_score, get_max_invoice_amount, get_min_payer_reputation, get_payer_score,
     get_pre_default_payer_score, get_queue_resolution, get_reputation, get_submitter_invoices,
     get_token_volume, get_token_volume_cap, increment_invoices_defaulted, increment_invoices_paid,
     increment_invoices_submitted, increment_total_funded, increment_total_invoices,
-    increment_total_paid, invoice_exists, is_paused, load_invoice, next_invoice_id,
-    remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal, save_dispute,
+    increment_total_paid, invoice_exists, is_paused, next_invoice_id,
+    remove_evidence_commitment, remove_invoice_from_lp, remove_invoice_from_submitter, save_appeal,
+    save_dispute, save_evidence, save_evidence_commitment,
     save_fund_queue, save_invoice, save_invoice_funders, save_pre_default_payer_score,
     save_queue_resolution, set_lp_score, set_max_invoice_amount, set_min_payer_reputation,
     set_paused, set_payer_score, set_reputation, set_token_volume_cap, try_load_invoice,
@@ -77,6 +80,12 @@ use invoice::{
 };
 // 30-day window in seconds for a payer to file an appeal after a default.
 const APPEAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// True when a 32-byte evidence commitment digest is all zeroes — i.e. it
+/// commits to nothing and must be rejected (Issue #1165).
+fn is_zero_digest(env: &Env, digest: &BytesN<32>) -> bool {
+    digest == &BytesN::from_array(env, &[0u8; 32])
+}
 
 // ----------------------------------------------------------------
 // CONSTANTS
@@ -124,7 +133,17 @@ impl InvoiceLiquidityContract {
     // ------------------------------------------------------------
     // initialize (multi-token aware)
     // ------------------------------------------------------------
-    /// Access: Anyone
+    /// Access: Deployer/Admin — the supplied `admin` must authorize the call.
+    ///
+    /// Issue #1162: deployment separates WASM install from initialization, so
+    /// an exposed-but-uninitialized instance could otherwise be claimed by an
+    /// arbitrary first caller, who would name itself admin and gain control
+    /// over fees, approved tokens, oracle settings, pause state, upgrades and
+    /// migrations. This entry point therefore (a) requires the intended admin
+    /// to authorize, (b) fails closed on *any* prior initialization signal via
+    /// `storage::is_initialized`, and (c) writes the authoritative
+    /// `Initialized` marker *before* touching any other state so a repeated or
+    /// competing call fails deterministically once setup starts.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -132,13 +151,31 @@ impl InvoiceLiquidityContract {
         eurc_token: Address,
         xlm_token: Address,
     ) -> Result<(), ContractError> {
-        if env
-            .storage()
-            .instance()
-            .has(&crate::storage::DataKey::InvoiceCount)
+        // `initialize` performs no authorization, so this guard is the only
+        // protection for the admin role. It must key off a value that
+        // `initialize` itself writes (`Admin`); `InvoiceCount` is never
+        // written by the contract, so checking it alone let anyone re-run
+        // `initialize` and replace the admin (Issue #1159, [AUTH-8]).
+        if env.storage().instance().has(&crate::storage::DataKey::Admin)
+            || env
+                .storage()
+                .instance()
+                .has(&crate::storage::DataKey::InvoiceCount)
         {
             return Err(ContractError::AlreadyInitialized);
         }
+
+        // The intended initializer must authorize the call. If the deployer
+        // and the administrator are different identities, the administrator
+        // signs this invocation — being able to deploy an instance is not the
+        // same as being allowed to initialize it.
+        admin.require_auth();
+
+        // Checks-effects-interactions: write the marker first so any
+        // duplicate or competing call fails before it can mutate state.
+        env.storage()
+            .instance()
+            .set(&crate::storage::DataKey::Initialized, &true);
 
         env.storage()
             .instance()
@@ -215,6 +252,17 @@ impl InvoiceLiquidityContract {
             .persistent()
             .set(&crate::storage::DataKey::TokenList, &list);
 
+        // Issue #1166: post-condition. All authority and bootstrap-token state
+        // must be present *together*. If any write above is ever reordered or
+        // made fallible and leaves the instance inconsistent, this fails and —
+        // because a returned `Err` rolls the whole invocation back — an
+        // instance that carries partial authority or token state can never be
+        // committed. The event below is therefore only published on a fully
+        // consistent (and durably committed) initialization.
+        if !crate::storage::initialization_is_consistent(&env) {
+            return Err(ContractError::InitializationInconsistent);
+        }
+
         env.events().publish(
             (Symbol::new(&env, "initialized"), admin.clone()),
             ContractInitialized {
@@ -230,6 +278,20 @@ impl InvoiceLiquidityContract {
     }
 
     // ------------------------------------------------------------
+    // Initialization state view (Issue #1166)
+    // ------------------------------------------------------------
+    /// Access: Anyone
+    ///
+    /// Read-only snapshot of the initialization signals, so operators and
+    /// indexers can verify an instance is not left in a partial state. See
+    /// [`crate::storage::InitializationState`].
+    pub fn get_initialization_state(
+        env: Env,
+    ) -> crate::storage::InitializationState {
+        crate::storage::get_initialization_state(&env)
+    }
+
+    // ------------------------------------------------------------
     // Version view
     // ------------------------------------------------------------
     /// Access: Anyone
@@ -238,24 +300,49 @@ impl InvoiceLiquidityContract {
     }
 
     // ------------------------------------------------------------
-/// `set_admin` contract entry point.
+/// `set_admin` contract entry point — rotate the contract administrator.
 ///
-/// # Arguments
-/// * `env` — host environment
-/// * `new_admin` — see signature
+/// # Authorization (Issue #1183 audit)
+/// The incumbent administrator (stored at `DataKey::Admin`) must authorize the
+/// call: `require_admin` loads that address and invokes `require_auth` on it, so
+/// only the current admin can hand the role over. There is no separate
+/// authorization on `new_admin` — the incoming address is not required to sign.
 ///
-/// # Returns
-/// * `Ok(...)` on success; see Errors
+/// # Rate limiting
+/// Guarded by `ADMIN_CHANGE_COOLDOWN_LEDGERS` (720 ledgers ≈ 1 h).
+/// The **first-ever** call is always allowed (no prior record). A call made
+/// before the cooldown elapses returns `RateLimited`. Because a rejected call
+/// returns an `Err`, Soroban rolls the whole invocation back — including the
+/// rate-limit write and the admin-action log entry — so a rejected attempt does
+/// **not** consume the cooldown and is not recorded as an executed action.
+///
+/// # Self / duplicate / "invalid" addresses
+/// Rotating to the *same* address (`new_admin == current`) is accepted: it is a
+/// state no-op that still emits `admin_changed` (old == new) and consumes the
+/// cooldown. Soroban `Address` values have no invalid/zero representation, so
+/// there is no address-format check to perform — every address value the caller
+/// supplies is structurally valid, and correctness of the handover is the
+/// operator's responsibility (`RR-1183-1`).
+///
+/// # Effects
+/// On success: records the action in the admin audit log, overwrites
+/// `DataKey::Admin`, and emits `admin_changed { old_admin, new_admin,
+/// timestamp }`.
 ///
 /// # Errors
-/// * `Unauthorized` if caller is not admin; plus validation errors
+/// * `Unauthorized` — caller is not the current admin, or the contract is not
+///   initialized.
+/// * `RateLimited` — a prior successful `set_admin` is still within its cooldown.
 ///
-/// Access: Admin only
+/// Access: current admin only
 pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         require_admin(&env)?;
         check_rate_limit(&env, "set_admin", ADMIN_CHANGE_COOLDOWN_LEDGERS)?;
         record_admin_action(&env, "set_admin");
-        let old_admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        // Issue #1167: read the outgoing admin through the checked helper so a
+        // missing Admin key returns `Unauthorized` rather than trapping the
+        // host. `require_admin` above already guarantees the key is present.
+        let old_admin: Address = get_admin(&env).ok_or(ContractError::Unauthorized)?;
         env.storage().instance().set(&StorageKey::Admin, &new_admin);
         env.events().publish(
             (Symbol::new(&env, "admin_changed"),),
@@ -973,11 +1060,9 @@ pub fn add_token(env: Env, token: Address, decimals: u32) -> Result<(), Contract
         check_rate_limit(&env, "add_token", DEFAULT_RATE_LIMIT_LEDGERS)?;
         record_admin_action(&env, "add_token");
 
-        let admin_address: Address = env
-            .storage()
-            .instance()
-            .get(&crate::storage::DataKey::Admin)
-            .unwrap();
+        // Issue #1167: resolve the admin via the checked helper so a missing
+        // Admin key returns `Unauthorized` instead of trapping the host.
+        let admin_address: Address = get_admin(&env).ok_or(ContractError::Unauthorized)?;
 
         // Issue #1070: the declared precision must match the token's own
         // `decimals()`; tokens that cannot report decimals are rejected.
@@ -1906,7 +1991,13 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
 
         for i in start..end {
             if let Some(id) = invoice_ids.get(i) {
-                result.push_back(load_invoice(&env, id));
+                // Issue #1167: skip a dangling index entry rather than trapping
+                // the whole read-only query via load_invoice's
+                // `expect("invoice not found")`. The paginated views cannot
+                // surface a ContractError, so skipping is the fail-soft path.
+                if let Some(invoice) = try_load_invoice(&env, id) {
+                    result.push_back(invoice);
+                }
             }
         }
 
@@ -1932,7 +2023,13 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
 
         for i in start..end {
             if let Some(id) = invoice_ids.get(i) {
-                result.push_back(load_invoice(&env, id));
+                // Issue #1167: skip a dangling index entry rather than trapping
+                // the whole read-only query via load_invoice's
+                // `expect("invoice not found")`. The paginated views cannot
+                // surface a ContractError, so skipping is the fail-soft path.
+                if let Some(invoice) = try_load_invoice(&env, id) {
+                    result.push_back(invoice);
+                }
             }
         }
 
@@ -1943,6 +2040,9 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
     // submit_invoice (NOW TOKEN-AWARE)
     // ------------------------------------------------------------
     /// Access: Submitter only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// Starts the lifecycle in `Pending` with `amount_funded == amount_paid == 0` [ST-1].
     pub fn submit_invoice(
         env: Env,
         freelancer: Address,
@@ -2043,11 +2143,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         );
 
         // Track referral count if provided
-        if let ReferralCode::Present(code) = &referral_code {
-            let key = crate::storage::DataKey::ReferralCount(code.clone());
-            let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
-            env.storage().persistent().set(&key, &(current + 1));
-        }
+        record_referral(&env, &referral_code)?;
 
         Ok(id)
     }
@@ -2056,6 +2152,10 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
     // update_invoice
     // ------------------------------------------------------------
     /// Access: Submitter only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Pending -> Pending` only; terms can change only while nothing is funded [ST-1]. The
+    /// `Expired` write on the error path is rolled back [NE-4].
     pub fn update_invoice(
         env: Env,
         freelancer: Address,
@@ -2072,7 +2172,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
         require_submitter_by_id(&env, &freelancer, invoice_id)?;
 
         if invoice.status == InvoiceStatus::Pending
@@ -2150,7 +2250,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
         require_submitter_by_id(&env, &freelancer, invoice_id)?;
 
         // Only allowed in Pending state
@@ -2198,7 +2298,24 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
     // ------------------------------------------------------------
     // submit_invoices_batch
     // ------------------------------------------------------------
-    /// Access: Submitter only
+    /// Access: Submitter only (every distinct `freelancer` in the batch must authorize)
+    ///
+    /// # Atomicity (audited, Issue: batch partial-failure)
+    /// The batch is **all-or-nothing**. Any `Err` returned from this function
+    /// makes the whole contract invocation fail, and the Soroban host discards
+    /// every storage write and event made earlier in the same invocation. So a
+    /// failure on invoice N leaves no invoice, submitter-index entry,
+    /// `total_invoices`/`invoices_submitted` increment, referral count or ID
+    /// allocation from invoices `0..N`. There is no partial-success result:
+    /// the call returns either one ID per input invoice (in input order) or an
+    /// error. Callers must not parse a failed call for "which succeeded".
+    ///
+    /// # Per-invoice validation
+    /// Each entry is held to the same rules as [`Self::submit_invoice`]:
+    /// self-invoice, discount-rate cap, governance `max_invoice_amount` cap,
+    /// approved token, token-decimals-aware amount floor, and due-date window.
+    /// Errors are those of `submit_invoice`, plus `BatchTooLarge` (> 10
+    /// entries) and `ContractPaused`. An empty batch is a no-op returning `[]`.
     pub fn submit_invoices_batch(
         env: Env,
         invoices: Vec<InvoiceParams>,
@@ -2211,12 +2328,31 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::BatchTooLarge);
         }
 
+        // Read once; the cap cannot change mid-invocation.
+        let max_invoice_amount = get_max_invoice_amount(&env);
+
         let mut authenticated_freelancers: Vec<Address> = Vec::new(&env);
         let mut ids = Vec::new(&env);
         for params in invoices.iter() {
             if !authenticated_freelancers.contains(&params.freelancer) {
                 require_submitter(&env, &params.freelancer)?;
                 authenticated_freelancers.push_back(params.freelancer.clone());
+            }
+
+            // Parity with `submit_invoice`: these checks were previously
+            // missing from the batch path, letting a batch bypass them.
+            if params.freelancer == params.payer {
+                return Err(ContractError::SelfInvoice);
+            }
+
+            if params.discount_rate == 0 || params.discount_rate > crate::constants::MAX_DISCOUNT_RATE
+            {
+                return Err(ContractError::InvalidDiscountRate);
+            }
+
+            // Issue #655: governance per-invoice cap (0 = uncapped).
+            if max_invoice_amount > 0 && params.amount > max_invoice_amount {
+                return Err(ContractError::MaxInvoiceAmountExceeded);
             }
 
             if !is_approved_token(&env, &params.token) {
@@ -2292,11 +2428,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             );
 
             // Track referral count if provided
-            if let ReferralCode::Present(code) = &params.referral_code {
-                let key = crate::storage::DataKey::ReferralCount(code.clone());
-                let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
-                env.storage().persistent().set(&key, &(current + 1));
-            }
+            record_referral(&env, &params.referral_code)?;
 
             ids.push_back(id);
         }
@@ -2346,7 +2478,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::NotApprovedFunder);
         }
 
-        let invoice = load_invoice(&env, invoice_id);
+        let invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
         match invoice.status {
             InvoiceStatus::Pending | InvoiceStatus::PartiallyFunded => {}
             InvoiceStatus::Funded => return Err(ContractError::AlreadyFunded),
@@ -2547,7 +2679,8 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 tied.push_back(i);
             }
         }
-        let winner_index: u32 = if tied.len() > 1 {
+        let tied_count: u32 = tied.len();
+        let winner_index: u32 = if tied_count > 1 {
             // GenRange is only implemented for u64 in this soroban-sdk
             // version — generate as u64, then narrow (safe: tied.len() is
             // bounded by MAX_FUND_QUEUE_LEN).
@@ -2716,6 +2849,14 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
     /// If the oracle returns `false` (unverified), the call returns
     /// `ContractError::PayerUnverified`. When `false`, the oracle is not
     /// consulted and the existing behaviour is preserved.
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Pending|PartiallyFunded -> PartiallyFunded|Funded`. Requires the
+    /// funding LP's signature [AUTH-2] and `fund_amount > 0` [ACC-4];
+    /// `amount_funded` never exceeds `amount` [ACC-1] and always equals the
+    /// sum of contributions [ACC-3]; `Funded` iff `amount_funded == amount`
+    /// [ACC-5]. A failing transfer or distribution hook reverts everything
+    /// [RB-2].
     pub fn fund_invoice(
         env: Env,
         funder: Address,
@@ -2728,6 +2869,14 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         if is_paused(&env) {
             unlock_reentrancy(&env);
             return Err(ContractError::ContractPaused);
+        }
+
+        // [ACC-4]/[ACC-5]: a non-positive tranche would move a Pending
+        // invoice to PartiallyFunded with `amount_funded == 0` and record a
+        // zero-amount funder (Issue #1159).
+        if fund_amount <= 0 {
+            unlock_reentrancy(&env);
+            return Err(ContractError::InvalidAmount);
         }
 
         require_lp(&env, &funder)?;
@@ -3032,7 +3181,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         require_submitter_by_id(&env, &invoice.freelancer, invoice_id)?;
 
@@ -3073,21 +3222,12 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
 
     // ------------------------------------------------------------
     // transfer_lp_position
-/// `transfer_lp_position` contract entry point.
-///
-/// # Arguments
-/// * `env` — host environment
-/// * `invoice_id` — see signature
-/// * `new_lp` — see signature
-///
-/// # Returns
-/// * `Ok(...)` on success; see Errors
-///
-/// # Errors
-/// * Authorization / validation errors as defined by this contract
-///
-/// Access: Caller (require_auth)
-pub fn transfer_lp_position(
+    /// Access: Current LP only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Funded -> Funded`; signed by the current funder [AUTH-7]; amounts
+    /// unchanged [ACC-3]. Only the completing LP's position moves [NE-8].
+    pub fn transfer_lp_position(
         env: Env,
         invoice_id: u64,
         new_lp: Address,
@@ -3100,7 +3240,7 @@ pub fn transfer_lp_position(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
         match invoice.status {
             InvoiceStatus::Funded => {}
             InvoiceStatus::Pending | InvoiceStatus::PartiallyFunded => {
@@ -3155,6 +3295,11 @@ pub fn transfer_lp_position(
     // cancel_invoice
     // ------------------------------------------------------------
     /// Access: Submitter only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Pending|PartiallyFunded -> Cancelled` (terminal) [ST-5]; freelancer
+    /// only [AUTH-1]; partial funders are refunded exactly what they paid.
+    /// Cumulative fields are kept as history [NE-1].
     pub fn cancel_invoice(env: Env, invoice_id: u64) -> Result<(), ContractError> {
         lock_reentrancy(&env)?;
 
@@ -3168,7 +3313,7 @@ pub fn transfer_lp_position(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         require_submitter_by_id(&env, &invoice.freelancer, invoice_id)?;
 
@@ -3225,6 +3370,10 @@ pub fn transfer_lp_position(
     // expire_invoice
     // ------------------------------------------------------------
     /// Access: Anyone
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Pending -> Expired` (terminal) once `now > due_date`; permissionless
+    /// but state-gated, and never applies to a funded invoice [ST-4].
     pub fn expire_invoice(env: Env, invoice_id: u64) -> Result<(), ContractError> {
         if is_paused(&env) {
             return Err(ContractError::ContractPaused);
@@ -3234,7 +3383,7 @@ pub fn transfer_lp_position(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         if env.ledger().timestamp() <= u64::from(invoice.due_date) {
             return Err(ContractError::NotYetDefaulted);
@@ -3270,6 +3419,12 @@ pub fn transfer_lp_position(
     // mark_paid (USES invoice.token)
     // ------------------------------------------------------------
     /// Access: Payer only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Funded -> Funded|Paid`; payer only [AUTH-3]; `amount_paid` never
+    /// exceeds `amount` [ACC-2]; settlement (status `Paid`, LP payouts
+    /// bounded by `amount - fee`, distribution accrual) happens exactly once
+    /// [SET-1][SET-3] and is reverted atomically on any failure [RB-2].
     pub fn mark_paid(env: Env, invoice_id: u64, amount: i128) -> Result<(), ContractError> {
         lock_reentrancy(&env)?;
 
@@ -3372,11 +3527,10 @@ pub fn transfer_lp_position(
         let protocol_fee = invoice.amount.checked_mul(fee_rate as i128).unwrap_or(0) / 10_000;
 
         if protocol_fee > 0 {
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&crate::storage::DataKey::Admin)
-                .unwrap();
+            // Issue #1167: the fee recipient is the admin; resolve it through
+            // the checked helper so a missing Admin key returns `Unauthorized`
+            // instead of trapping mid-settlement.
+            let admin: Address = get_admin(&env).ok_or(ContractError::Unauthorized)?;
             // Issue #1072: a frozen fee recipient must not block settlement.
             token_safety::pay_or_escrow(&env, &invoice.token, &admin, protocol_fee, invoice_id)?;
         }
@@ -3480,12 +3634,16 @@ pub fn transfer_lp_position(
     // claim_yield
     // ----------------------------------------------------------------
     /// Access: LP only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// Read-only: non-zero only for a fully funded and fully paid invoice
+    /// [SET-4]; signed by the current funder [AUTH-7]; moves no funds [NE-6].
     pub fn claim_yield(env: Env, invoice_id: u64) -> Result<i128, ContractError> {
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let invoice = load_invoice(&env, invoice_id);
+        let invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         // Only the funder can query their own yield
         if let Some(ref funder) = invoice.funder {
@@ -3518,6 +3676,14 @@ pub fn transfer_lp_position(
     // claim_default
     // ----------------------------------------------------------------
     /// Access: LP only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Funded -> Defaulted` at/after `due_date`; caller must be a recorded
+    /// funder [AUTH-6]. Refunds and the insurance claim happen at most once
+    /// [SET-2]; a failing refund reverts the default and leaves the pool
+    /// untouched, a failing insurance claim is tolerated [RB-3]. Refunds are
+    /// paid from ILN's pooled balance [NE-2]; partial payments are not
+    /// returned [NE-3].
     pub fn claim_default(env: Env, funder: Address, invoice_id: u64) -> Result<(), ContractError> {
         lock_reentrancy(&env)?;
 
@@ -3532,7 +3698,7 @@ pub fn transfer_lp_position(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         let funders = get_invoice_funders(&env, invoice_id);
         let mut is_funder = false;
@@ -3669,6 +3835,10 @@ pub fn transfer_lp_position(
     /// * `invoice_id`    – the defaulted invoice
     /// * `evidence_hash` – SHA-256 hash of off-chain evidence provided by the payer
     /// Access: Payer only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Defaulted -> Appealed`, at most once per invoice; payer only
+    /// [AUTH-4]; no funds move.
     pub fn appeal_default(
         env: Env,
         invoice_id: u64,
@@ -3682,7 +3852,7 @@ pub fn transfer_lp_position(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         // Only the payer may appeal.
         require_payer_by_id(&env, invoice_id)?;
@@ -3743,21 +3913,18 @@ pub fn transfer_lp_position(
         Ok(())
     }
 
-/// Resolve a pending appeal (admin / governance only).
-///
-/// # Arguments
-/// * `env` — host environment
-/// * `invoice_id` — see signature
-/// * `upheld` — see signature
-///
-/// # Returns
-/// * `Ok(...)` on success; see Errors
-///
-/// # Errors
-/// * `Unauthorized` if caller is not admin; plus validation errors
-///
-/// Access: Admin only
-pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
+    /// Resolve a pending appeal (admin / governance only).
+    ///
+    /// * `upheld=true`  → reverse the default, restore pre-default score, status → Defaulted (reversed).
+    ///   In practice the status transitions back to Defaulted with score restored so the LP
+    ///   can still collect principal they were already refunded. The key effect is reputation repair.
+    /// * `upheld=false` → reject the appeal; invoice remains Defaulted (status reverts from Appealed).
+    /// Access: Admin only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Appealed -> Defaulted` either way; admin only [AUTH-5]; reputation
+    /// only, no funds move; the default cannot be re-claimed [SET-2].
+    pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), ContractError> {
         require_admin(&env)?;
         record_admin_action(&env, "resolve_appeal");
 
@@ -3765,7 +3932,7 @@ pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), Con
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         if invoice.status != InvoiceStatus::Appealed {
             return Err(ContractError::NotDefaulted);
@@ -3821,6 +3988,10 @@ pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), Con
     /// * `invoice_id`  – the invoice to dispute
     /// * `reason_hash` – SHA-256 hash of off-chain dispute evidence
     /// Access: Payer only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Pending|PartiallyFunded|Funded -> Disputed`, at most once per
+    /// invoice; payer only [AUTH-4].
     pub fn dispute_invoice(
         env: Env,
         invoice_id: u64,
@@ -3834,7 +4005,7 @@ pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), Con
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         // Only the payer may dispute.
         require_payer_by_id(&env, invoice_id)?;
@@ -3888,22 +4059,17 @@ pub fn resolve_appeal(env: Env, invoice_id: u64, upheld: bool) -> Result<(), Con
         Ok(())
     }
 
-/// Resolve a dispute (admin / governance only).
-///
-/// # Arguments
-/// * `env` — host environment
-/// * `invoice_id` — see signature
-/// * `resolution_hash` — see signature
-/// * `resolution` — see signature
-///
-/// # Returns
-/// * `Ok(...)` on success; see Errors
-///
-/// # Errors
-/// * `Unauthorized` if caller is not admin; plus validation errors
-///
-/// Access: Admin only
-pub fn resolve_dispute(
+    /// Resolve a dispute (admin / governance only).
+    ///
+    /// * `resolution_hash` – Optional hash of resolution details
+    /// * `resolution`      – Ruling: 1 = Upheld (Payer right), 2 = Rejected (Freelancer right)
+    /// Access: Admin only
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// `Disputed -> Cancelled` (1) with refunds, or back to the status implied
+    /// by `amount_funded` (2) [ACC-5]; admin only [AUTH-5]. An insufficient
+    /// balance for the refunds reverts the whole resolution [RB-3][NE-2].
+    pub fn resolve_dispute(
         env: Env,
         invoice_id: u64,
         resolution_hash: BytesN<32>,
@@ -3919,7 +4085,7 @@ pub fn resolve_dispute(
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         if invoice.status != InvoiceStatus::Disputed {
             return Err(ContractError::NotDisputed);
@@ -4023,12 +4189,16 @@ pub fn resolve_dispute(
     ///
     /// * `invoice_id` – the invoice to auto-resolve
     /// Access: Anyone
+    ///
+    /// Lifecycle invariants (docs/invoice-lifecycle-invariants.md):
+    /// Same as `resolve_dispute(2)` after `dispute_timeout_ledgers`;
+    /// permissionless but time-gated [ACC-5].
     pub fn auto_resolve_dispute(env: Env, invoice_id: u64) -> Result<(), ContractError> {
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
         }
 
-        let mut invoice = load_invoice(&env, invoice_id);
+        let mut invoice = try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)?;
 
         if invoice.status != InvoiceStatus::Disputed {
             return Err(ContractError::NotDisputed);
@@ -4343,7 +4513,7 @@ pub fn set_token_volume_cap(
         if !invoice_exists(&env, invoice_id) {
             return Err(ContractError::InvoiceNotFound);
         }
-        Ok(load_invoice(&env, invoice_id))
+        try_load_invoice(&env, invoice_id).ok_or(ContractError::InvoiceNotFound)
     }
 
     /// Access: Anyone
@@ -4440,6 +4610,29 @@ fn normalize_eurc_amount(amount: i128) -> i128 {
     amount
 }
 
+/// Referral accounting (audited; see docs/referral-audit.md).
+///
+/// The *only* writer of `DataKey::ReferralCount`. It is called exactly once per
+/// successfully created invoice, from `submit_invoice` and
+/// `submit_invoices_batch`, after every validation has passed. There is no
+/// entry point that sets, edits, decrements or resets a count, and the
+/// `referral_code` stored on an invoice is immutable after submission.
+///
+/// `ReferralCode::None` is a no-op. The increment is checked and fails closed
+/// with `ArithmeticOverflow` (practically unreachable for a `u64`) instead of
+/// wrapping or trapping.
+fn record_referral(env: &Env, referral_code: &ReferralCode) -> Result<(), ContractError> {
+    if let ReferralCode::Present(code) = referral_code {
+        let key = crate::storage::DataKey::ReferralCount(code.clone());
+        let current: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+        let next = current
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
+        env.storage().persistent().set(&key, &next);
+    }
+    Ok(())
+}
+
 /// Validate invoice terms using the decimal precision stored for `token`.
 ///
 /// The minimum accepted amount is `1` whole unit in the token's own precision:
@@ -4510,6 +4703,88 @@ fn validate_invoice_terms_for_min(
     Ok(())
 }
 
+// ----------------------------------------------------------------
+// FEE-TIER / SETTLEMENT-ROUNDING INVARIANTS (Issue #1179)
+//
+// `mark_paid` splits the settled amount into a protocol fee (to the admin)
+// and a distribution (to the funding LPs). See docs/fee-tier-settlement.md
+// for the verified behavior and the residual risk.
+//
+// INV-FEE1: `effective_fee_rate` uses the tier table whenever it is
+//   non-empty and falls back to the flat `FeeRate` only when empty; the flat
+//   rate is not a floor once any tier exists.
+// INV-FEE2: the selected tier is the last entry in *storage order* whose
+//   `min_amount <= invoice_amount` — not the greatest threshold.
+//   `update_fee_tiers` does not sort the table.
+// INV-FEE3: if no tier's `min_amount` is <= the amount, the effective rate is
+//   0 (no fee); the lowest bracket's rate is not used as a minimum.
+// INV-FEE4: the tier table is bounded by `MAX_FEE_TIERS` (20);
+//   `update_fee_tiers` rejects a larger table with `TooManyFeeTiers`.
+// INV-FEE5: `protocol_fee = floor(amount * rate / 10_000)`; for rate <= 10_000
+//   the fee never exceeds the amount and `distribute = amount - fee >= 0`.
+// INV-FEE6: with a single funder holding the whole amount,
+//   `protocol_fee + funder_share == amount` exactly (contract balance
+//   unchanged by settlement).
+// INV-FEE7: the fee division truncates down; the discarded remainder is a
+//   sub-unit amount, never rounded up.
+// INV-FEE8: each `funder_share = floor(distribute * fund_amount / amount)`
+//   truncates down too; `sum(shares) <= distribute`, and the difference
+//   (dust, in `[0, N)`) stays in the contract — not redistributed, no sweep.
+//
+// Verified by tests_fee_tiers_rounding.rs. Residual risk (no on-chain fee
+// ceiling, unsorted/unvalidated tables, silent overflow→0) is enumerated in
+// the doc, not covered here.
+// ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// FAILED-TRANSFER / PAYOUT ROLLBACK INVARIANTS (Issue #1178)
+//
+// A failed token transfer on a funded payout path must leave no trace.
+// See docs/failed-transfer-rollback.md for the path table and evidence.
+//
+// INV-FT1: Every funded payout (freelancer advance in `fund_invoice`,
+//   funder/protocol-fee distributions in `mark_paid`, refunds in
+//   `cancel_invoice`, `claim_default` and `resolve_dispute`, and the escrow
+//   release in `claim_pending_payout`) routes through token_safety's
+//   `transfer_out_strict` / `pay_or_escrow` / `claim_pending`.
+// INV-FT2: Those entry points follow Checks-Effects-Interactions: the
+//   terminal status / accounting write and `save_invoice` happen *before*
+//   the external transfer loop (see the `// CEI:` markers), and
+//   `claim_pending` clears the escrow before its transfer. On a trap the
+//   Soroban host rolls the whole invocation back, so the pre-transfer writes
+//   are undone together with the failed transfer — never left half-applied.
+// INV-FT3: A frozen *recipient* is escrowed (no transfer, no failure); a
+//   frozen *initiator* is rejected earlier with `AccountFrozen`. Neither
+//   path is a failed-transfer rollback.
+// INV-FT4: `ensure_spendable` may reject a payout with the typed
+//   `InsufficientContractBalance` before any token call; that is a checked
+//   error path, distinct from a token that traps mid-transfer.
+//
+// Verified by tests_failed_payout_rollback.rs (VF-1..VF-7 in the doc).
+// Residual risk (non-trapping misbehaving tokens; intentional `try_*`
+// graceful degradations) is enumerated in the doc, not covered here.
+// ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// APPROVED-TOKEN ALLOWLIST INVARIANTS (Issue #1176)
+//
+// Single source of truth for "is this token usable". See
+// docs/token-allowlist-invariants.md for the full audit.
+//
+// INV-AL1: resolution order is (1) an explicit `DataKey::ApprovedToken`
+//   flag, which is authoritative once written, then (2) the Config-wired
+//   bootstrap tokens, then (3) false. Because the explicit flag wins, a
+//   `false` written by `remove_token` never falls through to re-approve a
+//   core token.
+// INV-AL2: every gate returns `ContractError::Unauthorized` for an
+//   unapproved token, and (on submission paths) does so *before* decimals
+//   or amount validation, so the error is always `Unauthorized`.
+// INV-AL3: the gate is applied at submission (`submit_invoice`,
+//   `submit_invoices_batch`, `convert_invoice_token` target,
+//   `correct_token_decimals`) and at funding (`fund_invoice`, Issue #19).
+//   `mark_paid` / settlement is deliberately NOT gated, so committed
+//   principal in a token removed mid-flight can still be repaid.
+// INV-AL4: `add_token` (re)approves; `remove_token` sets the explicit flag
+//   to false and prunes `TokenList` but leaves `TokenDecimals` intact.
+// ----------------------------------------------------------------
 fn is_approved_token(env: &Env, token: &Address) -> bool {
     // The explicit allowlist flag is authoritative once set — `initialize()`
     // sets it `true` for the three core tokens (USDC/EURC/XLM) and
@@ -4613,10 +4888,24 @@ mod tests_benchmarks;
 // Issue #1067: a trapped resource-limit invocation must roll back
 // atomically (no partial storage writes, no stranded token transfer).
 mod tests_resource_limit_failure;
+// Issue #1178: a failed Soroban token transfer on any funded payout path
+// (freelancer advance, funder distribution, protocol fee, cancel/default
+// refunds, upheld-dispute refunds, escrow release) must roll back the whole
+// invocation — invoice, funder list, volume counter and balances unchanged.
+mod tests_failed_payout_rollback;
+// Issue #1179: the effective-fee-rate selection (flat vs tiered) and the
+// integer-truncation rounding of the settlement split must be pinned:
+// tier walk order, the zero-fee floor below the lowest bracket, fee/share
+// truncation, and the dust retained in the contract.
+mod tests_fee_tiers_rounding;
 // Issue #invoice-count: get_invoice_count underflow safety
 mod tests_invoice_count;
 // Issue #batch-reputation: batch_submit increments invoices_submitted
 mod tests_batch_submit_reputation;
+// Audit: submit_invoices_batch partial-failure / atomicity
+mod tests_batch_atomicity;
+// Audit: top-payer ranking determinism
+mod tests_top_payers;
 // Issue #pause-checks: expire_invoice and appeal_default pause guards
 mod tests_pause_checks;
 // Economic security regression suite (threat-model B0/B1/D1) — declared here
@@ -4633,11 +4922,6 @@ mod tests_reputation_decay_long_idle;
 mod tests_nft_event_emission;
 // Issue #851: NFT transfer reputation and insurance consistency
 mod tests_nft_transfer_consistency;
-// Issues #914, #915, #916, #918: Configuration parameter bounds validation
-mod tests_config_parameter_bounds;
-// Issues #1070–#1073: token decimals, SAC authorization, frozen accounts, clawback
-mod tests_token_safety;
-// Issue #1025: Benchmark extension cost at maximum depth and queue TTL / pause controls
-mod tests_max_depth_extension;
-// Issue #1027: Focused tests for join-order tie-breaking replacement
-mod tests_tie_breaking;
+// Issue #1159: invoice lifecycle state-machine and accounting invariants
+// (see docs/invoice-lifecycle-invariants.md).
+mod tests_lifecycle_invariants;

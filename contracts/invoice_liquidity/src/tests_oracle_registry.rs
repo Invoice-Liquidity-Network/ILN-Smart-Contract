@@ -1081,6 +1081,211 @@ fn test_twap_window_bounds_accept_and_reject() {
     );
 }
 
+// ── Issue #1193: verified-price source precedence ───────────────────────────
+//
+// The precedence between the layers that can answer a numeric `Price` read
+// (`get_verified_price` / `get_twap_aware_price`) and the boolean `Identity`
+// gate (`evaluate_identity_verification`): health gate → TWAP → direct spot
+// feeds (with fallback), and identity quorum → single-oracle chain → legacy
+// fail-open. See `docs/verified-price-precedence.md` for the full statement
+// and the verified-vs-residual split.
+
+/// Issue #1193: with TWAP enabled and enough in-window samples, the TWAP
+/// average wins over any registered direct (spot) price source — the spot
+/// path is not consulted at all.
+#[test]
+fn test_1193_twap_precedes_direct_price_sources() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    // A live spot source reporting 10_000 would answer if spot won.
+    let spot = t.env.register_contract(None, MockPriceOracle);
+    t.contract.add_price_source(&OracleFeedType::Price, &spot);
+
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+
+    // 20_500 is the TWAP average; 10_000 is what the spot source reports.
+    assert_eq!(
+        t.contract
+            .get_verified_price(&OracleFeedType::Price, &t.token.address),
+        20_500,
+        "an available TWAP average must take precedence over direct spot sources"
+    );
+}
+
+/// Issue #1193: TWAP enabled but with too few in-window samples falls back to
+/// the direct spot path inside `get_verified_price` (the documented "stay
+/// live while samples backfill" fallback).
+#[test]
+fn test_1193_twap_enabled_insufficient_samples_falls_back_to_spot() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    let spot = t.env.register_contract(None, MockPriceOracle);
+    t.contract.add_price_source(&OracleFeedType::Price, &spot);
+
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+    // No samples recorded -> the TWAP read yields None.
+    assert_eq!(
+        t.contract
+            .get_twap_price(&OracleFeedType::Price, &t.token.address),
+        None
+    );
+    assert_eq!(
+        t.contract
+            .get_verified_price(&OracleFeedType::Price, &t.token.address),
+        10_000,
+        "with TWAP enabled but unavailable, get_verified_price must fall back to spot"
+    );
+}
+
+/// Issue #1193: `get_twap_aware_price` is the STRICT TWAP read — unlike
+/// `get_verified_price` it never silently falls back to spot. When TWAP is
+/// enabled and unavailable it returns `InsufficientTwapObservations`, even
+/// with a healthy spot source registered; once samples exist it returns the
+/// TWAP average.
+///
+/// Note: its own inline doc comment claims a spot fallback the code does not
+/// implement — the code is authoritative (see the doc's VF-2).
+#[test]
+fn test_1193_twap_aware_price_has_no_spot_fallback() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    let spot = t.env.register_contract(None, MockPriceOracle);
+    t.contract.add_price_source(&OracleFeedType::Price, &spot);
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+
+    // No samples: strict error, NOT the spot source's 10_000.
+    let res = t.env.as_contract(&t.contract.address, || {
+        crate::oracle_registry::get_twap_aware_price(
+            t.env.clone(),
+            OracleFeedType::Price,
+            t.token.address.clone(),
+        )
+    });
+    assert_eq!(
+        res,
+        Err(ContractError::InsufficientTwapObservations),
+        "get_twap_aware_price must not silently fall back to spot"
+    );
+
+    // Backfill samples: the TWAP average now wins over spot.
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+
+    let res = t.env.as_contract(&t.contract.address, || {
+        crate::oracle_registry::get_twap_aware_price(
+            t.env.clone(),
+            OracleFeedType::Price,
+            t.token.address.clone(),
+        )
+    });
+    assert_eq!(res, Ok(20_500));
+}
+
+/// Issue #1193: the health gate is the outermost layer — a stale snapshot
+/// rejects `get_verified_price` BEFORE either the TWAP path or the direct spot
+/// path is consulted, even when both a valid TWAP window and a spot source are
+/// available.
+#[test]
+fn test_1193_health_gate_precedes_twap_and_spot() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    let spot = t.env.register_contract(None, MockPriceOracle);
+    t.contract.add_price_source(&OracleFeedType::Price, &spot);
+    t.contract.set_twap_enabled(&OracleFeedType::Price, &true);
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &20_000);
+    let mut info = t.env.ledger().get();
+    info.timestamp += 1800;
+    t.env.ledger().set(info);
+    t.contract
+        .record_twap_sample(&OracleFeedType::Price, &t.token.address, &21_000);
+
+    // Sanity: without a health record both layers are live (TWAP wins).
+    assert_eq!(
+        t.contract
+            .get_verified_price(&OracleFeedType::Price, &t.token.address),
+        20_500
+    );
+
+    // A single stale snapshot (below the trip threshold) must reject outright.
+    let oracle = deploy_mock_oracle(&t, true, t.env.ledger().sequence());
+    record_stale_health(&t, OracleFeedType::Price, &oracle);
+    assert_eq!(
+        t.contract
+            .try_get_verified_price(&OracleFeedType::Price, &t.token.address),
+        Err(Ok(ContractError::OracleDataStale)),
+        "the health gate must precede both TWAP and spot"
+    );
+}
+
+/// Issue #1193: a non-empty, satisfied Identity quorum short-circuits the
+/// single-oracle chain entirely — funding succeeds even though the
+/// (unconsulted) single-oracle registration would have returned `Unverified`.
+#[test]
+fn test_1193_identity_quorum_verified_precedes_single_oracle() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    let seq = t.env.ledger().sequence();
+    // The single-oracle chain would reject: its registered oracle says
+    // "unverified".
+    let unverified = deploy_mock_oracle(&t, false, seq);
+    t.contract
+        .register_oracle(&OracleFeedType::Identity, &unverified);
+    // The quorum list is non-empty and satisfied by one verified feeder.
+    let feeder = deploy_mock_oracle(&t, true, seq);
+    add_identity_oracles(&t, &[feeder]);
+
+    let invoice_id = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded,
+        "a satisfied quorum must decide the gate, not the unverified single oracle"
+    );
+}
+
+/// Issue #1193: a *disagreeing* Identity quorum fails closed and does NOT fall
+/// back to the single-oracle chain, even when a valid, verified single oracle
+/// is registered and would have accepted the payer.
+#[test]
+fn test_1193_identity_quorum_disagreement_precedes_single_oracle() {
+    use crate::oracle_registry::OracleFeedType;
+    let t = setup();
+    let seq = t.env.ledger().sequence();
+    // A perfectly good single oracle is registered...
+    let good = deploy_mock_oracle(&t, true, seq);
+    t.contract.register_oracle(&OracleFeedType::Identity, &good);
+    // ...but the non-empty quorum disagrees: 1 of 2 verified against a quorum
+    // of 2.
+    let yes = deploy_mock_oracle(&t, true, seq);
+    let no = deploy_mock_oracle(&t, false, seq);
+    add_identity_oracles(&t, &[yes, no]);
+    t.contract.set_identity_quorum(&2);
+
+    let invoice_id = make_invoice(&t);
+    let res = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        res,
+        Err(Ok(ContractError::PayerUnverified)),
+        "quorum disagreement must fail closed, not fall back to a valid single oracle"
+    );
+}
+
 // ----------------------------------------------------------------
 // Issue #860 — health-gate coverage on price-dependent reads
 // ----------------------------------------------------------------
@@ -3268,5 +3473,100 @@ fn test_1056_fail_closed_does_not_bypass_funder_authorization() {
     assert_eq!(
         t.contract.get_invoice(&invoice_id).status,
         InvoiceStatus::Funded
+    );
+}
+
+// ── Issue #1190: registration, removal & feeder-removal audit ────────────────
+//
+// The canonical invariants these tests pin are stated in
+// `oracle_registry.rs`'s module docs (see the "Registration, removal &
+// feeder-removal invariants (Issue #1190)" block) and mirrored in
+// `docs/oracle-design.md`. The price-side counterparts live in
+// `tests_price_deviation.rs`.
+
+/// Removal cannot silently weaken the gate. With two honest feeders and a
+/// quorum of 2 funding succeeds; removing one feeder leaves the threshold
+/// unreachable (`get_identity_quorum() > feeders.len()`) because
+/// `remove_identity_oracle` does not re-validate it — so the *next* funding
+/// call fails closed even though the surviving feeder still reports the payer
+/// verified. Lowering the quorum back to the surviving count restores funding.
+#[test]
+fn test_1190_remove_feeder_leaving_quorum_unreachable_fails_closed() {
+    let t = setup();
+    let seq = t.env.ledger().sequence();
+    let a = deploy_mock_oracle(&t, true, seq);
+    let b = deploy_mock_oracle(&t, true, seq);
+    add_identity_oracles(&t, &[a, b]);
+    t.contract.set_identity_quorum(&2);
+
+    // Both feeders agree: the quorum is met and funding succeeds.
+    let invoice_id = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded
+    );
+
+    // Governance removes one (honest) feeder. The configured quorum is not
+    // re-validated, so 2 > 1 remains and the threshold is now unreachable.
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract
+        .remove_identity_oracle(&OracleFeedType::Identity, &a);
+    assert_eq!(
+        t.contract
+            .get_identity_oracles(&OracleFeedType::Identity)
+            .len(),
+        1
+    );
+    assert_eq!(t.contract.get_identity_quorum(), 2);
+
+    // The surviving feeder is honest and verified, but one agreement can never
+    // satisfy a quorum of 2 — the gate fails closed rather than silently
+    // falling back to the survivor.
+    let invoice_id = make_invoice(&t);
+    let res = t
+        .contract
+        .try_fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        res,
+        Err(Ok(ContractError::PayerUnverified)),
+        "an unreachable quorum must fail closed, not fall back to the survivor"
+    );
+
+    // Lowering the quorum to the remaining feeder count restores funding.
+    advance_past_rate_limit_cooldown(&t.env);
+    t.contract.set_identity_quorum(&1);
+    let invoice_id = make_invoice(&t);
+    t.contract
+        .fund_invoice(&t.funder, &invoice_id, &INVOICE_AMOUNT, &true);
+    assert_eq!(
+        t.contract.get_invoice(&invoice_id).status,
+        InvoiceStatus::Funded
+    );
+}
+
+/// `remove_identity_oracle` is admin-gated: a non-admin caller cannot remove a
+/// feeder, and so cannot manipulate quorum membership.
+#[test]
+fn test_1190_remove_identity_oracle_requires_admin() {
+    let (env, _admin, _token, client) = setup_env_no_mock_auths();
+    let imposter = Address::generate(&env);
+    let feeder = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &imposter,
+        invoke: &MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "remove_identity_oracle",
+            args: (OracleFeedType::Identity, feeder.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let res = client.try_remove_identity_oracle(&OracleFeedType::Identity, &feeder);
+    assert!(
+        res.is_err(),
+        "remove_identity_oracle should fail for a non-admin caller"
     );
 }
