@@ -591,9 +591,9 @@ describe("subscribe — reconnection", () => {
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
 
-  it("back-off doubles on successive errors (without successful connect in between)", () => {
+  it("back-off doubles on successive errors and is capped at 30 s", () => {
     const connectSpy = vi.fn();
-    let errorCb: ((e: unknown) => void) | null = null;
+    const errorCbs: Array<(e: unknown) => void> = [];
 
     const fakeHorizon = {
       contractEvents: () => ({
@@ -601,7 +601,7 @@ describe("subscribe — reconnection", () => {
           limit: () => ({
             stream: (cbs: Record<string, unknown>) => {
               connectSpy();
-              errorCb = cbs.onerror;
+              errorCbs.push(cbs.onerror as (e: unknown) => void);
               return vi.fn();
             },
           }),
@@ -612,19 +612,146 @@ describe("subscribe — reconnection", () => {
     subscribe(fakeHorizon, "CB", {}, vi.fn());
     expect(connectSpy).toHaveBeenCalledTimes(1);
 
-    // First error → schedule reconnect at 500 ms (backoffMs starts at 500, then doubles to 1000)
-    errorCb!(new Error("e1"));
-    vi.advanceTimersByTime(600);
-    // Connect #2 fires; backoffMs was doubled to 1000 BEFORE connecting, but then
-    // the successful connect resets it back to 500. So next backoff is 500 again.
+    // A stream that is accepted but never delivers data is not "healthy", so
+    // back-off keeps doubling: 500 ms, 1 s, 2 s, ...
+    errorCbs[0]!(new Error("e1"));
+    vi.advanceTimersByTime(499);
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
     expect(connectSpy).toHaveBeenCalledTimes(2);
 
-    // Second error → back-off resets to 500 ms after the successful reconnect
-    errorCb!(new Error("e2"));
-    vi.advanceTimersByTime(400); // not enough
+    errorCbs[1]!(new Error("e2"));
+    vi.advanceTimersByTime(999);
     expect(connectSpy).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(200); // total 600 ms — enough for 500 ms timer
+    vi.advanceTimersByTime(1);
     expect(connectSpy).toHaveBeenCalledTimes(3);
+
+    errorCbs[2]!(new Error("e3"));
+    vi.advanceTimersByTime(1999);
+    expect(connectSpy).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(1);
+    expect(connectSpy).toHaveBeenCalledTimes(4);
+
+    // Keep failing until the cap (500 * 2^6 = 32 000 → clamped to 30 000).
+    for (let i = 3; i < 9; i++) {
+      errorCbs[i]!(new Error(`e${i + 1}`));
+      vi.advanceTimersByTime(30_000);
+    }
+    const before = connectSpy.mock.calls.length;
+    errorCbs[errorCbs.length - 1]!(new Error("capped"));
+    vi.advanceTimersByTime(29_999);
+    expect(connectSpy).toHaveBeenCalledTimes(before);
+    vi.advanceTimersByTime(1);
+    expect(connectSpy).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("resets back-off once a reconnected stream delivers a message", () => {
+    const { horizon, triggerError, triggerMessage } = makeMockHorizon();
+    const connectSpy = (horizon as unknown).contractEvents as vi.Mock;
+
+    subscribe(horizon, "CBCONTRACT", {}, vi.fn());
+
+    triggerError(new Error("e1")); // schedules 500 ms, next back-off 1 s
+    vi.advanceTimersByTime(500);
+    expect(connectSpy).toHaveBeenCalledTimes(2);
+
+    // Healthy again: data arrives on the new stream.
+    triggerMessage({ ...makeRaw("paused", [], { timestamp: "1" }), id: "1-1", ledger: 1 });
+
+    triggerError(new Error("e2"));
+    vi.advanceTimersByTime(500); // back-off was reset, so 500 ms is enough
+    expect(connectSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores callbacks from a retired stream (no duplicate reconnect or delivery)", () => {
+    const streams: Array<{ onmessage: (r: unknown) => void; onerror: (e: unknown) => void }> = [];
+    const builder: any = {
+      forContract: () => builder,
+      limit: () => builder,
+      cursor: () => builder,
+      stream: (cbs: any) => {
+        streams.push(cbs);
+        return vi.fn();
+      },
+    };
+    const horizon = { contractEvents: vi.fn(() => builder) } as unknown;
+    const handler = vi.fn();
+    const onError = vi.fn();
+
+    subscribe(horizon, "CBCONTRACT", {}, handler, onError);
+    streams[0]!.onerror(new Error("first"));
+    vi.advanceTimersByTime(500);
+    expect(streams).toHaveLength(2);
+
+    // The first stream is stale. Late errors/messages from it are dropped.
+    streams[0]!.onerror(new Error("late error"));
+    streams[0]!.onmessage({ ...makeRaw("paused", [], { timestamp: "1" }), id: "1-1", ledger: 1 });
+    vi.advanceTimersByTime(60_000);
+
+    expect(streams).toHaveLength(2);
+    expect(handler).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("never schedules two reconnects for one outage", () => {
+    const { horizon, triggerError } = makeMockHorizon();
+    const connectSpy = (horizon as unknown).contractEvents as vi.Mock;
+
+    subscribe(horizon, "CBCONTRACT", {}, vi.fn());
+    triggerError(new Error("a"));
+    triggerError(new Error("b")); // same stream, already retired
+    vi.advanceTimersByTime(60_000);
+
+    expect(connectSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes from the last processed cursor after a reconnect", () => {
+    const { horizon, triggerError, triggerMessage } = makeMockHorizon();
+    const builder = (horizon as any).contractEvents();
+
+    subscribe(horizon, "CBCONTRACT", {}, vi.fn());
+    expect(builder.cursor).not.toHaveBeenCalled();
+
+    triggerMessage({ ...makeRaw("paused", [], { timestamp: "1" }), id: "100-1", ledger: 100 });
+    triggerError(new Error("dropped"));
+    vi.advanceTimersByTime(500);
+
+    expect(builder.cursor).toHaveBeenCalledWith("100-1");
+  });
+
+  it("does not redeliver an event the new stream repeats after reconnect", () => {
+    const { horizon, triggerError, triggerMessage } = makeMockHorizon();
+    const handler = vi.fn();
+    const raw = { ...makeRaw("paused", [], { timestamp: "1" }), id: "100-1", ledger: 100 };
+
+    subscribe(horizon, "CBCONTRACT", {}, handler);
+    triggerMessage(raw);
+    triggerError(new Error("dropped"));
+    vi.advanceTimersByTime(500);
+    triggerMessage(raw); // server re-sends the cursor event on resume
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsubscribe while a reconnect is pending cancels it", () => {
+    const { horizon, triggerError } = makeMockHorizon();
+    const connectSpy = (horizon as unknown).contractEvents as vi.Mock;
+
+    const unsub = subscribe(horizon, "CBCONTRACT", {}, vi.fn());
+    triggerError(new Error("dropped"));
+    unsub();
+    vi.advanceTimersByTime(60_000);
+
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the handle of a stream that errored synchronously inside stream()", () => {
+    const { horizon, closeStream } = makeMockHorizon({ streamError: new Error("boom") });
+
+    subscribe(horizon, "CBCONTRACT", {}, vi.fn());
+
+    // The dead stream's handle is closed rather than leaked.
+    expect(closeStream).toHaveBeenCalledTimes(1);
   });
 
   it("reconnects when the initial connect throws", () => {

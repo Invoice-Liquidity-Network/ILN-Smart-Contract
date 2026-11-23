@@ -12,7 +12,16 @@ To regenerate: `cd sdk && git-cliff --config .cliff.toml`
 
 ## [Unreleased]
 
+### Added
+- Testnet smoke tests for `cancelInvoice`, `transferInvoice`, `transferLPPosition`, `submitInvoicesBatch`, `disputeInvoice`
+  and `enrollInsurancePool` that assert confirmed on-chain state, plus a registry and offline guard mapping every
+  public mutation to a smoke test or a documented deferral. See `docs/sdk-mutation-smoke-coverage.md`.
+
 ### Fixed
+- `subscribe()` reconnection: back-off now resets only when a reconnected stream delivers a message (it was reset as soon
+  as `stream()` returned, so it never grew past 500 ms); callbacks from a retired stream are ignored, so a late error can no
+  longer open a second parallel stream; only one reconnect timer can be pending; a stream that errors synchronously has its
+  handle closed. Behaviour contract and residual risks: `docs/sdk-event-reconnection.md`.
 - `ILNError.fromError` now maps every `ContractError` variant of the invoice contract (codes 1-48).
   Codes 37-39 were previously reported as `InvoiceNotCancellable`, `InvalidAddress` and `InvalidTransfer`
   although on-chain they are `Reentrancy`, `RateLimited` and `QueueNotMature`; codes 40-48 were unmapped.
