@@ -226,3 +226,19 @@ fn execution_delay_boundary_with_real_cross_contract_auth() {
     t.gov.execute_proposal(&id);
     assert_eq!(fee_rate(&t), 250);
 }
+
+/// Documents audit finding V6 (docs/governance-parameter-setter-audit.md): ILN's
+/// setters authorize "the stored admin", not "governance". When that admin is an
+/// externally-owned key, its signature changes a parameter with no proposal,
+/// vote or timelock. The production wiring (admin == governance) closes this;
+/// see `direct_call_to_admin_setter_without_governance_is_rejected`.
+#[test]
+fn externally_owned_iln_admin_can_bypass_governance() {
+    let t = setup(false);
+
+    // Mocked auths from `setup` are still active, standing in for the EOA
+    // admin's signature. No proposal was created.
+    t.iln.update_fee_rate(&300);
+
+    assert_eq!(fee_rate(&t), 300);
+}
