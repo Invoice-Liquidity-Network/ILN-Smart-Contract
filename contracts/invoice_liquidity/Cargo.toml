@@ -60,3 +60,9 @@ path = "../tests/cross_contract_invariants_test.rs"
 [[test]]
 name = "cross_contract_reentrancy_test"
 path = "../tests/cross_contract_reentrancy_test.rs"
+
+# Event emission regression tests for every public mutation. Previously this
+# file existed but was never registered, so it never compiled or ran.
+[[test]]
+name = "event_emission_test"
+path = "../tests/event_emission_test.rs"
