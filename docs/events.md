@@ -703,7 +703,7 @@ the scope of this event-emission audit, and should be tracked separately.
 | `undelegate_votes` | ✅ `VotesUndelegated` |
 | `cast_vote` | ✅ `VoteCast` |
 | `set_execution_delay` | ✅ `GovernanceParameterUpdated` (added by this audit) |
-| `execute_proposal` | ✅ `ProposalExecuted` |
+| `execute_proposal` | ✅ `TimelockScheduled` (Active → Passed; Issue #980), `TimelockExecuted` (Passed → Executed; Issue #980), `ProposalExecuted` |
 | `veto_proposal` | ✅ `ProposalVetoed` |
 | `disable_veto_power` | ✅ `VetoPowerDisabled` (added by this audit) |
 | `get_*` / `list_proposals` / `has_voted` | 🔍 read-only views |
@@ -758,6 +758,30 @@ Topics: `["vote_cast", proposal_id, voter]`
 | `voter` | `Address` | Address casting the vote |
 | `support` | `bool` | True = for, False = against |
 | `weight` | `i128` | Voting weight (own + delegated) |
+
+### TimelockScheduled
+
+Emitted when a passed proposal is scheduled into the execution timelock (Issue #980).
+
+Topics: `["timelock_scheduled", proposal_id]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `proposal_id` | `u64` | Identifier of the scheduled proposal |
+| `eta_ledger` | `u32` | Target ledger sequence after which execution may proceed |
+| `execution_delay` | `u32` | Delay applied in ledgers (snapshotted at proposal creation) |
+
+### TimelockExecuted
+
+Emitted when a timelocked proposal is executed after its delay has elapsed (Issue #980).
+
+Topics: `["timelock_executed", proposal_id]`
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `proposal_id` | `u64` | Executed proposal identifier |
+| `eta_ledger` | `u32` | The proposal's scheduled ETA ledger |
+| `execution_ledger` | `u32` | Actual ledger sequence at execution time (`> eta_ledger`) |
 
 ### ProposalExecuted
 

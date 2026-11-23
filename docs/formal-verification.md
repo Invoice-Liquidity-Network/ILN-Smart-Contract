@@ -258,10 +258,10 @@ Unlike the invoice lifecycle (one enum field on a mutable record), a `Governance
 | `Active` | `delegate_votes` / `undelegate_votes` | `Active` | Does not itself touch proposal status; adjusts `DelegatedToMe` tallies used by subsequent `cast_vote` calls |
 | `Active` | `execute_proposal` (quorum not reached) | `Rejected` | `now >= voting_end`; `votes_for + votes_against < quorum(total_supply, min_quorum_bps)` |
 | `Active` | `execute_proposal` (majority not reached) | `Rejected` | `now >= voting_end`; quorum reached; `votes_for <= votes_against` |
-| `Active` | `execute_proposal` (passes) | `Passed` | `now >= voting_end`; quorum reached; `votes_for > votes_against`; sets `eta_ledger = current_ledger + execution_delay` |
+| `Active` | `execute_proposal` (passes) | `Passed` | `now >= voting_end`; quorum reached; `votes_for > votes_against`; sets `eta_ledger = current_ledger + proposal_delay` (delay snapshotted at creation time, Issue #978) |
 | `Active` | `veto_proposal` | `Vetoed` | Caller is stored admin; `VetoPowerEnabled == true` |
-| `Passed` | `execute_proposal` (timelock elapsed, call succeeds) | `Executed` | `current_ledger >= eta_ledger`; cross-contract call to the target contract returns `Ok(())` |
-| `Passed` | `execute_proposal` (timelock elapsed, call fails) | `Passed` | `current_ledger >= eta_ledger`; cross-contract call traps or errors — status/`eta_ledger` unchanged so a retry is possible (Issue #531) |
+| `Passed` | `execute_proposal` (timelock elapsed, call succeeds) | `Executed` | `current_ledger > eta_ledger` (Issue #979); cross-contract call to the target contract returns `Ok(())` |
+| `Passed` | `execute_proposal` (timelock elapsed, call fails) | `Passed` | `current_ledger > eta_ledger` (Issue #979); cross-contract call traps or errors — status/`eta_ledger` unchanged so a retry is possible (Issue #531) |
 | `Passed` | `veto_proposal` | `Vetoed` | Caller is stored admin; `VetoPowerEnabled == true` |
 | `Rejected` | — | — | Terminal state |
 | `Executed` | — | — | Terminal state |
@@ -275,7 +275,7 @@ Unlike the invoice lifecycle (one enum field on a mutable record), a `Governance
 | `Active` | `cast_vote` after `voting_end` | `VotingEnded` |
 | Any non-`Active` | `cast_vote` | `ProposalNotActive` |
 | `Active`/`Passed`/`Rejected`/`Executed`/`Vetoed` | `cast_vote` twice by same voter on same proposal | `AlreadyVoted` |
-| `Passed` | `execute_proposal` before `eta_ledger` | `TimelockNotExpired` |
+| `Passed` | `execute_proposal` before or at `eta_ledger` (`current_ledger <= eta_ledger`) | `TimelockNotExpired` |
 | `Rejected`, `Executed`, `Vetoed` | `execute_proposal` | `AlreadyResolved` |
 | `Rejected`, `Executed`, `Vetoed` | `veto_proposal` | `NotVetoable` |
 | Any vetoable state | `veto_proposal` when `VetoPowerEnabled == false` | `VetoPowerDisabled` |
@@ -321,6 +321,27 @@ Unlike the invoice lifecycle (one enum field on a mutable record), a `Governance
 **Rationale:** Guarantees `execute_proposal` is safely retriable and that `Executed` status is a reliable signal that the action actually took effect (Issue #531).
 
 **Enforcement:** `invoke_and_check()` (`src/lib.rs:1396-1408`) uses `try_invoke_contract`; the `!succeeded` branch (`src/lib.rs:1186-1198`) returns `ExecutionFailed` without touching persistent proposal storage.
+
+### Invariant TL1: Proposal Execution Delay Immutability
+**Property:** For any proposal `p`, `p`'s execution delay is locked at proposal creation (`create_proposal`) into `StorageKey::ProposalExecutionDelay(id)` and cannot be modified by subsequent admin/governance calls to `set_execution_delay`.
+
+**Rationale:** Prevents governance delay manipulation or retroactive shortening during the voting or timelock period of an in-flight proposal (Issue #978).
+
+**Enforcement:** `execute_proposal` reads `StorageKey::ProposalExecutionDelay(proposal_id)` to compute `eta_ledger = current_ledger + delay`.
+
+### Invariant TL2: Strict Timelock Boundary
+**Property:** A passed proposal with `eta_ledger` cannot be executed at or before `eta_ledger`. Execution is valid if and only if `current_ledger > eta_ledger`.
+
+**Rationale:** Prevents zero-delay bypass and race conditions where execution occurs within the same ledger as proposal passage or ETA (Issue #979).
+
+**Enforcement:** `execute_proposal` enforces `if current_ledger <= proposal.eta_ledger { return Err(GovernanceError::TimelockNotExpired); }`.
+
+### Invariant TL3: Timelock Lifecycle Event Observability
+**Property:** Timelock queueing (`Active -> Passed`) and execution (`Passed -> Executed`) transitions emit dedicated, structured audit events (`TimelockScheduled` and `TimelockExecuted`).
+
+**Rationale:** Provides off-chain indexers and stakeholders with unambiguous, verifiable audit trails for timelock entry and execution (Issue #980).
+
+**Enforcement:** `execute_proposal` publishes `TimelockScheduled` upon status transition to `Passed`, and `TimelockExecuted` alongside `ProposalExecuted` upon status transition to `Executed`.
 
 ---
 
