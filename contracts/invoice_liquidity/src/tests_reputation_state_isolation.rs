@@ -6,6 +6,29 @@
 //! `reputation_bonus` each maintain their own reputation storage for the
 //! same address. Updating one never mutates the other (no sync, no
 //! double-counting of a single protocol event).
+//!
+//! # Intra-contract isolation (LP / payer / invoice)
+//!
+//! The second half of this file pins the isolation rules *inside*
+//! `invoice_liquidity` (verified against `invoice.rs` / `lib.rs`):
+//!
+//! * `LpScore(addr)`, `PayerScore(addr)` and `Reputation(addr)` are three
+//!   separate persistent keys. An LP funding an invoice writes only the
+//!   funder's `LpScore`; it never touches that address's `PayerScore` or
+//!   `ReputationProfile`.
+//! * `LpScore` is bumped (+1) only for the funder whose call *completes* the
+//!   funding (`amount_funded == amount`). Earlier tranche providers are not
+//!   credited.
+//! * `mark_paid` writes the invoice's own payer (`PayerScore` + profile) and
+//!   the invoice's freelancer (profile counter only). `claim_default` writes
+//!   only the invoice's payer. No other address's state is read-modify-written.
+//! * Replays (`mark_paid` on a `Paid` invoice, `claim_default` on a
+//!   `Defaulted` one) and unauthorized callers (`claim_default` by a
+//!   non-funder) revert and leave every score and profile untouched.
+//!
+//! Residual (not a finding): the freelancer's *score* is read from the same
+//! `PayerScore` namespace as payers (`submitter_reputation`), so an address
+//! acting as both freelancer and payer shares one score by design.
 
 use super::*;
 use crate::test::setup;
@@ -275,4 +298,261 @@ fn test_iln_default_does_not_affect_bonus() {
         bonus_after, bonus_before,
         "reputation_bonus must not be affected by ILN default events (ADR-011)"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intra-contract isolation: one LP / payer / invoice cannot mutate another's
+// reputation state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn new_lp(t: &crate::test::TestEnv) -> Address {
+    let lp = Address::generate(&t.env);
+    soroban_sdk::token::StellarAssetClient::new(&t.env, &t.token.address)
+        .mint(&lp, &(INVOICE_AMOUNT * 10));
+    lp
+}
+
+fn new_payer(t: &crate::test::TestEnv) -> Address {
+    let payer = Address::generate(&t.env);
+    soroban_sdk::token::StellarAssetClient::new(&t.env, &t.token.address)
+        .mint(&payer, &(INVOICE_AMOUNT * 10));
+    payer
+}
+
+fn submit(t: &crate::test::TestEnv, payer: &Address) -> u64 {
+    let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    t.contract.submit_invoice(
+        &t.freelancer,
+        payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    )
+}
+
+fn submit_and_fund(t: &crate::test::TestEnv, payer: &Address, lp: &Address) -> u64 {
+    let id = submit(t, payer);
+    t.contract.fund_invoice(lp, &id, &INVOICE_AMOUNT, &false);
+    id
+}
+
+fn warp_past_due(t: &crate::test::TestEnv, id: u64) {
+    let due = u64::from(t.contract.get_invoice(&id).due_date);
+    let mut ledger_info = t.env.ledger().get();
+    ledger_info.timestamp = due + 1;
+    t.env.ledger().set(ledger_info);
+}
+
+/// Funding an invoice credits only the funding LP's `LpScore`.
+#[test]
+fn test_lp_funding_only_changes_that_lps_score() {
+    let t = setup();
+    let lp_a = new_lp(&t);
+    let lp_b = new_lp(&t);
+    let payer = new_payer(&t);
+
+    submit_and_fund(&t, &payer, &lp_a);
+
+    assert_eq!(t.contract.lp_score(&lp_a), 51, "funder is credited once");
+    assert_eq!(t.contract.lp_score(&lp_b), 50, "other LP untouched");
+    assert_eq!(t.contract.lp_score(&payer), 50, "payer's LP score untouched");
+    assert_eq!(
+        t.contract.lp_score(&t.freelancer),
+        50,
+        "freelancer's LP score untouched"
+    );
+}
+
+/// `LpScore` is a separate namespace from `PayerScore` and `ReputationProfile`.
+#[test]
+fn test_lp_funding_does_not_touch_lp_payer_score_or_profile() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let payer = new_payer(&t);
+
+    let profile_before = t.contract.get_reputation(&lp);
+    submit_and_fund(&t, &payer, &lp);
+
+    assert_eq!(t.contract.lp_score(&lp), 51);
+    assert_eq!(
+        t.contract.payer_score(&lp),
+        50,
+        "LP activity must not move the same address's payer score"
+    );
+    assert_eq!(
+        t.contract.get_reputation(&lp),
+        profile_before,
+        "LP activity must not write the ReputationProfile"
+    );
+    // The payer on the funded invoice is not credited for being funded.
+    assert_eq!(t.contract.payer_score(&payer), 50);
+    assert_eq!(t.contract.get_reputation(&payer).invoices_paid, 0);
+}
+
+/// With split funding only the LP whose tranche completes the invoice is
+/// credited; the earlier tranche provider is not.
+#[test]
+fn test_split_funding_credits_only_the_completing_lp() {
+    let t = setup();
+    let lp_a = new_lp(&t);
+    let lp_b = new_lp(&t);
+    let payer = new_payer(&t);
+
+    let id = submit(&t, &payer);
+    t.contract
+        .fund_invoice(&lp_a, &id, &(INVOICE_AMOUNT / 2), &false);
+    assert_eq!(t.contract.lp_score(&lp_a), 50, "partial tranche is not credited");
+    assert_eq!(t.contract.lp_score(&lp_b), 50);
+
+    t.contract
+        .fund_invoice(&lp_b, &id, &(INVOICE_AMOUNT / 2), &false);
+    assert_eq!(t.contract.lp_score(&lp_a), 50, "earlier tranche never retro-credited");
+    assert_eq!(t.contract.lp_score(&lp_b), 51, "completing LP credited once");
+}
+
+/// Paying one payer's invoice mutates only that payer (score + profile) and
+/// the invoice's freelancer counter; a different payer and LP are untouched.
+#[test]
+fn test_mark_paid_does_not_mutate_other_payers_or_lps() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let payer_a = new_payer(&t);
+    let payer_b = new_payer(&t);
+
+    let id_a = submit_and_fund(&t, &payer_a, &lp);
+    let id_b = submit_and_fund(&t, &payer_b, &lp);
+
+    let b_profile_before = t.contract.get_reputation(&payer_b);
+    let lp_profile_before = t.contract.get_reputation(&lp);
+    let lp_score_before = t.contract.lp_score(&lp);
+
+    t.contract.mark_paid(&id_a, &INVOICE_AMOUNT);
+
+    assert_eq!(t.contract.payer_score(&payer_a), 51);
+    assert_eq!(t.contract.get_reputation(&payer_a).invoices_paid, 1);
+
+    assert_eq!(t.contract.payer_score(&payer_b), 50, "other payer score untouched");
+    assert_eq!(
+        t.contract.get_reputation(&payer_b),
+        b_profile_before,
+        "other payer profile untouched"
+    );
+    assert_eq!(
+        t.contract.get_reputation(&lp),
+        lp_profile_before,
+        "LP profile untouched by settlement"
+    );
+    assert_eq!(
+        t.contract.lp_score(&lp),
+        lp_score_before,
+        "LP score is not re-credited at settlement"
+    );
+    // Invoice-level isolation: payer B's invoice is still open.
+    assert_eq!(
+        t.contract.get_invoice(&id_b).status,
+        InvoiceStatus::Funded
+    );
+}
+
+/// A default penalises only the defaulting invoice's payer and never the LP,
+/// the freelancer's score, or another payer.
+#[test]
+fn test_default_only_penalises_the_invoices_payer() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let payer_a = new_payer(&t);
+    let payer_b = new_payer(&t);
+
+    let id_a = submit_and_fund(&t, &payer_a, &lp);
+    let id_b = submit_and_fund(&t, &payer_b, &lp);
+    let lp_score_before = t.contract.lp_score(&lp);
+    let b_profile_before = t.contract.get_reputation(&payer_b);
+
+    warp_past_due(&t, id_a);
+    t.contract.claim_default(&lp, &id_a);
+
+    assert_eq!(t.contract.payer_score(&payer_a), 45);
+    assert_eq!(t.contract.get_reputation(&payer_a).invoices_defaulted, 1);
+
+    assert_eq!(t.contract.payer_score(&payer_b), 50);
+    assert_eq!(t.contract.get_reputation(&payer_b), b_profile_before);
+    assert_eq!(t.contract.lp_score(&lp), lp_score_before, "LP not penalised");
+    assert_eq!(t.contract.get_reputation(&lp).invoices_defaulted, 0);
+    assert_eq!(
+        t.contract.get_invoice(&id_b).status,
+        InvoiceStatus::Funded,
+        "other payer's invoice state untouched"
+    );
+
+    // Top-payer ranking tracks only the payer whose score changed.
+    let top = t.contract.get_top_payers(&10);
+    assert!(top.iter().any(|e| e.address == payer_a && e.score == 45));
+    assert!(!top.iter().any(|e| e.address == payer_b));
+}
+
+/// Replayed settlement / default calls revert and leave reputation untouched.
+#[test]
+fn test_replayed_lifecycle_calls_do_not_double_update_reputation() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let payer_paid = new_payer(&t);
+    let payer_default = new_payer(&t);
+
+    let id_paid = submit_and_fund(&t, &payer_paid, &lp);
+    t.contract.mark_paid(&id_paid, &INVOICE_AMOUNT);
+    let paid_profile = t.contract.get_reputation(&payer_paid);
+    assert!(t.contract.try_mark_paid(&id_paid, &INVOICE_AMOUNT).is_err());
+    assert_eq!(t.contract.payer_score(&payer_paid), 51);
+    assert_eq!(t.contract.get_reputation(&payer_paid), paid_profile);
+
+    let id_def = submit_and_fund(&t, &payer_default, &lp);
+    warp_past_due(&t, id_def);
+    t.contract.claim_default(&lp, &id_def);
+    let default_profile = t.contract.get_reputation(&payer_default);
+    assert!(t.contract.try_claim_default(&lp, &id_def).is_err());
+    assert_eq!(t.contract.payer_score(&payer_default), 45, "penalty applied once");
+    assert_eq!(t.contract.get_reputation(&payer_default), default_profile);
+}
+
+/// An LP that did not fund the invoice cannot trigger its default (and so
+/// cannot mutate the payer's reputation).
+#[test]
+fn test_non_funder_cannot_default_another_lps_invoice() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let outsider = new_lp(&t);
+    let payer = new_payer(&t);
+
+    let id = submit_and_fund(&t, &payer, &lp);
+    warp_past_due(&t, id);
+    let profile_before = t.contract.get_reputation(&payer);
+
+    assert!(t.contract.try_claim_default(&outsider, &id).is_err());
+
+    assert_eq!(t.contract.payer_score(&payer), 50);
+    assert_eq!(t.contract.get_reputation(&payer), profile_before);
+    assert_eq!(t.contract.lp_score(&outsider), 50);
+    assert_eq!(t.contract.get_invoice(&id).status, InvoiceStatus::Funded);
+}
+
+/// Pure reads are stable: querying scores/profiles repeatedly (no ledger
+/// advance, so no decay) never changes them.
+#[test]
+fn test_reputation_reads_are_stable_and_side_effect_free() {
+    let t = setup();
+    let lp = new_lp(&t);
+    let payer = new_payer(&t);
+    let id = submit_and_fund(&t, &payer, &lp);
+    t.contract.mark_paid(&id, &INVOICE_AMOUNT);
+
+    let score = t.contract.payer_score(&payer);
+    let profile = t.contract.get_reputation(&payer);
+    let lp_score = t.contract.lp_score(&lp);
+    for _ in 0..3 {
+        assert_eq!(t.contract.payer_score(&payer), score);
+        assert_eq!(t.contract.get_reputation(&payer), profile);
+        assert_eq!(t.contract.lp_score(&lp), lp_score);
+    }
 }
