@@ -1,7 +1,62 @@
 # Storage Layout Optimization Analysis for Invoice Liquidity Contract
 
 **Date:** 2026-07-26
-**Status:** Implementation Plan
+**Status:** Phase 1 (hot/cold split) implemented; Phases 2-3 not implemented. See "Layout audit" below for what is verified against the code.
+
+---
+
+## Layout audit (verified against the code)
+
+Audited against `src/invoice.rs`, `src/storage.rs`, `src/constants.rs`. Regression
+test: `tests/storage_layout_audit.rs` (keeps this section and the code in sync).
+
+**Storage version: 3** (`constants::CURRENT_STORAGE_VERSION`). `migrate()` only
+backfills bootstrap token decimals for v3; it does **not** copy legacy `Invoice(id)`
+records into the split format.
+
+| Field | Tier | Stored in |
+|-------|------|-----------|
+| `id` | hot | `InvoiceCore(id)` |
+| `freelancer` | hot | `InvoiceCore(id)` |
+| `payer` | hot | `InvoiceCore(id)` |
+| `token` | hot | `InvoiceCore(id)` |
+| `amount` | hot | `InvoiceCore(id)` |
+| `due_date` | hot | `InvoiceCore(id)` |
+| `discount_rate` | hot | `InvoiceCore(id)` |
+| `status` | hot | `InvoiceCore(id)` |
+| `amount_funded` | hot | `InvoiceCore(id)` |
+| `amount_paid` | hot | `InvoiceCore(id)` |
+| `funder` | cold | `InvoiceMetadata(id)` |
+| `funded_at` | cold | `InvoiceMetadata(id)` |
+| `referral_code` | cold | `InvoiceMetadata(id)` |
+| `submitter_reputation` | cold | `InvoiceMetadata(id)` |
+
+Verified findings:
+
+1. **Split matches Section 4.1.** `Invoice` = `InvoiceCore` + `InvoiceMetadata`, with no
+   field in both and none missing.
+2. **Writes use only the split keys.** `save_invoice` writes `InvoiceCore` and
+   `InvoiceMetadata` and never the legacy `Invoice(id)` key. Section 7's "new saves use
+   both keys / old keys remain" refers to core+metadata, not the legacy key. Reads
+   fall back to a legacy `Invoice(id)` record when the split pair is absent, so
+   pre-split invoices still load.
+3. **Rollback is not free.** Because new invoices have no legacy copy, rolling the WASM
+   back to a pre-split build cannot read them. `rehearse_rollback()` reports this
+   (`orphaned_count`, `rollback_safe`); run it before any downgrade. Section 7's
+   "Risk level: Low" holds for upgrade, not for downgrade.
+4. **Section 1.1 TTL column was wrong.** Persistent and instance entries are *not*
+   permanent or ~100 years: invoice records are extended to 2,000,000 ledgers on
+   write (about 115 days at 5 s/ledger) and archive afterwards if untouched. See
+   `docs/storage-ttl-audit.md`.
+5. **Section 4.2 (field reordering) has no storage effect.** `#[contracttype]` structs
+   are stored as maps keyed by field name, so declaration order does not change the
+   serialized layout or padding. Treat Phase 2 as not applicable.
+6. **Gas percentages are estimates**, not measurements. Measured numbers live in
+   `BENCHMARKS.md` / `docs/benchmarks.json`.
+
+Residual risks (not changed): the funder list (`InvoiceFunders`) is outside the split
+and has no TTL extension (`docs/storage-ttl-audit.md` F1); the Section 3.3 reputation
+key consolidation was not audited here.
 
 ---
 
@@ -24,8 +79,8 @@ This document analyzes the invoice_liquidity contract's storage patterns and pro
 
 | Tier | Cost | TTL | Use Case |
 |------|------|-----|----------|
-| **Instance** | 1x | Permanent | Contract state, config, counters |
-| **Persistent** | 1.5x | ~100 years | Invoices, scores, queues, stats |
+| **Instance** | 1x | Finite (must be extended; see audit item 4) | Contract state, config, counters |
+| **Persistent** | 1.5x | Finite per entry (invoices extended to 2M ledgers on write) | Invoices, scores, queues, stats |
 | **Temporary** | 0.1x | ~1 month | Rarely used, not relevant here |
 
 **Key insight:** Persistent storage has 50% overhead vs instance. Minimize reads/writes here.
@@ -295,7 +350,7 @@ Reputation(Address) → ReputationProfile (invoices_submitted, paid, defaulted, 
 ## 8. Next Steps
 
 1. ✓ Analysis complete
-2. → Implement Phase 1 (Hot/Cold Separation)
+2. ✓ Phase 1 (Hot/Cold Separation) implemented
 3. Run gas benchmarks
 4. Evaluate Phase 2 based on Phase 1 results
 5. Deploy with testing
