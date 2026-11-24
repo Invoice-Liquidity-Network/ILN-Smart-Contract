@@ -1126,3 +1126,5 @@ pub fn accrue_settlement(
 mod tests_distribution_proptest;
 #[cfg(test)]
 mod tests_custody;
+#[cfg(test)]
+mod tests_lp_withdrawal_auth;

@@ -4,6 +4,18 @@
 //!
 //! Tests that simulate long idle periods (years of ledger time) to verify
 //! no overflow, correct floor convergence, and proper decay behavior.
+//!
+//! The second half of the file audits **update conservation** of the payer
+//! reputation paths in `lib.rs` (see `docs/reputation-update-conservation-audit.md`):
+//!
+//! * submission, payment and default each apply their update exactly once per
+//!   lifecycle transition; replays revert before reaching the score code;
+//! * score arithmetic is saturating / clamped (cap 100 on payment, floor 0 on
+//!   default) and counter decrements saturate, so nothing underflows;
+//! * partial payments never award score or `invoices_paid`;
+//! * `resolve_appeal(upheld)` restores the *absolute* pre-default snapshot
+//!   (verified residual behavior: interim score changes made after that
+//!   snapshot are overwritten — pinned below, not changed).
 
 use super::*;
 use crate::constants::MAX_REPUTATION_DECAY_PERIODS;
@@ -220,4 +232,230 @@ fn test_activity_resets_decay_clock() {
         score_after_second_idle < score_after_second,
         "score should decay again after second idle period"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Update conservation: underflow, duplicate updates, appeal restoration
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn conservation_hash(env: &soroban_sdk::Env) -> soroban_sdk::BytesN<32> {
+    soroban_sdk::BytesN::from_array(env, &[9u8; 32])
+}
+
+fn open_funded_invoice(t: &crate::test::TestEnv) -> u64 {
+    let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    let id = t.contract.submit_invoice(
+        &t.freelancer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    t.contract
+        .fund_invoice(&t.funder, &id, &INVOICE_AMOUNT, &false);
+    id
+}
+
+fn set_score_directly(t: &crate::test::TestEnv, score: u32) {
+    t.env.as_contract(&t.contract.address, || {
+        crate::invoice::set_payer_score(&t.env, &t.payer, score);
+    });
+}
+
+fn warp_to_after_due(t: &crate::test::TestEnv, id: u64) {
+    let due = u64::from(t.contract.get_invoice(&id).due_date);
+    let mut ledger_info = t.env.ledger().get();
+    ledger_info.timestamp = due + 1;
+    t.env.ledger().set(ledger_info);
+}
+
+/// Payment at the score cap cannot overflow past 100; the counter still moves.
+#[test]
+fn test_payment_at_score_cap_stays_clamped() {
+    let t = setup();
+    set_score_directly(&t, 100);
+    let id = open_funded_invoice(&t);
+
+    t.contract.mark_paid(&id, &INVOICE_AMOUNT);
+
+    assert_eq!(t.contract.payer_score(&t.payer), 100);
+    let profile = t.contract.get_reputation(&t.payer);
+    assert_eq!(profile.score, 100);
+    assert_eq!(profile.invoices_paid, 1);
+}
+
+/// Default at or below the 5-point penalty floors at 0 (no u32 underflow),
+/// and repeated defaults on distinct invoices keep it at 0.
+#[test]
+fn test_default_penalty_floors_at_zero_without_underflow() {
+    let t = setup();
+    set_score_directly(&t, 3);
+
+    let first = open_funded_invoice(&t);
+    warp_to_after_due(&t, first);
+    t.contract.claim_default(&t.funder, &first);
+    assert_eq!(t.contract.payer_score(&t.payer), 0);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 1);
+
+    let second = open_funded_invoice(&t);
+    warp_to_after_due(&t, second);
+    t.contract.claim_default(&t.funder, &second);
+    assert_eq!(t.contract.payer_score(&t.payer), 0);
+    let profile = t.contract.get_reputation(&t.payer);
+    assert_eq!(profile.invoices_defaulted, 2);
+    assert_eq!(profile.score, 0);
+}
+
+/// A partial payment neither awards score nor counts as a paid invoice; only
+/// the settling payment does, and only once.
+#[test]
+fn test_partial_payment_does_not_award_score_until_settled() {
+    let t = setup();
+    let id = open_funded_invoice(&t);
+
+    t.contract.mark_paid(&id, &(INVOICE_AMOUNT / 2));
+    assert_eq!(t.contract.payer_score(&t.payer), 50);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_paid, 0);
+    assert_eq!(t.contract.get_reputation(&t.freelancer).invoices_paid, 0);
+
+    t.contract.mark_paid(&id, &(INVOICE_AMOUNT / 2));
+    assert_eq!(t.contract.payer_score(&t.payer), 51);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_paid, 1);
+    assert_eq!(t.contract.get_reputation(&t.freelancer).invoices_paid, 1);
+
+    // Replay after settlement reverts and awards nothing further.
+    assert!(t.contract.try_mark_paid(&id, &1).is_err());
+    assert_eq!(t.contract.payer_score(&t.payer), 51);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_paid, 1);
+}
+
+/// Invalid inputs revert before any reputation write.
+#[test]
+fn test_rejected_calls_leave_reputation_untouched() {
+    let t = setup();
+    let id = open_funded_invoice(&t);
+    let payer_before = t.contract.get_reputation(&t.payer);
+    let freelancer_before = t.contract.get_reputation(&t.freelancer);
+
+    assert!(t.contract.try_mark_paid(&id, &0).is_err(), "zero amount");
+    assert!(
+        t.contract
+            .try_mark_paid(&id, &(INVOICE_AMOUNT + 1))
+            .is_err(),
+        "overpayment"
+    );
+    // Default before the due date is rejected.
+    assert!(t.contract.try_claim_default(&t.funder, &id).is_err());
+
+    assert_eq!(t.contract.get_reputation(&t.payer), payer_before);
+    assert_eq!(t.contract.get_reputation(&t.freelancer), freelancer_before);
+    assert_eq!(t.contract.payer_score(&t.payer), 50);
+}
+
+/// Self-invoices are rejected, so a single address can never receive both the
+/// payer and the freelancer counter update for one event.
+#[test]
+fn test_self_invoice_cannot_double_count_reputation() {
+    let t = setup();
+    let due_date = t.env.ledger().timestamp() + DUE_DATE_OFFSET;
+    let res = t.contract.try_submit_invoice(
+        &t.payer,
+        &t.payer,
+        &INVOICE_AMOUNT,
+        &due_date,
+        &DISCOUNT_RATE,
+        &t.token.address,
+        &ReferralCode::None,
+    );
+    assert!(res.is_err());
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_submitted, 0);
+}
+
+/// An appeal can be filed once and resolved once; replays revert and the
+/// restore / decrement is not applied a second time.
+#[test]
+fn test_appeal_resolution_is_applied_exactly_once() {
+    let t = setup();
+    let id = open_funded_invoice(&t);
+    warp_to_after_due(&t, id);
+    t.contract.claim_default(&t.funder, &id);
+    assert_eq!(t.contract.payer_score(&t.payer), 45);
+
+    t.contract.appeal_default(&id, &conservation_hash(&t.env));
+    assert!(t
+        .contract
+        .try_appeal_default(&id, &conservation_hash(&t.env))
+        .is_err());
+
+    t.contract.resolve_appeal(&id, &true);
+    assert_eq!(t.contract.payer_score(&t.payer), 50);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 0);
+
+    assert!(t.contract.try_resolve_appeal(&id, &true).is_err());
+    assert!(t.contract.try_claim_default(&t.funder, &id).is_err());
+    assert_eq!(t.contract.payer_score(&t.payer), 50);
+    assert_eq!(
+        t.contract.get_reputation(&t.payer).invoices_defaulted,
+        0,
+        "defaulted counter must not underflow or re-decrement"
+    );
+}
+
+/// Verified residual (pinned, not changed): an upheld appeal restores the
+/// absolute pre-default snapshot, so a score gained *after* the default is
+/// overwritten.
+#[test]
+fn test_upheld_appeal_overwrites_interim_score_gain() {
+    let t = setup();
+    let defaulted = open_funded_invoice(&t);
+    let paid_later = open_funded_invoice(&t);
+    warp_to_after_due(&t, defaulted);
+
+    t.contract.claim_default(&t.funder, &defaulted);
+    assert_eq!(t.contract.payer_score(&t.payer), 45);
+
+    t.contract.mark_paid(&paid_later, &INVOICE_AMOUNT);
+    assert_eq!(t.contract.payer_score(&t.payer), 46);
+
+    t.contract.appeal_default(&defaulted, &conservation_hash(&t.env));
+    t.contract.resolve_appeal(&defaulted, &true);
+
+    assert_eq!(
+        t.contract.payer_score(&t.payer),
+        50,
+        "snapshot (50) replaces 46; the interim +1 is not preserved (45 + 5 + 1 = 51)"
+    );
+    let profile = t.contract.get_reputation(&t.payer);
+    assert_eq!(profile.score, 50);
+    assert_eq!(profile.invoices_paid, 1, "history counters are unaffected");
+    assert_eq!(profile.invoices_defaulted, 0);
+}
+
+/// Verified residual (pinned, not changed): with two defaults the restored
+/// score depends on resolution order because each appeal stores its own
+/// absolute snapshot (A: 50, B: 45). Counters stay exact in either order.
+#[test]
+fn test_two_upheld_appeals_restore_snapshots_in_resolution_order() {
+    let t = setup();
+    let a = open_funded_invoice(&t);
+    let b = open_funded_invoice(&t);
+    warp_to_after_due(&t, a);
+
+    t.contract.claim_default(&t.funder, &a);
+    t.contract.claim_default(&t.funder, &b);
+    assert_eq!(t.contract.payer_score(&t.payer), 40);
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 2);
+
+    t.contract.appeal_default(&a, &conservation_hash(&t.env));
+    t.contract.appeal_default(&b, &conservation_hash(&t.env));
+
+    t.contract.resolve_appeal(&a, &true);
+    assert_eq!(t.contract.payer_score(&t.payer), 50, "A snapshot");
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 1);
+
+    t.contract.resolve_appeal(&b, &true);
+    assert_eq!(t.contract.payer_score(&t.payer), 45, "B snapshot");
+    assert_eq!(t.contract.get_reputation(&t.payer).invoices_defaulted, 0);
 }
