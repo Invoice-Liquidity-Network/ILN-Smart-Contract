@@ -13,4 +13,8 @@ pub enum ContractError {
     RateErrorArithmeticUnderflow = 7,
     RateErrorArithmeticOverflow = 8,
     ConfigErrorInvalidHighRepThreshold = 9,
+    /// `init` was called on a contract that already has an admin.
+    AlreadyInitialized = 10,
+    /// `handle_default` was called before the invoice's `due_date` passed.
+    InvoiceNotOverdue = 11,
 }

@@ -137,6 +137,13 @@ pub fn handle_default(env: &Env, invoice_id: u64) -> Result<(), ContractError> {
         return Err(ContractError::IllegalState);
     }
 
+    // Permissionless, but only once the invoice is actually overdue: without
+    // this gate any caller could default a fresh invoice and damage both
+    // parties' reputation immediately.
+    if env.ledger().timestamp() <= invoice.due_date {
+        return Err(ContractError::InvoiceNotOverdue);
+    }
+
     invoice.status = InvoiceStatus::Defaulted;
     env.storage()
         .persistent()

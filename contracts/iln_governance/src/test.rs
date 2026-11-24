@@ -4063,3 +4063,201 @@ fn test_policy_update_emits_event() {
         .any(|e| std::format!("{:?}", e).contains("timelock_policy_updated"));
     assert!(found, "TimelockPolicyUpdated event should be emitted");
 }
+
+// ── Storage layout migration tests ───────────────────────────────────────────
+//
+// Soroban upgrades replace the WASM and keep storage, so a new build must read
+// whatever an older build left behind. These tests recreate the older layouts
+// by deleting or corrupting entries directly, then pin the observable result.
+// See docs/governance-storage-migration.md for the full key classification.
+
+fn remove_instance_key(t: &GovTestEnv, key: StorageKey) {
+    t.env.as_contract(&t.contract.address, || {
+        t.env.storage().instance().remove(&key);
+    });
+}
+
+/// Optional instance keys introduced after the first release must read as their
+/// documented default when absent, and a full proposal lifecycle must still work.
+#[test]
+fn test_migration_layout_without_optional_keys_reads_defaults() {
+    let t = setup();
+    for key in [
+        StorageKey::ExecutionDelay,
+        StorageKey::TimelockPolicyVersion,
+        StorageKey::MaxScheduledEta,
+        StorageKey::Paused,
+        StorageKey::ExecutionNonce,
+        StorageKey::MinProposalDeposit,
+        StorageKey::QuadraticVotingEnabled,
+        StorageKey::MaxDelegationDepth,
+    ] {
+        remove_instance_key(&t, key);
+    }
+
+    assert_eq!(t.contract.get_execution_delay(), 0);
+    assert_eq!(t.contract.get_timelock_policy_version(), 0);
+    assert_eq!(t.contract.get_max_scheduled_eta(), 0);
+    assert!(!t.contract.is_paused());
+    assert_eq!(t.contract.get_execution_nonce(), 0);
+    assert_eq!(t.contract.get_min_proposal_deposit(), 0);
+    assert!(!t.contract.is_quadratic_voting_enabled());
+    assert_eq!(t.contract.get_max_delegation_depth(), 10);
+
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.voter_b, &id, &true);
+    advance_past_voting(&t);
+    t.contract.execute_proposal(&id);
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Passed);
+    t.contract.execute_proposal(&id);
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+/// Required configuration is preserved across a hostile or repeated
+/// `initialize` call (e.g. an operator re-running deployment after an upgrade).
+#[test]
+fn test_migration_reinitialize_is_rejected_and_config_unchanged() {
+    let t = setup();
+    let supply_before = t.contract.get_gov_token_total_supply();
+    let quorum_before = t.contract.get_min_quorum_bps();
+    let other = Address::generate(&t.env);
+
+    assert_eq!(
+        t.contract.try_initialize(
+            &other,
+            &other,
+            &other,
+            &other,
+            &other,
+            &1,
+        ),
+        Err(Ok(GovernanceError::AlreadyInitialized))
+    );
+
+    assert_eq!(t.contract.get_gov_token_total_supply(), supply_before);
+    assert_eq!(t.contract.get_min_quorum_bps(), quorum_before);
+    // The original admin is still the only one who can drive admin setters.
+    assert_eq!(
+        t.contract.try_set_execution_delay(&other, &5),
+        Err(Ok(GovernanceError::Unauthorized))
+    );
+    t.contract.set_execution_delay(&t.admin, &5);
+}
+
+/// Interrupted migration: a proposal id that was issued but whose record is
+/// missing must fail closed (`ProposalStorageCorrupt`), never look nonexistent.
+#[test]
+fn test_migration_missing_proposal_record_fails_closed() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+    t.env.as_contract(&t.contract.address, || {
+        t.env
+            .storage()
+            .persistent()
+            .remove(&StorageKey::Proposal(id));
+    });
+
+    assert_eq!(
+        t.contract.try_get_proposal(&id),
+        Err(Ok(GovernanceError::ProposalStorageCorrupt))
+    );
+    assert_eq!(
+        t.contract.try_execute_proposal(&id),
+        Err(Ok(GovernanceError::ProposalStorageCorrupt))
+    );
+}
+
+/// Interrupted migration: a record stored under the wrong key (id mismatch)
+/// must fail closed instead of executing another proposal's action.
+#[test]
+fn test_migration_proposal_id_mismatch_fails_closed() {
+    let t = setup();
+    let first = create_fee_proposal(&t);
+    let second = create_fee_proposal(&t);
+    let first_record = t.contract.get_proposal(&first);
+    t.env.as_contract(&t.contract.address, || {
+        t.env
+            .storage()
+            .persistent()
+            .set(&StorageKey::Proposal(second), &first_record);
+    });
+
+    assert_eq!(
+        t.contract.try_get_proposal(&second),
+        Err(Ok(GovernanceError::ProposalStorageCorrupt))
+    );
+    // The untouched proposal is unaffected.
+    assert_eq!(t.contract.get_proposal(&first).id, first);
+}
+
+/// Ids that were never issued are `ProposalNotFound`, which stays distinct from
+/// the corruption case above.
+#[test]
+fn test_migration_unissued_proposal_ids_are_not_found() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+
+    assert_eq!(
+        t.contract.try_get_proposal(&0),
+        Err(Ok(GovernanceError::ProposalNotFound))
+    );
+    assert_eq!(
+        t.contract.try_get_proposal(&(id + 1)),
+        Err(Ok(GovernanceError::ProposalNotFound))
+    );
+}
+
+/// Interrupted migration: if the quorum config is missing at settlement time,
+/// settlement fails closed and the proposal is left untouched (still `Active`).
+#[test]
+fn test_migration_missing_quorum_config_fails_closed_without_mutation() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+    t.contract.cast_vote(&t.voter_b, &id, &true);
+    advance_past_voting(&t);
+    remove_instance_key(&t, StorageKey::MinQuorumBps);
+
+    assert_eq!(
+        t.contract.try_execute_proposal(&id),
+        Err(Ok(GovernanceError::QuorumDataMissing))
+    );
+    assert_eq!(t.contract.get_proposal(&id).status, ProposalStatus::Active);
+}
+
+/// Interrupted migration: a missing governed-contract address fails closed with
+/// `NotInitialized` and does not change any stored parameter.
+#[test]
+fn test_migration_missing_iln_contract_key_fails_closed() {
+    let t = setup();
+    let quorum_before = t.contract.get_min_quorum_bps();
+    remove_instance_key(&t, StorageKey::IlnContract);
+
+    assert_eq!(
+        t.contract.try_set_min_quorum_bps(&2_000),
+        Err(Ok(GovernanceError::NotInitialized))
+    );
+    assert_eq!(t.contract.get_min_quorum_bps(), quorum_before);
+}
+
+/// Stored configuration and proposal data survive ledger advancement (the
+/// shape of an upgrade: new code, same storage, later ledger).
+#[test]
+fn test_migration_config_and_proposal_survive_ledger_advance() {
+    let t = setup();
+    let id = create_fee_proposal(&t);
+    let before = t.contract.get_proposal(&id);
+    let supply = t.contract.get_gov_token_total_supply();
+    let quorum = t.contract.get_min_quorum_bps();
+
+    let mut ledger = t.env.ledger().get();
+    ledger.sequence_number += 5_000;
+    t.env.ledger().set(ledger);
+
+    let after = t.contract.get_proposal(&id);
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.proposer, before.proposer);
+    assert_eq!(after.action_type, before.action_type);
+    assert_eq!(after.voting_end, before.voting_end);
+    assert_eq!(t.contract.get_gov_token_total_supply(), supply);
+    assert_eq!(t.contract.get_min_quorum_bps(), quorum);
+}

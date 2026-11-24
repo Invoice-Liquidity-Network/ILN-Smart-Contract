@@ -1,7 +1,10 @@
 #![cfg(test)]
 use reputation_bonus::config::Config;
 use reputation_bonus::{ReputationBonusContract, ReputationBonusContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 #[test]
 fn test_reputation_lifecycle_flow() {
@@ -49,6 +52,8 @@ fn test_reputation_lifecycle_flow() {
 
     // 4. Submit another and Default
     let inv2 = client.submit_invoice(&freelancer, &payer, &1000, &1800000000, &500);
+    // handle_default only applies once the invoice is overdue.
+    env.ledger().set_timestamp(1800000001);
     client.handle_default(&inv2.id);
 
     let rep_f3 = client.get_reputation(&freelancer);

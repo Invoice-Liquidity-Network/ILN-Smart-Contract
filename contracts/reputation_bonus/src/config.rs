@@ -36,6 +36,20 @@ pub fn get_admin(env: &Env) -> Result<Address, ConfigError> {
         .ok_or(ConfigError::Unauthorized)
 }
 
+pub fn has_admin(env: &Env) -> bool {
+    env.storage().instance().has(&ConfigKey::Admin)
+}
+
+/// Load the stored admin and require its authorization.
+///
+/// This is the single gate for admin-only writes. Fails with
+/// `ConfigError::Unauthorized` before `init` has stored an admin.
+pub fn require_admin(env: &Env) -> Result<Address, ConfigError> {
+    let admin = get_admin(env)?;
+    admin.require_auth();
+    Ok(admin)
+}
+
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&ConfigKey::Admin, admin);
 }
