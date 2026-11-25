@@ -3487,10 +3487,18 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::NotFunded);
         }
 
-        // Issue #841: hoist the primary-funder lookup above all state writes
-        // and external transfers so the typed error path fires before any side
-        // effect, not after. The invariant (funders is non-empty, checked
-        // above) makes the .ok_or branch unreachable under normal execution.
+        // Validate every indexed funder read before state changes or external
+        // calls. The invariant (funders is non-empty, checked above) makes
+        // these error branches unreachable under normal execution.
+        let mut settlement_funders = Vec::new(&env);
+        for i in 0..funders.len() {
+            settlement_funders.push_back(
+                funders
+                    .get(i)
+                    .ok_or(ContractError::FunderIndexOutOfBounds)?,
+            );
+        }
+
         let (primary_lp, primary_lp_funded) = funders
             .get(0)
             .ok_or(ContractError::FunderIndexOutOfBounds)?;
@@ -3582,21 +3590,13 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             .unwrap_or(0);
 
         // CEI: update state before external token transfers
-        // CEI: update state before external token transfers
         invoice.status = InvoiceStatus::Paid;
 
         save_invoice(&env, &invoice);
         crate::nft::sync_nft_state(&env, invoice_id)?;
 
-        // Distribute proportionally to funders. Loop bound is 0..funders.len()
-        // so the .ok_or branch is unreachable under normal execution; the
-        // typed error only fires if the underlying invariant is broken,
-        // in which case the Soroban runtime reverts this entire invocation
-        // and rolls back the preceding save_invoice.
-        for i in 0..funders.len() {
-            let (funder_addr, fund_amt) = funders
-                .get(i)
-                .ok_or(ContractError::FunderIndexOutOfBounds)?;
+        // Distribute proportionally using the entries validated above.
+        for (funder_addr, fund_amt) in settlement_funders.iter() {
             let funder_share =
                 distribute_amount.checked_mul(fund_amt).unwrap_or(0) / invoice.amount;
             // Issue #1072: one frozen funder must not block the payer or the
@@ -4098,7 +4098,6 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         lock_reentrancy(&env)?;
 
         require_admin(&env)?;
-        record_admin_action(&env, "resolve_dispute");
 
         if !invoice_exists(&env, invoice_id) {
             unlock_reentrancy(&env);
@@ -4111,6 +4110,24 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
             return Err(ContractError::NotDisputed);
         }
 
+        // Validate refund entries before recording the admin action or
+        // mutating invoice state; later transfers iterate this checked copy.
+        let mut refund_funders = Vec::new(&env);
+        if resolution == 1 {
+            let funders = get_invoice_funders(&env, invoice_id);
+            for i in 0..funders.len() {
+                refund_funders.push_back(
+                    funders
+                        .get(i)
+                        .ok_or(ContractError::FunderIndexOutOfBounds)?,
+                );
+            }
+        } else if resolution != 2 {
+            return Err(ContractError::Unauthorized);
+        }
+
+        record_admin_action(&env, "resolve_dispute");
+
         match resolution {
             1 => {
                 // Upheld: Payer is right.
@@ -4118,31 +4135,19 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
                 invoice.status = InvoiceStatus::Cancelled;
                 save_invoice(&env, &invoice);
 
-
-                // Refund LPs if it was funded. Loop bound is 0..funders.len()
-                // so the .ok_or branch is unreachable under normal execution;
-                // the typed error only fires if the underlying invariant is
-                // broken, in which case the Soroban runtime reverts this
-                // invocation and rolls back the preceding save_invoice.
-                let funders = get_invoice_funders(&env, invoice_id);
-                if !funders.is_empty() {
-                    for i in 0..funders.len() {
-                        let (funder_addr, fund_amt) = funders
-                            .get(i)
-                            .ok_or(ContractError::FunderIndexOutOfBounds)?;
-                        let fund_discount = fund_amt
-                            .checked_mul(discount_rate_as_i128(invoice.discount_rate))
-                            .unwrap_or(0)
-                            / 10_000;
-                        let refund = fund_amt.saturating_sub(fund_discount);
-                        token_safety::pay_or_escrow(
-                            &env,
-                            &invoice.token,
-                            &funder_addr,
-                            refund,
-                            invoice_id,
-                        )?;
-                    }
+                for (funder_addr, fund_amt) in refund_funders.iter() {
+                    let fund_discount = fund_amt
+                        .checked_mul(discount_rate_as_i128(invoice.discount_rate))
+                        .unwrap_or(0)
+                        / 10_000;
+                    let refund = fund_amt.saturating_sub(fund_discount);
+                    token_safety::pay_or_escrow(
+                        &env,
+                        &invoice.token,
+                        &funder_addr,
+                        refund,
+                        invoice_id,
+                    )?;
                 }
 
                 // Refund payer if a partial payment was made.
