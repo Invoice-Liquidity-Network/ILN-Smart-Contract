@@ -88,6 +88,19 @@ fn is_zero_digest(env: &Env, digest: &BytesN<32>) -> bool {
     digest == &BytesN::from_array(env, &[0u8; 32])
 }
 
+fn queue_entry_at(queue: &Vec<LpFundRequest>, index: u32) -> Result<LpFundRequest, ContractError> {
+    queue.get(index).ok_or(ContractError::QueueIndexOutOfBounds)
+}
+
+fn invoice_funder_at(
+    funders: &Vec<(Address, i128)>,
+    index: u32,
+) -> Result<(Address, i128), ContractError> {
+    funders
+        .get(index)
+        .ok_or(ContractError::FunderIndexOutOfBounds)
+}
+
 // ----------------------------------------------------------------
 // CONSTANTS
 // ----------------------------------------------------------------
@@ -2678,14 +2691,16 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         // maximum, so a stale high snapshot cannot win.
         let mut best_score: u32 = 0;
         for i in 0..queue.len() {
-            let s = get_lp_score(&env, &queue.get(i).unwrap().lp);
+            let entry = queue_entry_at(&queue, i)?;
+            let s = get_lp_score(&env, &entry.lp);
             if s > best_score {
                 best_score = s;
             }
         }
         let mut tied: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&env);
         for i in 0..queue.len() {
-            if get_lp_score(&env, &queue.get(i).unwrap().lp) == best_score {
+            let entry = queue_entry_at(&queue, i)?;
+            if get_lp_score(&env, &entry.lp) == best_score {
                 tied.push_back(i);
             }
         }
@@ -3723,7 +3738,8 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         let funders = get_invoice_funders(&env, invoice_id);
         let mut is_funder = false;
         for i in 0..funders.len() {
-            if funders.get(i).unwrap().0 == funder {
+            let (recorded_funder, _) = invoice_funder_at(&funders, i)?;
+            if recorded_funder == funder {
                 is_funder = true;
                 break;
             }
@@ -3760,7 +3776,7 @@ pub fn update_fee_tiers(env: Env, tiers: Vec<(i128, u32)>) -> Result<(), Contrac
         let mut total_refunded: i128 = 0;
 
         for i in 0..funders.len() {
-            let (funder_addr, fund_amt) = funders.get(i).unwrap();
+            let (funder_addr, fund_amt) = invoice_funder_at(&funders, i)?;
             let fund_discount = fund_amt
                 .checked_mul(discount_rate_as_i128(invoice.discount_rate))
                 .unwrap_or(0)
