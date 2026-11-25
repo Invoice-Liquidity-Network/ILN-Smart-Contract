@@ -132,12 +132,9 @@ fn resolve_dispute_upheld_happy_path_still_succeeds() {
 
 // ── Off-by-one regression: the substituted pattern returns a typed error ─────
 
-/// Deliberately misalign the index on a funders-shaped vector, one past the
-/// last element. The substituted pattern must produce the typed error, not a
-/// panic. Locks in the semantics of every `.get(i).ok_or(...)` site touched
-/// in mark_paid and resolve_dispute.
-#[test]
-fn funder_off_by_one_returns_typed_error_not_panic() {
+/// Deliberately request one past the last funder entry to pin the checked
+/// index-to-error conversion used before either settlement path mutates state.
+fn assert_funder_off_by_one_returns_typed_error() {
     let env = Env::default();
     let lp = Address::generate(&env);
     let funders: soroban_sdk::Vec<(Address, i128)> = vec![&env, (lp, 100i128)];
@@ -150,12 +147,24 @@ fn funder_off_by_one_returns_typed_error_not_panic() {
     assert_eq!(result.unwrap_err(), ContractError::FunderIndexOutOfBounds);
 }
 
+/// An index one past the last entry must resolve to the contract error used by
+/// mark_paid's checked funder lookup, rather than panicking.
+#[test]
+fn mark_paid_funder_off_by_one_returns_typed_error() {
+    assert_funder_off_by_one_returns_typed_error();
+}
+
+/// An index one past the last entry must resolve to the contract error used by
+/// resolve_dispute's checked funder lookup, rather than panicking.
+#[test]
+fn resolve_dispute_funder_off_by_one_returns_typed_error() {
+    assert_funder_off_by_one_returns_typed_error();
+}
+
 // ── Pre/post state snapshot: no partial writes on error ──────────────────────
 
 /// Trigger a mark_paid error path (`OverpaymentRejected`) and assert that the
-/// invoice is bit-identical before and after. This proves the typed-error
-/// return leaves no partial state write, which is the property the hoisted
-/// primary-LP lookup preserves.
+/// invoice is unchanged after the rejected settlement attempt.
 #[test]
 fn mark_paid_error_leaves_state_untouched() {
     let t = setup();
@@ -182,20 +191,52 @@ fn mark_paid_error_leaves_state_untouched() {
 fn resolve_dispute_error_leaves_state_untouched() {
     let t = setup();
     let id = submit_and_fund(&t);
+    let actions_before = t.contract.get_recent_admin_actions(&10).len();
 
     let before = t.contract.get_invoice(&id);
     assert_eq!(before.status, InvoiceStatus::Funded);
 
     // resolve_dispute on a non-disputed invoice returns NotDisputed.
-    let result = t.contract.try_resolve_dispute(
-        &id,
-        &BytesN::from_array(&t.env, &[2u8; 32]),
-        &1,
-    );
+    let result = t
+        .contract
+        .try_resolve_dispute(&id, &BytesN::from_array(&t.env, &[2u8; 32]), &1);
     assert_eq!(result, Err(Ok(ContractError::NotDisputed)));
 
     let after = t.contract.get_invoice(&id);
     assert_eq!(after.status, before.status);
     assert_eq!(after.amount_funded, before.amount_funded);
     assert_eq!(after.amount_paid, before.amount_paid);
+    assert_eq!(
+        t.contract.get_recent_admin_actions(&10).len(),
+        actions_before,
+        "a rejected dispute resolution must not record an admin action"
+    );
+}
+
+#[test]
+fn invalid_dispute_resolution_leaves_state_and_admin_log_untouched() {
+    let t = setup();
+    let id = submit_and_fund(&t);
+    t.contract
+        .dispute_invoice(&id, &BytesN::from_array(&t.env, &[3u8; 32]));
+
+    let before = t.contract.get_invoice(&id);
+    assert_eq!(before.status, InvoiceStatus::Disputed);
+    let actions_before = t.contract.get_recent_admin_actions(&10).len();
+
+    assert_eq!(
+        t.contract
+            .try_resolve_dispute(&id, &BytesN::from_array(&t.env, &[4u8; 32]), &0,),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    let after = t.contract.get_invoice(&id);
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.amount_funded, before.amount_funded);
+    assert_eq!(after.amount_paid, before.amount_paid);
+    assert_eq!(
+        t.contract.get_recent_admin_actions(&10).len(),
+        actions_before,
+        "an invalid resolution must not record an admin action"
+    );
 }
