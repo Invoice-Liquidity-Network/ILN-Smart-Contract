@@ -136,9 +136,12 @@ already used later in the same function.
   (`u64 → u32`). The configured duration bounds keep these well under
   `u32::MAX`; a ledger timestamp only exceeds `u32::MAX` after ~2106. Left
   as-is (out of scope for this issue) and noted for completeness.
-- RR-3 — `Vec::get(i).unwrap()` inside `for i in 0..len()` loops (fee tiers,
-  fund queues, funders) is provably in-bounds and was intentionally left
-  unchanged.
+- RR-3 — Other `Vec::get(i).unwrap()` uses, including the fee-tier scan and
+  unrelated funder loops, remain outside this change. The queue scans in
+  `resolve_fund_queue` and funder scans in `claim_default` now return
+  `QueueIndexOutOfBounds` / `FunderIndexOutOfBounds` instead of trapping.
+  `fund_invoice` already used a checked funder lookup; `claim_yield` does not
+  index a vector in this version.
 - RR-4 — `list_invoices_by_submitter`/`..._by_lp` now *skip* a dangling id,
   so a consumer sees a shorter page rather than an error. This is the
   intended fail-soft direction for a read-only view, but it does mean index
@@ -155,6 +158,9 @@ adds focused coverage:
 - `list_submitter_skips_dangling_index_entry` — INV-NOUNWRAP2/3: a removed
   payload behind a live index entry no longer traps the view and leaves the
   index intact.
+- `test_misaligned_queue_and_funder_indexes_return_typed_errors` in
+  `tests_lp_priority_queue.rs` — verifies deliberately out-of-range queue and
+  funder lookups return their typed contract errors.
 
 ## 7. Compatibility
 

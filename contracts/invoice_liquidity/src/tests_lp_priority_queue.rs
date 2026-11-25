@@ -120,6 +120,29 @@ fn test_lp_score_defaults_to_50() {
     assert_eq!(t.contract.lp_score(&t.lp_a), 50);
 }
 
+#[test]
+fn test_misaligned_queue_and_funder_indexes_return_typed_errors() {
+    let env = Env::default();
+    let lp = Address::generate(&env);
+
+    let mut queue = soroban_sdk::Vec::new(&env);
+    queue.push_back(LpFundRequest {
+        lp: lp.clone(),
+        score: 50,
+    });
+    assert!(matches!(
+        queue_entry_at(&queue, queue.len()),
+        Err(ContractError::QueueIndexOutOfBounds)
+    ));
+
+    let mut funders = soroban_sdk::Vec::new(&env);
+    funders.push_back((lp, 100));
+    assert!(matches!(
+        invoice_funder_at(&funders, funders.len()),
+        Err(ContractError::FunderIndexOutOfBounds)
+    ));
+}
+
 // ── join_fund_queue ───────────────────────────────────────────────────────────
 
 #[test]
