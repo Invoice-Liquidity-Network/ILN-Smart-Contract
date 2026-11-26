@@ -103,7 +103,8 @@ Source of truth: [`contracts/iln_governance/src/lib.rs`](../contracts/iln_govern
 | 17 | `NotVetoable` | Proposal cannot be vetoed in its current status. | Admin attempted to veto a proposal that is not in `Active` status. | Veto only active proposals. |
 | 18 | `VetoPowerDisabled` | Admin veto power has been disabled by governance. | Admin veto was disabled via a governance proposal. | Re-enable veto via governance before using it. |
 | 19 | `InsufficientProposerBalance` | Proposer does not hold the minimum required token balance. | Proposer's token balance is below `MinProposalBalance`. | Acquire enough governance tokens to meet the proposal threshold. |
-| 29 | `TimelockNotActive` | The execution delay is below `MIN_ACTIVE_TIMELOCK_LEDGERS` (17,280 ledgers ≈ 24 h). | `disable_veto_power` called while no active timelock is configured, or `set_execution_delay` tried to lower the delay below the floor after the veto was disabled (Issue #981). | Raise the delay with `set_execution_delay` to at least `MIN_ACTIVE_TIMELOCK_LEDGERS` before disabling the veto; after disablement, only values at or above the floor are accepted. |
+| 47 | `TimelockNotActive` | The execution delay is below `MIN_ACTIVE_TIMELOCK_LEDGERS` (17,280 ledgers ≈ 24 h). | `disable_veto_power` called while no active timelock is configured, or `set_execution_delay` tried to lower the delay below the floor after the veto was disabled (Issue #981). | Raise the delay with `set_execution_delay` to at least `MIN_ACTIVE_TIMELOCK_LEDGERS` before disabling the veto; after disablement, only values at or above the floor are accepted. |
+| 48 | `InvalidMinProposalBalance` | `set_min_proposal_balance` was given a zero or negative threshold. | Governance tried to set a non-positive proposer holding gate, which would let any account create proposals (Issue #1204). | Pass a strictly positive threshold. |
 
 ---
 
